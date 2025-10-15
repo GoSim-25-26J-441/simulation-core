@@ -1,0 +1,43 @@
+
+---
+
+## **.gitignore**
+
+```gitignore
+# Binaries
+/bin/
+/build/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+
+# Dependency directories
+vendor/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+
+# IDE and editor files
+.vscode/
+.idea/
+*.iml
+*.DS_Store
+
+# OS-specific
+Thumbs.db
+
+# Configs and environment files
+.env
+config.yaml
+
+# Test coverage and reports
+coverage.out
+*.prof
