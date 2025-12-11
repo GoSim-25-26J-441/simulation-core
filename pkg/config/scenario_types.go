@@ -1,0 +1,58 @@
+package config
+
+// Scenario represents a complete simulation scenario
+type Scenario struct {
+	Hosts    []Host            `yaml:"hosts"`
+	Services []Service         `yaml:"services"`
+	Workload []WorkloadPattern `yaml:"workload"`
+}
+
+// Host represents a physical host
+type Host struct {
+	ID    string `yaml:"id"`
+	Cores int    `yaml:"cores"`
+}
+
+// Service represents a microservice
+type Service struct {
+	ID        string     `yaml:"id"`
+	Replicas  int        `yaml:"replicas"`
+	Model     string     `yaml:"model"` // cpu, mixed, db_latency
+	Endpoints []Endpoint `yaml:"endpoints"`
+}
+
+// Endpoint represents a service endpoint
+type Endpoint struct {
+	Path         string           `yaml:"path"`
+	MeanCPUMs    float64          `yaml:"mean_cpu_ms"`
+	CPUSigmaMs   float64          `yaml:"cpu_sigma_ms"`
+	Downstream   []DownstreamCall `yaml:"downstream"`
+	NetLatencyMs LatencySpec      `yaml:"net_latency_ms"`
+}
+
+// DownstreamCall represents a call to a downstream service
+type DownstreamCall struct {
+	To                    string      `yaml:"to"`
+	CallCountMean         float64     `yaml:"call_count_mean,omitempty"`
+	CallLatencyMs         LatencySpec `yaml:"call_latency_ms,omitempty"`
+	DownstreamFractionCPU float64     `yaml:"downstream_fraction_cpu,omitempty"`
+}
+
+// LatencySpec represents latency with mean and standard deviation
+type LatencySpec struct {
+	Mean  float64 `yaml:"mean"`
+	Sigma float64 `yaml:"sigma"`
+}
+
+// WorkloadPattern represents a workload entry point
+type WorkloadPattern struct {
+	From    string      `yaml:"from"` // e.g., "client"
+	To      string      `yaml:"to"`   // e.g., "auth:/auth/login"
+	Arrival ArrivalSpec `yaml:"arrival"`
+}
+
+// ArrivalSpec represents arrival process specification
+type ArrivalSpec struct {
+	Type    string  `yaml:"type"` // poisson, uniform, etc.
+	RateRPS float64 `yaml:"rate_rps"`
+}
