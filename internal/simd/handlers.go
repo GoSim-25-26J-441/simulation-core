@@ -163,8 +163,8 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 }
 
 // handleRequestComplete records metrics and handles downstream calls
-func handleRequestComplete(state *scenarioState, _ *engine.Engine) engine.EventHandler {
-	return func(eng *engine.Engine, evt *engine.Event) error {
+func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+	return func(_ *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in request complete event")
 		}
