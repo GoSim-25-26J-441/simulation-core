@@ -232,3 +232,63 @@ func TestDeterministicBehavior(t *testing.T) {
 		}
 	}
 }
+
+func TestConcurrentAccess(t *testing.T) {
+	// Test that RandSource is thread-safe
+	rng := NewRandSource(12345)
+	const numGoroutines = 100
+	const numIterations = 100
+
+	done := make(chan bool, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			for j := 0; j < numIterations; j++ {
+				_ = rng.Float64()
+				_ = rng.Intn(100)
+				_ = rng.ExpFloat64(2.0)
+				_ = rng.NormFloat64(10, 2)
+				_ = rng.PoissonInt(5.0)
+				_ = rng.BernoulliFloat64(0.5)
+				_ = rng.BernoulliBool(0.5)
+				_ = rng.UniformFloat64(0, 10)
+			}
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines to finish
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+}
+
+func TestConcurrentGlobalAccess(t *testing.T) {
+	// Test that global functions are thread-safe
+	SetSeed(12345)
+	const numGoroutines = 100
+	const numIterations = 100
+
+	done := make(chan bool, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			for j := 0; j < numIterations; j++ {
+				_ = Float64()
+				_ = Intn(100)
+				_ = ExpFloat64(2.0)
+				_ = NormFloat64(10, 2)
+				_ = PoissonInt(5.0)
+				_ = BernoulliFloat64(0.5)
+				_ = BernoulliBool(0.5)
+				_ = UniformFloat64(0, 10)
+			}
+			done <- true
+		}()
+	}
+
+	// Wait for all goroutines to finish
+	for i := 0; i < numGoroutines; i++ {
+		<-done
+	}
+}
