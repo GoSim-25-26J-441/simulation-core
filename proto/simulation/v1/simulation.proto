@@ -4,9 +4,6 @@ package simulation.v1;
 
 option go_package = "github.com/GoSim-25-26J-441/simulation-core/proto/simulation/v1;simulationv1";
 
-import "google/protobuf/timestamp.proto";
-import "google/protobuf/duration.proto";
-
 // SimulationService is the gRPC "CLI plane" API exposed by simd.
 //
 // The CLI (simulator-cli) talks to simd over gRPC for interactive management.
@@ -31,7 +28,7 @@ service SimulationService {
   rpc GetRunMetrics(GetRunMetricsRequest) returns (GetRunMetricsResponse);
 
   // StreamRunEvents streams lifecycle events for a run (status/metrics snapshots).
-  rpc StreamRunEvents(StreamRunEventsRequest) returns (stream RunEvent);
+  rpc StreamRunEvents(StreamRunEventsRequest) returns (stream StreamRunEventsResponse);
 }
 
 // ---- Requests / responses
@@ -92,7 +89,11 @@ message StreamRunEventsRequest {
   string run_id = 1;
 
   // Optional: how often to emit metrics snapshots while running.
-  google.protobuf.duration metrics_interval = 2;
+  int64 metrics_interval_ms = 2;
+}
+
+message StreamRunEventsResponse {
+  RunEvent event = 1;
 }
 
 // ---- Core models
@@ -106,8 +107,11 @@ message RunInput {
   // Optional additional config YAML (the format used by config/config.yaml).
   string config_yaml = 2;
 
-  // Simulation duration override (if not provided, server uses scenario/config defaults).
-  google.protobuf.duration duration = 3;
+  // Simulation duration override in milliseconds.
+  // Clients should send a positive value to explicitly override the duration.
+  // If 0 (the proto3 default) or unset at the client, the server uses scenario/config defaults.
+  // Negative values are not valid and may be rejected by the server.
+  int64 duration_ms = 3;
 
   // Deterministic seed (0 => server-generated).
   int64 seed = 4;
@@ -117,9 +121,10 @@ message Run {
   string id = 1;
   RunStatus status = 2;
 
-  google.protobuf.timestamp created_at = 3;
-  google.protobuf.timestamp started_at = 4;
-  google.protobuf.timestamp ended_at = 5;
+  // Unix epoch milliseconds (UTC).
+  int64 created_at_unix_ms = 3;
+  int64 started_at_unix_ms = 4;
+  int64 ended_at_unix_ms = 5;
 
   string error = 6;
 }
@@ -164,7 +169,8 @@ message ServiceMetrics {
 }
 
 message RunEvent {
-  google.protobuf.timestamp at = 1;
+  // Unix epoch milliseconds (UTC).
+  int64 at_unix_ms = 1;
   string run_id = 2;
 
   oneof event {
