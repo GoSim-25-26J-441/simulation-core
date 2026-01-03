@@ -15,14 +15,14 @@ import (
 type SimulationGRPCServer struct {
 	simulationv1.UnimplementedSimulationServiceServer
 	store    *RunStore
-	executor *RunExecutor
+	Executor *RunExecutor
 }
 
-// NewSimulationGRPCServer creates a new SimulationGRPCServer with the provided RunStore.
-func NewSimulationGRPCServer(store *RunStore) *SimulationGRPCServer {
+// NewSimulationGRPCServer creates a new SimulationGRPCServer with the provided RunStore and RunExecutor.
+func NewSimulationGRPCServer(store *RunStore, executor *RunExecutor) *SimulationGRPCServer {
 	return &SimulationGRPCServer{
 		store:    store,
-		executor: NewRunExecutor(store),
+		Executor: executor,
 	}
 }
 
@@ -45,7 +45,7 @@ func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.S
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 
-	updated, err := s.executor.Start(req.RunId)
+	updated, err := s.Executor.Start(req.RunId)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
 			return nil, status.Error(codes.NotFound, err.Error())
@@ -65,7 +65,7 @@ func (s *SimulationGRPCServer) StopRun(ctx context.Context, req *simulationv1.St
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 
-	updated, err := s.executor.Stop(req.RunId)
+	updated, err := s.Executor.Stop(req.RunId)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
 			return nil, status.Error(codes.NotFound, err.Error())

@@ -10,8 +10,29 @@ import (
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 )
 
+const testScenarioYAML = `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+
 func TestHTTPServerHealthz(t *testing.T) {
-	srv := NewHTTPServer(NewRunStore())
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 
@@ -33,29 +54,11 @@ func TestHTTPServerHealthz(t *testing.T) {
 }
 
 func TestHTTPServerCreateRun(t *testing.T) {
-	srv := NewHTTPServer(NewRunStore())
-	validScenario := `
-hosts:
-  - id: host-1
-    cores: 2
-services:
-  - id: svc1
-    replicas: 1
-    model: cpu
-    endpoints:
-      - path: /test
-        mean_cpu_ms: 10
-        cpu_sigma_ms: 2
-        downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
-workload:
-  - from: client
-    to: svc1:/test
-    arrival: {type: poisson, rate_rps: 10}
-`
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
 	reqBody := map[string]any{
 		"input": map[string]any{
-			"scenario_yaml": validScenario,
+			"scenario_yaml": testScenarioYAML,
 			"duration_ms":   100,
 		},
 	}
@@ -84,28 +87,9 @@ workload:
 
 func TestHTTPServerGetRun(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store)
-	validScenario := `
-hosts:
-  - id: host-1
-    cores: 2
-services:
-  - id: svc1
-    replicas: 1
-    model: cpu
-    endpoints:
-      - path: /test
-        mean_cpu_ms: 10
-        cpu_sigma_ms: 2
-        downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
-workload:
-  - from: client
-    to: svc1:/test
-    arrival: {type: poisson, rate_rps: 10}
-`
+	srv := NewHTTPServer(store, NewRunExecutor(store))
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
-		ScenarioYaml: validScenario,
+		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
 	})
 	if err != nil {
@@ -134,7 +118,8 @@ workload:
 }
 
 func TestHTTPServerGetRunNotFound(t *testing.T) {
-	srv := NewHTTPServer(NewRunStore())
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/nonexistent", nil)
 
@@ -147,28 +132,10 @@ func TestHTTPServerGetRunNotFound(t *testing.T) {
 
 func TestHTTPServerStopRun(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store)
-	validScenario := `
-hosts:
-  - id: host-1
-    cores: 2
-services:
-  - id: svc1
-    replicas: 1
-    model: cpu
-    endpoints:
-      - path: /test
-        mean_cpu_ms: 10
-        cpu_sigma_ms: 2
-        downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
-workload:
-  - from: client
-    to: svc1:/test
-    arrival: {type: poisson, rate_rps: 10}
-`
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
-		ScenarioYaml: validScenario,
+		ScenarioYaml: testScenarioYAML,
 		DurationMs:   5000, // Long duration
 	})
 	if err != nil {
@@ -176,7 +143,7 @@ workload:
 	}
 
 	// Start the run
-	_, err = srv.executor.Start(rec.Run.Id)
+	_, err = executor.Start(rec.Run.Id)
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
 	}
@@ -204,28 +171,9 @@ workload:
 
 func TestHTTPServerGetRunMetrics(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store)
-	validScenario := `
-hosts:
-  - id: host-1
-    cores: 2
-services:
-  - id: svc1
-    replicas: 1
-    model: cpu
-    endpoints:
-      - path: /test
-        mean_cpu_ms: 10
-        cpu_sigma_ms: 2
-        downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
-workload:
-  - from: client
-    to: svc1:/test
-    arrival: {type: poisson, rate_rps: 10}
-`
+	srv := NewHTTPServer(store, NewRunExecutor(store))
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
-		ScenarioYaml: validScenario,
+		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
 	})
 	if err != nil {
@@ -270,28 +218,9 @@ workload:
 
 func TestHTTPServerGetRunMetricsNotAvailable(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store)
-	validScenario := `
-hosts:
-  - id: host-1
-    cores: 2
-services:
-  - id: svc1
-    replicas: 1
-    model: cpu
-    endpoints:
-      - path: /test
-        mean_cpu_ms: 10
-        cpu_sigma_ms: 2
-        downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
-workload:
-  - from: client
-    to: svc1:/test
-    arrival: {type: poisson, rate_rps: 10}
-`
+	srv := NewHTTPServer(store, NewRunExecutor(store))
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
-		ScenarioYaml: validScenario,
+		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
 	})
 	if err != nil {
@@ -305,5 +234,47 @@ workload:
 
 	if rr.Code != http.StatusPreconditionFailed {
 		t.Fatalf("expected status 412, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPServerCreateRunWithInvalidID(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+	tests := []struct {
+		name  string
+		runID string
+	}{
+		{"with colon", "test:stop"},
+		{"with slash", "test/metrics"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reqBody := map[string]any{
+				"run_id": tt.runID,
+				"input": map[string]any{
+					"scenario_yaml": testScenarioYAML,
+					"duration_ms":   100,
+				},
+			}
+			bodyBytes, _ := json.Marshal(reqBody)
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(string(bodyBytes)))
+			req.Header.Set("Content-Type", "application/json")
+
+			srv.Handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400 for run ID %q, got %d: %s", tt.runID, rr.Code, rr.Body.String())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+			errMsg, ok := resp["error"].(string)
+			if !ok || !strings.Contains(errMsg, "cannot contain") {
+				t.Fatalf("expected validation error message, got: %v", resp["error"])
+			}
+		})
 	}
 }

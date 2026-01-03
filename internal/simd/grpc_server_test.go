@@ -11,7 +11,7 @@ import (
 
 func TestGRPCServerCreateStartGetMetricsLifecycle(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store)
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
 
 	ctx := context.Background()
 	validScenario := `
@@ -100,7 +100,7 @@ func (s *fakeRunEventsStream) RecvMsg(m any) error             { return nil }
 
 func TestGRPCServerStreamRunEventsSendsInitialEvent(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store)
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
 	ctx := context.Background()
 
 	validScenario := `
