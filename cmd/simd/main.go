@@ -46,7 +46,7 @@ func main() {
 
 	httpSrv := &http.Server{
 		Addr:              httpAddr,
-		Handler:           simd.NewHTTPServer().Handler(),
+		Handler:           simd.NewHTTPServer(store).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       120 * time.Second,
