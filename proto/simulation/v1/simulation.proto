@@ -107,7 +107,10 @@ message RunInput {
   // Optional additional config YAML (the format used by config/config.yaml).
   string config_yaml = 2;
 
-  // Simulation duration override (if not provided, server uses scenario/config defaults).
+  // Simulation duration override in milliseconds.
+  // Clients should send a positive value to explicitly override the duration.
+  // If 0 (the proto3 default) or unset at the client, the server uses scenario/config defaults.
+  // Negative values are not valid and may be rejected by the server.
   int64 duration_ms = 3;
 
   // Deterministic seed (0 => server-generated).
