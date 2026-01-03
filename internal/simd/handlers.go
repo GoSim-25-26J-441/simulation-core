@@ -49,7 +49,18 @@ func parseWorkloadTarget(target string) (serviceID, path string, err error) {
 	if len(parts) != 2 {
 		return "", "", fmt.Errorf("invalid workload target format: %s (expected serviceID:path)", target)
 	}
-	return parts[0], parts[1], nil
+
+	serviceID = strings.TrimSpace(parts[0])
+	path = strings.TrimSpace(parts[1])
+
+	if serviceID == "" {
+		return "", "", fmt.Errorf("invalid workload target format: %s (serviceID must be non-empty)", target)
+	}
+	if path == "" {
+		return "", "", fmt.Errorf("invalid workload target format: %s (path must be non-empty)", target)
+	}
+
+	return serviceID, path, nil
 }
 
 // RegisterHandlers registers all event handlers for the engine
