@@ -47,7 +47,7 @@ func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.S
 		return &simulationv1.StartRunResponse{Run: rec.Run}, nil
 	}
 
-	_, err := s.store.SetStatus(req.RunId, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	updated, err := s.store.SetStatus(req.RunId, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -70,7 +70,7 @@ func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.S
 	}(req.RunId)
 
 	logger.Info("run started (skeleton)", "run_id", req.RunId)
-	return &simulationv1.StartRunResponse{Run: rec.Run}, nil
+	return &simulationv1.StartRunResponse{Run: updated.Run}, nil
 }
 
 func (s *SimulationGRPCServer) StopRun(ctx context.Context, req *simulationv1.StopRunRequest) (*simulationv1.StopRunResponse, error) {
@@ -78,17 +78,12 @@ func (s *SimulationGRPCServer) StopRun(ctx context.Context, req *simulationv1.St
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 
-	rec, ok := s.store.Get(req.RunId)
-	if !ok {
-		return nil, status.Error(codes.NotFound, "run not found")
-	}
-
-	_, err := s.store.SetStatus(req.RunId, simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	updated, err := s.store.SetStatus(req.RunId, simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	logger.Info("run cancelled", "run_id", req.RunId)
-	return &simulationv1.StopRunResponse{Run: rec.Run}, nil
+	return &simulationv1.StopRunResponse{Run: updated.Run}, nil
 }
 
 func (s *SimulationGRPCServer) GetRun(ctx context.Context, req *simulationv1.GetRunRequest) (*simulationv1.GetRunResponse, error) {

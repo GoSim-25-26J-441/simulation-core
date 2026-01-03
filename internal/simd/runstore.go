@@ -7,6 +7,7 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
+	"google.golang.org/protobuf/proto"
 )
 
 type RunRecord struct {
@@ -47,18 +48,21 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 			Status:          simulationv1.RunStatus_RUN_STATUS_PENDING,
 			CreatedAtUnixMs: nowUnixMs(),
 		},
-		Input:   input,
+		Input:   cloneRunInput(input),
 		Metrics: nil,
 	}
 	s.runs[runID] = rec
-	return rec, nil
+	return cloneRunRecord(rec), nil
 }
 
 func (s *RunStore) Get(runID string) (*RunRecord, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	rec, ok := s.runs[runID]
-	return rec, ok
+	if !ok {
+		return nil, false
+	}
+	return cloneRunRecord(rec), true
 }
 
 func (s *RunStore) List(limit int) []*RunRecord {
@@ -70,7 +74,7 @@ func (s *RunStore) List(limit int) []*RunRecord {
 	}
 	out := make([]*RunRecord, 0, minInt(limit, len(s.runs)))
 	for _, rec := range s.runs {
-		out = append(out, rec)
+		out = append(out, cloneRunRecord(rec))
 		if len(out) >= limit {
 			break
 		}
@@ -103,7 +107,7 @@ func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg
 		rec.Run.EndedAtUnixMs = nowUnixMs()
 	}
 
-	return rec, nil
+	return cloneRunRecord(rec), nil
 }
 
 func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) error {
@@ -114,7 +118,7 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	if !ok {
 		return fmt.Errorf("run not found: %s", runID)
 	}
-	rec.Metrics = metrics
+	rec.Metrics = cloneRunMetrics(metrics)
 	return nil
 }
 
@@ -123,4 +127,36 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func cloneRunRecord(rec *RunRecord) *RunRecord {
+	if rec == nil {
+		return nil
+	}
+	return &RunRecord{
+		Run:     cloneRun(rec.Run),
+		Input:   cloneRunInput(rec.Input),
+		Metrics: cloneRunMetrics(rec.Metrics),
+	}
+}
+
+func cloneRun(in *simulationv1.Run) *simulationv1.Run {
+	if in == nil {
+		return nil
+	}
+	return proto.Clone(in).(*simulationv1.Run)
+}
+
+func cloneRunInput(in *simulationv1.RunInput) *simulationv1.RunInput {
+	if in == nil {
+		return nil
+	}
+	return proto.Clone(in).(*simulationv1.RunInput)
+}
+
+func cloneRunMetrics(in *simulationv1.RunMetrics) *simulationv1.RunMetrics {
+	if in == nil {
+		return nil
+	}
+	return proto.Clone(in).(*simulationv1.RunMetrics)
 }
