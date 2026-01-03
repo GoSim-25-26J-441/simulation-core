@@ -139,7 +139,7 @@ func TestScheduleWorkload(t *testing.T) {
 		t.Fatalf("ScheduleWorkload error: %v", err)
 	}
 
-	// Verify events were scheduled (with higher rate and longer duration, should have events)
+	// Verify events were scheduled (with a higher rate over this duration, we expect events)
 	queueSize := eng.GetEventQueue().Size()
 	if queueSize == 0 {
 		t.Fatalf("expected events to be scheduled, got queue size %d", queueSize)
