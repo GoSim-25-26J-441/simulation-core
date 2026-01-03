@@ -263,7 +263,7 @@ func handleDownstreamCall(state *scenarioState, eng *engine.Engine) engine.Event
 func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration time.Duration) error {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(duration)
-	rng := utils.NewRandSource(0)
+	rng := utils.NewRandSource(time.Now().UnixNano())
 
 	for _, workload := range scenario.Workload {
 		// Parse target: "serviceID:path"
