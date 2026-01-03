@@ -1,0 +1,60 @@
+hosts:
+  - id: host-1
+    cores: 2
+
+services:
+  - id: auth
+    replicas: 2
+    model: cpu
+    endpoints:
+      - path: /auth/login
+        mean_cpu_ms: 50
+        cpu_sigma_ms: 20
+        downstream: []
+        net_latency_ms: {mean: 2, sigma: 1}
+      - path: /auth/verify
+        mean_cpu_ms: 5
+        cpu_sigma_ms: 3
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+
+  - id: user
+    replicas: 2
+    model: mixed
+    endpoints:
+      - path: /user/get
+        mean_cpu_ms: 12
+        cpu_sigma_ms: 6
+        downstream:
+          - to: db
+            call_count_mean: 1
+            call_latency_ms: {mean: 10, sigma: 5}
+            downstream_fraction_cpu: 0.6
+        net_latency_ms: {mean: 3, sigma: 1}
+      - path: /user/update
+        mean_cpu_ms: 25
+        cpu_sigma_ms: 12
+        downstream:
+          - to: db
+            call_count_mean: 1
+            call_latency_ms: {mean: 15, sigma: 8}
+            downstream_fraction_cpu: 0.7
+        net_latency_ms: {mean: 3, sigma: 1}
+
+  - id: db
+    replicas: 1
+    model: db_latency
+    endpoints:
+      - path: /db/query
+        mean_cpu_ms: 5
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+
+workload:
+  - from: client
+    to: auth:/auth/login
+    arrival: {type: poisson, rate_rps: 20}
+  - from: client
+    to: user:/user/get
+    arrival: {type: poisson, rate_rps: 5}

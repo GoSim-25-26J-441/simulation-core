@@ -1,0 +1,66 @@
+log_level: info
+
+clusters:
+  - name: cluster-a
+    network_rtt_ms: 1.2
+    capacity:
+      cpu_cores: 32
+      mem_gb: 128
+
+  - name: cluster-b
+    network_rtt_ms: 8.0
+    capacity:
+      cpu_cores: 64
+      mem_gb: 256
+
+service_graph:
+  nodes:
+    - name: gateway
+      cluster: cluster-a
+      cpu_cost_ms: 0.2
+      concurrency: 64
+    - name: users
+      cluster: cluster-a
+      cpu_cost_ms: 0.6
+    - name: orders
+      cluster: cluster-b
+      cpu_cost_ms: 1.0
+    - name: payments
+      cluster: cluster-b
+      cpu_cost_ms: 1.5
+  edges:
+    - from: gateway
+      to: users
+      mode: sync
+      p: 1.0
+    - from: gateway
+      to: orders
+      mode: sync
+      p: 0.6
+    - from: orders
+      to: payments
+      mode: async
+      p: 0.4
+
+workload:
+  arrival: poisson
+  rate_rps: 500
+  duration: 60s
+  warmup: 5s
+
+policies:
+  autoscaling:
+    enabled: true
+    target_cpu_util: 0.7
+    scale_step: 1
+  retries:
+    enabled: true
+    max_retries: 2
+    backoff: exponential
+    base_ms: 10
+
+optimization:
+  enabled: true
+  objective: "p95_latency_ms"
+  max_iterations: 20
+

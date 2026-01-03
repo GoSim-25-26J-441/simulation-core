@@ -191,6 +191,32 @@ go build -o bin/simd ./cmd/simd
 go test ./...
 ```
 
+## Testing
+
+### Unit tests (default)
+
+Runs fast unit tests that live alongside the code:
+
+```bash
+go test ./...
+```
+
+### Integration tests (build-tagged)
+
+Integration tests live under `test/integration/` and are excluded from default runs.
+
+Run only integration tests:
+
+```bash
+go test -tags=integration ./test/...
+```
+
+Run unit + integration together:
+
+```bash
+go test -tags=integration ./...
+```
+
 ---
 
 ## Design Notes
