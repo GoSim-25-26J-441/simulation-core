@@ -6,5 +6,3 @@ version: v2
 # If/when you split protos into a separate repo/module, this file can move with them.
 modules:
   - path: proto
-
-

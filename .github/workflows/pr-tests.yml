@@ -36,6 +36,11 @@ jobs:
       - name: Verify dependencies
         run: go mod verify
 
+      - name: Generate protobuf stubs
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.62.1
+          "$(go env GOPATH)/bin/buf" generate
+
       - name: Check formatting
         run: |
           if [ -n "$(gofmt -l .)" ]; then
@@ -103,6 +108,11 @@ jobs:
           go-version: '1.25.x'
           cache: true
 
+      - name: Generate protobuf stubs
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.62.1
+          "$(go env GOPATH)/bin/buf" generate
+
       # NOTE: golangci-lint prebuilt binaries may be built with an older Go toolchain.
       # Since this repo targets Go 1.25.1, install golangci-lint via `go install`
       # so it is built with the runner's Go toolchain (1.25.x).
@@ -127,6 +137,11 @@ jobs:
         with:
           go-version: '1.25.x'
           cache: true
+
+      - name: Generate protobuf stubs
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.62.1
+          "$(go env GOPATH)/bin/buf" generate
 
       - name: Build all packages
         run: |

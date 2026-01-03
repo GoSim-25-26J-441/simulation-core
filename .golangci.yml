@@ -76,6 +76,8 @@ linters-settings:
       - paramTypeCombine  # Explicit types improve readability
 
 issues:
+  exclude-dirs:
+    - gen
   exclude-rules:
     # Exclude some linters from running on tests files
     - path: _test\.go
