@@ -70,6 +70,9 @@ func (s *SimulationGRPCServer) StopRun(ctx context.Context, req *simulationv1.St
 		if errors.Is(err, ErrRunNotFound) {
 			return nil, status.Error(codes.NotFound, err.Error())
 		}
+		if errors.Is(err, ErrRunIDMissing) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	logger.Info("run cancelled", "run_id", req.RunId)
