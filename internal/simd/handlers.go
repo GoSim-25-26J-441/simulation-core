@@ -202,7 +202,8 @@ func handleRequestComplete(state *scenarioState, _ *engine.Engine) engine.EventH
 				var err error
 				downstreamServiceID, downstreamPath, err = parseWorkloadTarget(downstreamTarget)
 				if err != nil {
-					// If parsing fails, treat entire string as service ID and use default path
+					// If parsing fails, log a warning and treat entire string as service ID with default path
+					fmt.Printf("warning: failed to parse downstream target %q: %v; treating as service ID with default path\n", downstreamTarget, err)
 					downstreamServiceID = downstreamTarget
 					downstreamPath = "/"
 				}
