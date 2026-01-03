@@ -128,7 +128,7 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetRun handles GET /v1/runs/{id}
-func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, runID string) {
+func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID string) {
 	rec, ok := s.store.Get(runID)
 	if !ok {
 		s.writeError(w, http.StatusNotFound, "run not found")
@@ -141,14 +141,15 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, r *http.Request, runID 
 }
 
 // handleStopRun handles POST /v1/runs/{id}:stop
-func (s *HTTPServer) handleStopRun(w http.ResponseWriter, r *http.Request, runID string) {
+func (s *HTTPServer) handleStopRun(w http.ResponseWriter, _ *http.Request, runID string) {
 	updated, err := s.executor.Stop(runID)
 	if err != nil {
-		if errors.Is(err, ErrRunNotFound) {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
 			s.writeError(w, http.StatusNotFound, err.Error())
-		} else if errors.Is(err, ErrRunIDMissing) {
+		case errors.Is(err, ErrRunIDMissing):
 			s.writeError(w, http.StatusBadRequest, err.Error())
-		} else {
+		default:
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
@@ -161,7 +162,7 @@ func (s *HTTPServer) handleStopRun(w http.ResponseWriter, r *http.Request, runID
 }
 
 // handleGetRunMetrics handles GET /v1/runs/{id}/metrics
-func (s *HTTPServer) handleGetRunMetrics(w http.ResponseWriter, r *http.Request, runID string) {
+func (s *HTTPServer) handleGetRunMetrics(w http.ResponseWriter, _ *http.Request, runID string) {
 	rec, ok := s.store.Get(runID)
 	if !ok {
 		s.writeError(w, http.StatusNotFound, "run not found")
