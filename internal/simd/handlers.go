@@ -26,7 +26,7 @@ func newScenarioState(scenario *config.Scenario) *scenarioState {
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
 		endpoints: make(map[string]*config.Endpoint),
-		rng:       utils.NewRandSource(0),
+		rng:       utils.NewRandSource(time.Now().UnixNano()),
 	}
 
 	// Build service and endpoint maps
