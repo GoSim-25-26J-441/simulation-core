@@ -125,5 +125,3 @@ func TestIntegration_EngineRunFromScenarioWorkloadSmoke(t *testing.T) {
 		t.Fatalf("expected %d total requests, got %d", totalScheduled, got)
 	}
 }
-
-
