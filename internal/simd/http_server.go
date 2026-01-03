@@ -14,14 +14,14 @@ import (
 type HTTPServer struct {
 	mux      *http.ServeMux
 	store    *RunStore
-	executor *RunExecutor
+	Executor *RunExecutor
 }
 
-func NewHTTPServer(store *RunStore) *HTTPServer {
+func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
 	s := &HTTPServer{
 		mux:      http.NewServeMux(),
 		store:    store,
-		executor: NewRunExecutor(store),
+		Executor: executor,
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
@@ -115,6 +115,8 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			s.writeError(w, http.StatusConflict, err.Error())
+		} else if strings.Contains(err.Error(), "cannot contain") {
+			s.writeError(w, http.StatusBadRequest, err.Error())
 		} else {
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 		}
@@ -142,7 +144,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID 
 
 // handleStopRun handles POST /v1/runs/{id}:stop
 func (s *HTTPServer) handleStopRun(w http.ResponseWriter, _ *http.Request, runID string) {
-	updated, err := s.executor.Stop(runID)
+	updated, err := s.Executor.Stop(runID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrRunNotFound):
