@@ -32,6 +32,8 @@ func main() {
 
 	store := simd.NewRunStore()
 
+	// TODO: Configure gRPC server security (e.g., TLS, authentication, rate limiting)
+	// before using this service in a production environment.
 	grpcServer := grpc.NewServer()
 	simulationv1.RegisterSimulationServiceServer(grpcServer, simd.NewSimulationGRPCServer(store))
 
