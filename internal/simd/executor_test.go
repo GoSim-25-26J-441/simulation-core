@@ -341,4 +341,3 @@ workload:
 		t.Fatalf("expected cancelled, got %v", rec.Run.Status)
 	}
 }
-

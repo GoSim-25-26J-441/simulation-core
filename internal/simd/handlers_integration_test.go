@@ -15,7 +15,7 @@ func TestHandleRequestArrival(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -56,7 +56,7 @@ func TestHandleRequestArrivalMissingData(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -91,7 +91,7 @@ func TestHandleRequestStart(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -145,7 +145,7 @@ func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -159,7 +159,7 @@ func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 				},
 			},
 			{
-				ID:   "svc2",
+				ID: "svc2",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/api",
@@ -214,7 +214,7 @@ func TestHandleDownstreamCall(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -298,7 +298,7 @@ func TestConvertMetricsToProtoWithLargeReplicas(t *testing.T) {
 	engineMetrics := &models.RunMetrics{
 		ServiceMetrics: map[string]*models.ServiceMetrics{
 			"svc1": {
-				ServiceName:   "svc1",
+				ServiceName:    "svc1",
 				ActiveReplicas: 3000000000, // Very large number > MaxInt32 (2147483647)
 			},
 		},
@@ -316,7 +316,7 @@ func TestHandleRequestCompleteWithoutDownstream(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -372,7 +372,7 @@ func TestHandleRequestCompleteWithNonExistentEndpoint(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -418,7 +418,7 @@ func TestHandleDownstreamCallWithMissingEndpointPath(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -471,4 +471,3 @@ func TestConvertMetricsToProtoWithNegativeReplicas(t *testing.T) {
 		t.Fatalf("expected ActiveReplicas to be clamped to 0")
 	}
 }
-

@@ -12,7 +12,7 @@ func TestNewScenarioState(t *testing.T) {
 	scenario := &config.Scenario{
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{Path: "/test"},
 				},
@@ -74,7 +74,7 @@ func TestRegisterHandlers(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -111,7 +111,7 @@ func TestScheduleWorkload(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -152,7 +152,7 @@ func TestScheduleWorkloadUniform(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -193,7 +193,7 @@ func TestScheduleWorkloadInvalidTarget(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -228,7 +228,7 @@ func TestScheduleWorkloadDefaultArrivalType(t *testing.T) {
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID:   "svc1",
+				ID: "svc1",
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -256,4 +256,3 @@ func TestScheduleWorkloadDefaultArrivalType(t *testing.T) {
 		t.Fatalf("ScheduleWorkload error: %v", err)
 	}
 }
-
