@@ -2,6 +2,7 @@ package simd
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -13,12 +14,16 @@ import (
 // SimulationGRPCServer implements the gRPC SimulationServiceServer using a RunStore backend.
 type SimulationGRPCServer struct {
 	simulationv1.UnimplementedSimulationServiceServer
-	store *RunStore
+	store    *RunStore
+	executor *RunExecutor
 }
 
 // NewSimulationGRPCServer creates a new SimulationGRPCServer with the provided RunStore.
 func NewSimulationGRPCServer(store *RunStore) *SimulationGRPCServer {
-	return &SimulationGRPCServer{store: store}
+	return &SimulationGRPCServer{
+		store:    store,
+		executor: NewRunExecutor(store),
+	}
 }
 
 func (s *SimulationGRPCServer) CreateRun(ctx context.Context, req *simulationv1.CreateRunRequest) (*simulationv1.CreateRunResponse, error) {
@@ -40,38 +45,18 @@ func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.S
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 
-	rec, ok := s.store.Get(req.RunId)
-	if !ok {
-		return nil, status.Error(codes.NotFound, "run not found")
-	}
-
-	if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
-		return &simulationv1.StartRunResponse{Run: rec.Run}, nil
-	}
-
-	updated, err := s.store.SetStatus(req.RunId, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	updated, err := s.executor.Start(req.RunId)
 	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		if errors.Is(err, ErrRunTerminal) {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	// Milestone 1 skeleton: run a tiny background task and complete.
-	go func(runID string) {
-		time.Sleep(10 * time.Millisecond)
-		if err := s.store.SetMetrics(runID, &simulationv1.RunMetrics{
-			TotalRequests:      0,
-			SuccessfulRequests: 0,
-			FailedRequests:     0,
-			ThroughputRps:      0,
-		}); err != nil {
-			logger.Error("failed to set metrics", "run_id", runID, "error", err)
-		}
-		if _, err := s.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
-			logger.Error("failed to set status", "run_id", runID, "error", err)
-		}
-		logger.Info("run completed (skeleton)", "run_id", runID)
-	}(req.RunId)
-
-	logger.Info("run started (skeleton)", "run_id", req.RunId)
+	logger.Info("run started (executor)", "run_id", req.RunId)
 	return &simulationv1.StartRunResponse{Run: updated.Run}, nil
 }
 
@@ -80,8 +65,14 @@ func (s *SimulationGRPCServer) StopRun(ctx context.Context, req *simulationv1.St
 		return nil, status.Error(codes.InvalidArgument, "run_id is required")
 	}
 
-	updated, err := s.store.SetStatus(req.RunId, simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	updated, err := s.executor.Stop(req.RunId)
 	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		if errors.Is(err, ErrRunIDMissing) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	logger.Info("run cancelled", "run_id", req.RunId)

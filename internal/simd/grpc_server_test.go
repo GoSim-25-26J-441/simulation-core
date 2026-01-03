@@ -14,8 +14,30 @@ func TestGRPCServerCreateStartGetMetricsLifecycle(t *testing.T) {
 	srv := NewSimulationGRPCServer(store)
 
 	ctx := context.Background()
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
-		Input: &simulationv1.RunInput{ScenarioYaml: "hosts: []"},
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   100, // 100ms for quick test
+		},
 	})
 	if err != nil {
 		t.Fatalf("CreateRun error: %v", err)
@@ -35,8 +57,8 @@ func TestGRPCServerCreateStartGetMetricsLifecycle(t *testing.T) {
 		t.Fatalf("StartRun error: %v", err)
 	}
 
-	// Wait for the skeleton background completion.
-	deadline := time.Now().Add(2 * time.Second)
+	// Wait for the simulation to complete.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		getResp, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: createResp.Run.Id})
 		if err != nil {
@@ -81,8 +103,27 @@ func TestGRPCServerStreamRunEventsSendsInitialEvent(t *testing.T) {
 	srv := NewSimulationGRPCServer(store)
 	ctx := context.Background()
 
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
-		Input: &simulationv1.RunInput{ScenarioYaml: "hosts: []"},
+		Input: &simulationv1.RunInput{ScenarioYaml: validScenario},
 	})
 	if err != nil {
 		t.Fatalf("CreateRun error: %v", err)
