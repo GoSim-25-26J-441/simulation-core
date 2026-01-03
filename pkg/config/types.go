@@ -33,9 +33,9 @@ type ServiceGraph struct {
 
 // ServiceNode represents a service in the graph
 type ServiceNode struct {
-	Name        string  `yaml:"name"`
-	Cluster     string  `yaml:"cluster"`
-	CPUCostMs   float64 `yaml:"cpu_cost_ms"`
+	Name      string  `yaml:"name"`
+	Cluster   string  `yaml:"cluster"`
+	CPUCostMs float64 `yaml:"cpu_cost_ms"`
 	// Concurrency specifies the maximum number of concurrent requests for this service.
 	// A value of 0 means unlimited concurrency.
 	Concurrency int `yaml:"concurrency,omitempty"`
