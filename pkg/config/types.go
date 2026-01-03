@@ -36,7 +36,9 @@ type ServiceNode struct {
 	Name        string  `yaml:"name"`
 	Cluster     string  `yaml:"cluster"`
 	CPUCostMs   float64 `yaml:"cpu_cost_ms"`
-	Concurrency int     `yaml:"concurrency,omitempty"`
+	// Concurrency specifies the maximum number of concurrent requests for this service.
+	// A value of 0 means unlimited concurrency.
+	Concurrency int `yaml:"concurrency,omitempty"`
 }
 
 // ServiceEdge represents a dependency between services
