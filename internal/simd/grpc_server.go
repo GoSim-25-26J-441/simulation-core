@@ -10,11 +10,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// SimulationGRPCServer implements the gRPC SimulationServiceServer using a RunStore backend.
 type SimulationGRPCServer struct {
 	simulationv1.UnimplementedSimulationServiceServer
 	store *RunStore
 }
 
+// NewSimulationGRPCServer creates a new SimulationGRPCServer with the provided RunStore.
 func NewSimulationGRPCServer(store *RunStore) *SimulationGRPCServer {
 	return &SimulationGRPCServer{store: store}
 }
