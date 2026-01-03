@@ -152,7 +152,7 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 }
 
 // handleRequestComplete records metrics and handles downstream calls
-func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleRequestComplete(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in request complete event")
@@ -208,7 +208,7 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			// Schedule downstream call
 			// For MVP, we schedule it immediately after current request completes
 			eng.ScheduleAt(engine.EventTypeDownstreamCall, simTime, request, downstreamServiceID, map[string]interface{}{
-				"endpoint_path":    downstreamPath,
+				"endpoint_path":     downstreamPath,
 				"parent_request_id": request.ID,
 			})
 		}
@@ -345,4 +345,3 @@ func scheduleUniformArrivals(eng *engine.Engine, rng *utils.RandSource, startTim
 
 	return nil
 }
-

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -210,24 +211,34 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 		LatencyP50Ms:       engineMetrics.LatencyP50,
 		LatencyP95Ms:       engineMetrics.LatencyP95,
 		LatencyP99Ms:       engineMetrics.LatencyP99,
-		LatencyMeanMs:     engineMetrics.LatencyMean,
-		ThroughputRps:     engineMetrics.ThroughputRPS,
+		LatencyMeanMs:      engineMetrics.LatencyMean,
+		ThroughputRps:      engineMetrics.ThroughputRPS,
 	}
 
 	// Convert service metrics
 	if engineMetrics.ServiceMetrics != nil {
 		for serviceName, svcMetrics := range engineMetrics.ServiceMetrics {
+			// Safe conversion: ActiveReplicas is int, ensure it fits in int32
+			var activeReplicas int32
+			switch {
+			case svcMetrics.ActiveReplicas < 0:
+				activeReplicas = 0
+			case svcMetrics.ActiveReplicas > math.MaxInt32:
+				activeReplicas = math.MaxInt32
+			default:
+				activeReplicas = int32(svcMetrics.ActiveReplicas)
+			}
 			pbSvcMetrics := &simulationv1.ServiceMetrics{
 				ServiceName:       serviceName,
 				RequestCount:      svcMetrics.RequestCount,
 				ErrorCount:        svcMetrics.ErrorCount,
 				LatencyP50Ms:      svcMetrics.LatencyP50,
 				LatencyP95Ms:      svcMetrics.LatencyP95,
-				LatencyP99Ms:     svcMetrics.LatencyP99,
-				LatencyMeanMs:    svcMetrics.LatencyMean,
+				LatencyP99Ms:      svcMetrics.LatencyP99,
+				LatencyMeanMs:     svcMetrics.LatencyMean,
 				CpuUtilization:    svcMetrics.CPUUtilization,
 				MemoryUtilization: svcMetrics.MemoryUtilization,
-				ActiveReplicas:    int32(svcMetrics.ActiveReplicas),
+				ActiveReplicas:    activeReplicas,
 			}
 			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
 		}
@@ -235,4 +246,3 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 
 	return pbMetrics
 }
-
