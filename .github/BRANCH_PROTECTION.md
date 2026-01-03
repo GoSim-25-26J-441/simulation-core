@@ -27,9 +27,7 @@ To enable branch protection and require CI checks to pass before merging:
 - ✅ **Require status checks to pass before merging**
   - ✅ Require branches to be up to date before merging
   - **Select the following status checks:**
-    - `test (1.23)` - Tests on Go 1.23
-    - `test (1.24)` - Tests on Go 1.24
-    - `test (1.25)` - Tests on Go 1.25
+    - `test (1.25.x)` - Tests on Go 1.25.x
     - `lint` - Linting checks
     - `build` - Build verification
     - `status-check` - Overall status verification
@@ -54,7 +52,7 @@ Click **Create** or **Save changes** at the bottom of the page.
 
 The CI pipeline (`.github/workflows/pr-tests.yml`) runs the following checks on every PR:
 
-### Test Job (runs on 3 Go versions)
+### Test Job (runs on Go 1.25.x)
 - ✅ Code formatting check (`gofmt`)
 - ✅ Go vet static analysis
 - ✅ All tests with race detection
