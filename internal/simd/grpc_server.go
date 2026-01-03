@@ -48,13 +48,10 @@ func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.S
 	updated, err := s.executor.Start(req.RunId)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			return nil, status.Error(codes.NotFound, "run not found")
+			return nil, status.Error(codes.NotFound, err.Error())
 		}
 		if errors.Is(err, ErrRunTerminal) {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
-		}
-		if errors.Is(err, ErrRunIDMissing) {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -71,14 +68,11 @@ func (s *SimulationGRPCServer) StopRun(ctx context.Context, req *simulationv1.St
 	updated, err := s.executor.Stop(req.RunId)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) {
-			return nil, status.Error(codes.NotFound, "run not found")
-		}
-		if errors.Is(err, ErrRunIDMissing) {
-			return nil, status.Error(codes.InvalidArgument, err.Error())
+			return nil, status.Error(codes.NotFound, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}
-	logger.Info("run cancelled (executor)", "run_id", req.RunId)
+	logger.Info("run cancelled", "run_id", req.RunId)
 	return &simulationv1.StopRunResponse{Run: updated.Run}, nil
 }
 

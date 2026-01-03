@@ -8,7 +8,10 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
@@ -70,7 +73,7 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	e.cancels[runID] = cancel
 	e.mu.Unlock()
 
-	go e.runSkeleton(ctx, runID)
+	go e.runSimulation(ctx, runID)
 	return updated, nil
 }
 
@@ -105,32 +108,131 @@ func (e *RunExecutor) cleanup(runID string) {
 	e.mu.Unlock()
 }
 
-func (e *RunExecutor) runSkeleton(ctx context.Context, runID string) {
+func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	defer e.cleanup(runID)
 
-	// Milestone 2 placeholder: wait briefly, unless cancelled.
-	select {
-	case <-ctx.Done():
-		logger.Info("run cancelled (executor)", "run_id", runID)
+	// Get run record
+	rec, ok := e.store.Get(runID)
+	if !ok {
+		logger.Error("run not found", "run_id", runID)
 		return
-	case <-time.After(10 * time.Millisecond):
 	}
 
-	if err := e.store.SetMetrics(runID, &simulationv1.RunMetrics{
-		TotalRequests:      0,
-		SuccessfulRequests: 0,
-		FailedRequests:     0,
-		ThroughputRps:      0,
-	}); err != nil {
+	// Parse scenario YAML
+	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
+	if err != nil {
+		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
+	// Determine simulation duration
+	duration := time.Duration(rec.Input.DurationMs) * time.Millisecond
+	if duration <= 0 {
+		// Default duration if not specified
+		duration = 10 * time.Second
+	}
+
+	// Create engine
+	eng := engine.NewEngine(runID)
+
+	// Wire cancellation: when context is cancelled, stop the engine
+	go func() {
+		<-ctx.Done()
+		eng.Stop()
+	}()
+
+	// Create scenario state and register handlers
+	state := newScenarioState(scenario)
+	RegisterHandlers(eng, state)
+
+	// Schedule workload
+	if err := ScheduleWorkload(eng, scenario, duration); err != nil {
+		logger.Error("failed to schedule workload", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload scheduling failed: %v", err)); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
+	// Run simulation
+	logger.Info("starting simulation", "run_id", runID, "duration", duration)
+	if err := eng.Run(duration); err != nil {
+		// Check if it was cancelled
+		if ctx.Err() != nil {
+			logger.Info("simulation cancelled", "run_id", runID)
+			return
+		}
+		logger.Error("simulation failed", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
+	// Extract metrics from engine
+	rm := eng.GetRunManager()
+	engineMetrics := rm.GetRun().Metrics
+	if engineMetrics == nil {
+		// Engine didn't calculate metrics, create empty ones
+		engineMetrics = &models.RunMetrics{}
+	}
+
+	// Convert engine metrics to protobuf format
+	pbMetrics := convertMetricsToProto(engineMetrics)
+
+	// Store metrics
+	if err := e.store.SetMetrics(runID, pbMetrics); err != nil {
 		logger.Error("failed to set metrics", "run_id", runID, "error", err)
 	}
 
-	// Only mark completed if we haven't been cancelled already.
-	rec, ok := e.store.Get(runID)
+	// Mark as completed if still running
+	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
 		if _, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
-			logger.Error("failed to set status", "run_id", runID, "error", err)
+			logger.Error("failed to set completed status", "run_id", runID, "error", err)
+		} else {
+			logger.Info("run completed", "run_id", runID,
+				"total_requests", pbMetrics.TotalRequests,
+				"throughput_rps", pbMetrics.ThroughputRps)
 		}
-		logger.Info("run completed (executor skeleton)", "run_id", runID)
 	}
 }
+
+// convertMetricsToProto converts engine RunMetrics to protobuf RunMetrics
+func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMetrics {
+	pbMetrics := &simulationv1.RunMetrics{
+		TotalRequests:      engineMetrics.TotalRequests,
+		SuccessfulRequests: engineMetrics.SuccessfulRequests,
+		FailedRequests:     engineMetrics.FailedRequests,
+		LatencyP50Ms:       engineMetrics.LatencyP50,
+		LatencyP95Ms:       engineMetrics.LatencyP95,
+		LatencyP99Ms:       engineMetrics.LatencyP99,
+		LatencyMeanMs:     engineMetrics.LatencyMean,
+		ThroughputRps:     engineMetrics.ThroughputRPS,
+	}
+
+	// Convert service metrics
+	if engineMetrics.ServiceMetrics != nil {
+		for serviceName, svcMetrics := range engineMetrics.ServiceMetrics {
+			pbSvcMetrics := &simulationv1.ServiceMetrics{
+				ServiceName:       serviceName,
+				RequestCount:      svcMetrics.RequestCount,
+				ErrorCount:        svcMetrics.ErrorCount,
+				LatencyP50Ms:      svcMetrics.LatencyP50,
+				LatencyP95Ms:      svcMetrics.LatencyP95,
+				LatencyP99Ms:     svcMetrics.LatencyP99,
+				LatencyMeanMs:    svcMetrics.LatencyMean,
+				CpuUtilization:    svcMetrics.CPUUtilization,
+				MemoryUtilization: svcMetrics.MemoryUtilization,
+				ActiveReplicas:    int32(svcMetrics.ActiveReplicas),
+			}
+			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
+		}
+	}
+
+	return pbMetrics
+}
+

@@ -6,11 +6,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ParseConfigYAML parses a configuration from YAML bytes.
+// ParseConfigYAML parses a Config from YAML bytes and validates it.
+// This is used for APIs where config is provided as payload (not via filesystem).
 func ParseConfigYAML(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
+		return nil, fmt.Errorf("failed to parse config yaml: %w", err)
 	}
 
 	if err := validateConfig(&cfg); err != nil {
@@ -20,16 +21,17 @@ func ParseConfigYAML(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
-// ParseConfigYAMLString parses a configuration from a YAML string.
+// ParseConfigYAMLString parses a Config from a YAML string and validates it.
 func ParseConfigYAMLString(yamlText string) (*Config, error) {
 	return ParseConfigYAML([]byte(yamlText))
 }
 
-// ParseScenarioYAML parses a scenario from YAML bytes.
+// ParseScenarioYAML parses a Scenario from YAML bytes and validates it.
+// This is used for APIs where scenario is provided as payload (not via filesystem).
 func ParseScenarioYAML(data []byte) (*Scenario, error) {
 	var scenario Scenario
 	if err := yaml.Unmarshal(data, &scenario); err != nil {
-		return nil, fmt.Errorf("failed to parse scenario YAML: %w", err)
+		return nil, fmt.Errorf("failed to parse scenario yaml: %w", err)
 	}
 
 	if err := validateScenario(&scenario); err != nil {
@@ -39,7 +41,7 @@ func ParseScenarioYAML(data []byte) (*Scenario, error) {
 	return &scenario, nil
 }
 
-// ParseScenarioYAMLString parses a scenario from a YAML string.
+// ParseScenarioYAMLString parses a Scenario from a YAML string and validates it.
 func ParseScenarioYAMLString(yamlText string) (*Scenario, error) {
 	return ParseScenarioYAML([]byte(yamlText))
 }

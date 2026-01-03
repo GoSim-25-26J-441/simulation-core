@@ -3,8 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-
-	"gopkg.in/yaml.v3"
 )
 
 // LoadConfig loads and parses a configuration file
@@ -13,17 +11,11 @@ func LoadConfig(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := ParseConfigYAML(data)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 	}
-
-	if err := validateConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	return &cfg, nil
+	return cfg, nil
 }
 
 // LoadScenario loads and parses a scenario file
@@ -32,17 +24,11 @@ func LoadScenario(path string) (*Scenario, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read scenario file %s: %w", path, err)
 	}
-
-	var scenario Scenario
-	if err := yaml.Unmarshal(data, &scenario); err != nil {
+	scenario, err := ParseScenarioYAML(data)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse scenario file %s: %w", path, err)
 	}
-
-	if err := validateScenario(&scenario); err != nil {
-		return nil, fmt.Errorf("invalid scenario: %w", err)
-	}
-
-	return &scenario, nil
+	return scenario, nil
 }
 
 // validateConfig performs validation on the configuration
