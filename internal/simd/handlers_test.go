@@ -44,6 +44,9 @@ func TestParseWorkloadTarget(t *testing.T) {
 		{"valid with colon in path", "svc1:/api/v1/test", false, "svc1", "/api/v1/test"},
 		{"invalid no colon", "svc1", true, "", ""},
 		{"invalid empty", "", true, "", ""},
+		{"invalid empty service ID", ":path", true, "", ""},
+		{"invalid empty path", "service:", true, "", ""},
+		{"invalid both empty", ":", true, "", ""},
 	}
 
 	for _, tt := range tests {
