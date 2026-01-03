@@ -1,0 +1,185 @@
+syntax = "proto3";
+
+package simulation.v1;
+
+option go_package = "github.com/GoSim-25-26J-441/simulation-core/proto/simulation/v1;simulationv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+
+// SimulationService is the gRPC "CLI plane" API exposed by simd.
+//
+// The CLI (simulator-cli) talks to simd over gRPC for interactive management.
+// The backend can optionally also use this, but the orchestrator plane is HTTP.
+service SimulationService {
+  // CreateRun registers a run and stores its inputs (scenario/config).
+  rpc CreateRun(CreateRunRequest) returns (CreateRunResponse);
+
+  // StartRun starts executing a previously created run.
+  rpc StartRun(StartRunRequest) returns (StartRunResponse);
+
+  // StopRun requests a graceful stop/cancel of a running run.
+  rpc StopRun(StopRunRequest) returns (StopRunResponse);
+
+  // GetRun returns run status and summary metadata.
+  rpc GetRun(GetRunRequest) returns (GetRunResponse);
+
+  // ListRuns returns recent runs (best-effort; pagination optional).
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+
+  // GetRunMetrics returns aggregated metrics for a completed (or running) run.
+  rpc GetRunMetrics(GetRunMetricsRequest) returns (GetRunMetricsResponse);
+
+  // StreamRunEvents streams lifecycle events for a run (status/metrics snapshots).
+  rpc StreamRunEvents(StreamRunEventsRequest) returns (stream RunEvent);
+}
+
+// ---- Requests / responses
+
+message CreateRunRequest {
+  // Required.
+  RunInput input = 1;
+
+  // Optional. If set, server should use this as the run id (otherwise generate one).
+  string run_id = 2;
+}
+
+message CreateRunResponse {
+  Run run = 1;
+}
+
+message StartRunRequest {
+  string run_id = 1;
+}
+
+message StartRunResponse {
+  Run run = 1;
+}
+
+message StopRunRequest {
+  string run_id = 1;
+}
+
+message StopRunResponse {
+  Run run = 1;
+}
+
+message GetRunRequest {
+  string run_id = 1;
+}
+
+message GetRunResponse {
+  Run run = 1;
+}
+
+message ListRunsRequest {
+  int32 limit = 1; // default server-side
+}
+
+message ListRunsResponse {
+  repeated Run runs = 1;
+}
+
+message GetRunMetricsRequest {
+  string run_id = 1;
+}
+
+message GetRunMetricsResponse {
+  RunMetrics metrics = 1;
+}
+
+message StreamRunEventsRequest {
+  string run_id = 1;
+
+  // Optional: how often to emit metrics snapshots while running.
+  google.protobuf.duration metrics_interval = 2;
+}
+
+// ---- Core models
+
+message RunInput {
+  // One of the following inputs should be provided.
+
+  // Scenario YAML (the format used by config/scenario.yaml).
+  string scenario_yaml = 1;
+
+  // Optional additional config YAML (the format used by config/config.yaml).
+  string config_yaml = 2;
+
+  // Simulation duration override (if not provided, server uses scenario/config defaults).
+  google.protobuf.duration duration = 3;
+
+  // Deterministic seed (0 => server-generated).
+  int64 seed = 4;
+}
+
+message Run {
+  string id = 1;
+  RunStatus status = 2;
+
+  google.protobuf.timestamp created_at = 3;
+  google.protobuf.timestamp started_at = 4;
+  google.protobuf.timestamp ended_at = 5;
+
+  string error = 6;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_PENDING = 1;
+  RUN_STATUS_RUNNING = 2;
+  RUN_STATUS_COMPLETED = 3;
+  RUN_STATUS_FAILED = 4;
+  RUN_STATUS_CANCELLED = 5;
+}
+
+message RunMetrics {
+  int64 total_requests = 1;
+  int64 successful_requests = 2;
+  int64 failed_requests = 3;
+
+  double latency_p50_ms = 4;
+  double latency_p95_ms = 5;
+  double latency_p99_ms = 6;
+  double latency_mean_ms = 7;
+
+  double throughput_rps = 8;
+
+  repeated ServiceMetrics service_metrics = 9;
+}
+
+message ServiceMetrics {
+  string service_name = 1;
+  int64 request_count = 2;
+  int64 error_count = 3;
+
+  double latency_p50_ms = 4;
+  double latency_p95_ms = 5;
+  double latency_p99_ms = 6;
+  double latency_mean_ms = 7;
+
+  double cpu_utilization = 8;
+  double memory_utilization = 9;
+  int32 active_replicas = 10;
+}
+
+message RunEvent {
+  google.protobuf.timestamp at = 1;
+  string run_id = 2;
+
+  oneof event {
+    RunStatusChanged status_changed = 3;
+    MetricsSnapshot metrics_snapshot = 4;
+  }
+}
+
+message RunStatusChanged {
+  RunStatus previous = 1;
+  RunStatus current = 2;
+}
+
+message MetricsSnapshot {
+  RunMetrics metrics = 1;
+}
+
+

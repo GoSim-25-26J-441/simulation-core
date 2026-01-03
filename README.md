@@ -43,7 +43,10 @@ The engine is organized around a simulation orchestrator that drives:
 4. **Improvement** loop (multi-run optimization; hill-climbing).
 5. **Metrics** collection and export.
 
-Management is exposed via REST (and/or gRPC) to decouple clients (separate CLI, dashboards) from the core.
+Management is exposed via two planes:
+
+- **gRPC (CLI plane)**: interactive control from `simulator-cli` (default `:50051`)
+- **HTTP (orchestrator plane)**: backend-to-simd coordination across multiple simd containers (default `:8080`)
 
 ---
 
@@ -189,6 +192,39 @@ go mod tidy
 go build -o bin/simd ./cmd/simd
 ./bin/simd
 go test ./...
+```
+
+## API Contracts (Milestone 0)
+
+This repo defines the gRPC contract under `proto/` (see `proto/simulation/v1/simulation.proto`).
+
+### gRPC (CLI plane)
+
+- Default address: `localhost:50051`
+- Service: `simulation.v1.SimulationService`
+
+### HTTP (orchestrator plane)
+
+Intended minimal endpoints (to be implemented in `simd`):
+
+- `GET /healthz`
+- `POST /v1/runs`
+- `GET /v1/runs/{id}`
+- `POST /v1/runs/{id}:stop`
+- `GET /v1/runs/{id}/metrics`
+
+### Proto generation
+
+This repo uses [buf](https://buf.build/) for code generation.
+
+```bash
+./scripts/gen-proto.sh
+```
+
+On Windows (PowerShell):
+
+```powershell
+.\scripts\gen-proto.ps1
 ```
 
 ## Testing

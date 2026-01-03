@@ -43,3 +43,6 @@ coverage.out
 coverage
 coverage.html
 *.prof
+
+# Generated protobuf code (buf output)
+gen/

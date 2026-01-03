@@ -1,0 +1,10 @@
+version: v2
+
+# Buf config for proto definitions.
+#
+# We keep protos in this repo for now under ./proto.
+# If/when you split protos into a separate repo/module, this file can move with them.
+modules:
+  - path: proto
+
+
