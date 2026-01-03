@@ -48,6 +48,9 @@ func main() {
 		Addr:              httpAddr,
 		Handler:           simd.NewHTTPServer().Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Start servers.
