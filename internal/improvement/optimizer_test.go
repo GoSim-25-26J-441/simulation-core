@@ -93,16 +93,41 @@ func TestOptimizerGenerateNeighbors(t *testing.T) {
 		if neighbor == scenario {
 			t.Fatalf("neighbor %d should be a copy, not the same pointer", i)
 		}
-		// Check that at least one replica count changed
-		replicaChanged := false
+		// Check that at least something changed (replicas, resources, workload, or policies)
+		changed := false
+		// Check replica counts
 		for j := range scenario.Services {
 			if neighbor.Services[j].Replicas != scenario.Services[j].Replicas {
-				replicaChanged = true
+				changed = true
+				break
+			}
+			// Check CPU/memory resources
+			if neighbor.Services[j].CPUCores != scenario.Services[j].CPUCores ||
+				neighbor.Services[j].MemoryMB != scenario.Services[j].MemoryMB {
+				changed = true
 				break
 			}
 		}
-		if !replicaChanged {
-			t.Fatalf("neighbor %d should have different replica counts", i)
+		// Check workload
+		if len(neighbor.Workload) == len(scenario.Workload) {
+			for j := range scenario.Workload {
+				if neighbor.Workload[j].Arrival.RateRPS != scenario.Workload[j].Arrival.RateRPS {
+					changed = true
+					break
+				}
+			}
+		}
+		// Check policies
+		if neighbor.Policies != nil && scenario.Policies != nil {
+			if neighbor.Policies.Autoscaling != nil && scenario.Policies.Autoscaling != nil {
+				if neighbor.Policies.Autoscaling.TargetCPUUtil != scenario.Policies.Autoscaling.TargetCPUUtil ||
+					neighbor.Policies.Autoscaling.ScaleStep != scenario.Policies.Autoscaling.ScaleStep {
+					changed = true
+				}
+			}
+		}
+		if !changed {
+			t.Fatalf("neighbor %d should have at least one parameter changed", i)
 		}
 	}
 }
