@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/workload"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -19,17 +20,19 @@ type scenarioState struct {
 	services  map[string]*config.Service  // service ID -> service
 	endpoints map[string]*config.Endpoint // "serviceID:path" -> endpoint
 	rng       *utils.RandSource
-	rm        *resource.Manager // Resource manager for tracking CPU/memory/queueing
+	rm        *resource.Manager    // Resource manager for tracking CPU/memory/queueing
+	collector *metrics.Collector    // Metrics collector for time-series metrics
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
-func newScenarioState(scenario *config.Scenario, rm *resource.Manager) *scenarioState {
+func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector) *scenarioState {
 	state := &scenarioState{
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
 		endpoints: make(map[string]*config.Endpoint),
 		rng:       utils.NewRandSource(time.Now().UnixNano()),
 		rm:        rm,
+		collector: collector,
 	}
 
 	// Build service and endpoint maps
@@ -105,11 +108,17 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
 
+		// Record request arrival metric
+		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+		metrics.RecordRequestCount(state.collector, 1.0, simTime, labels)
+
 		// Select an instance for this service
 		instance, err := state.rm.SelectInstanceForService(serviceID)
 		if err != nil {
 			// No instances available, mark request as failed
 			request.Status = models.RequestStatusFailed
+			// Record error
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
 			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 		}
 
@@ -212,19 +221,33 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		request.Metadata["allocated_cpu_ms"] = cpuTimeMs
 		request.Metadata["allocated_memory_mb"] = memoryMB
 
-		// Total processing time = CPU time + network latency
-		// Add queueing delay if instance is heavily loaded
-		var processingTime time.Duration
+		// Record resource utilization metrics
 		instance, ok := state.rm.GetServiceInstance(instanceID)
 		if ok {
+			// Record CPU utilization
+			cpuUtil := instance.CPUUtilization()
+			instanceLabels := metrics.CreateInstanceLabels(serviceID, instanceID)
+			metrics.RecordCPUUtilization(state.collector, cpuUtil, simTime, instanceLabels)
+
+			// Record memory utilization
+			memUtil := instance.MemoryUtilization()
+			metrics.RecordMemoryUtilization(state.collector, memUtil, simTime, instanceLabels)
+
+			// Record queue length
 			queueLength := instance.QueueLength()
+			metrics.RecordQueueLength(state.collector, float64(queueLength), simTime, instanceLabels)
+
 			// Model queueing delay: each queued request adds 1ms delay
 			queueDelayMs := float64(queueLength) * 1.0
-			processingTime = time.Duration(cpuTimeMs+netLatencyMs+queueDelayMs) * time.Millisecond
 			request.Metadata["queue_delay_ms"] = queueDelayMs
-		} else {
-			processingTime = time.Duration(cpuTimeMs+netLatencyMs) * time.Millisecond
 		}
+
+		// Total processing time = CPU time + network latency + queue delay
+		var queueDelayMs float64
+		if qd, ok := request.Metadata["queue_delay_ms"].(float64); ok {
+			queueDelayMs = qd
+		}
+		processingTime := time.Duration(cpuTimeMs+netLatencyMs+queueDelayMs) * time.Millisecond
 
 		// Schedule completion
 		completionTime := simTime.Add(processingTime)
@@ -282,8 +305,12 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		request.CompletionTime = simTime
 		request.Duration = simTime.Sub(request.ArrivalTime)
 
-		// Record latency
+		// Record latency metric
 		totalLatencyMs := float64(request.Duration.Milliseconds())
+		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+		metrics.RecordLatency(state.collector, totalLatencyMs, simTime, labels)
+
+		// Also record in run manager for backward compatibility
 		rm.RecordLatency(totalLatencyMs)
 
 		// Find endpoint to check for downstream calls

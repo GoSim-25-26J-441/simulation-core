@@ -10,6 +10,7 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -156,8 +157,12 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		return
 	}
 
+	// Initialize metrics collector
+	metricsCollector := metrics.NewCollector()
+	metricsCollector.Start()
+
 	// Create scenario state and register handlers
-	state := newScenarioState(scenario, rm)
+	state := newScenarioState(scenario, rm, metricsCollector)
 	RegisterHandlers(eng, state)
 
 	// Schedule workload
@@ -184,13 +189,17 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		return
 	}
 
-	// Extract metrics from engine
-	runMgr := eng.GetRunManager()
-	engineMetrics := runMgr.GetRun().Metrics
-	if engineMetrics == nil {
-		// Engine didn't calculate metrics, create empty ones
-		engineMetrics = &models.RunMetrics{}
+	// Stop metrics collection
+	metricsCollector.Stop()
+
+	// Build service labels for metrics conversion
+	serviceLabels := make([]map[string]string, 0)
+	for _, svc := range scenario.Services {
+		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
+
+	// Convert metrics collector data to RunMetrics
+	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
 
 	// Convert engine metrics to protobuf format
 	pbMetrics := convertMetricsToProto(engineMetrics)

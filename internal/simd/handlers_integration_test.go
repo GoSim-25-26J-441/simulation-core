@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
@@ -32,7 +33,9 @@ func TestHandleRequestArrival(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create arrival event
@@ -77,7 +80,9 @@ func TestHandleRequestArrivalMissingData(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create arrival event with missing service_id
@@ -117,7 +122,9 @@ func TestHandleRequestStart(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create a request
@@ -196,7 +203,9 @@ func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create a request
@@ -255,7 +264,9 @@ func TestHandleDownstreamCall(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create parent request
@@ -362,7 +373,9 @@ func TestHandleRequestCompleteWithoutDownstream(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create a request
@@ -421,7 +434,9 @@ func TestHandleRequestCompleteWithNonExistentEndpoint(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create a request with endpoint that doesn't exist in state
@@ -471,7 +486,9 @@ func TestHandleDownstreamCallWithMissingEndpointPath(t *testing.T) {
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("failed to initialize resource manager: %v", err)
 	}
-	state := newScenarioState(scenario, rm)
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
 	RegisterHandlers(eng, state)
 
 	// Create parent request
