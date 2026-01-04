@@ -48,7 +48,7 @@ func (p *circuitBreakerPolicy) Name() string {
 	return "circuit_breaker"
 }
 
-func (p *circuitBreakerPolicy) AllowRequest(serviceID, endpointPath string) bool {
+func (p *circuitBreakerPolicy) AllowRequest(serviceID, endpointPath string, currentTime time.Time) bool {
 	if !p.enabled {
 		return true
 	}
@@ -63,7 +63,7 @@ func (p *circuitBreakerPolicy) AllowRequest(serviceID, endpointPath string) bool
 		if circuit, exists = p.circuits[key]; !exists {
 			circuit = &circuitState{
 				state:           CircuitStateClosed,
-				lastStateChange: time.Now(),
+				lastStateChange: currentTime,
 			}
 			p.circuits[key] = circuit
 		}
@@ -75,10 +75,10 @@ func (p *circuitBreakerPolicy) AllowRequest(serviceID, endpointPath string) bool
 
 	// Check if we should transition from open to half-open
 	if circuit.state == CircuitStateOpen {
-		if time.Since(circuit.lastStateChange) >= p.timeout {
+		if currentTime.Sub(circuit.lastStateChange) >= p.timeout {
 			circuit.state = CircuitStateHalfOpen
 			circuit.successCount = 0
-			circuit.lastStateChange = time.Now()
+			circuit.lastStateChange = currentTime
 		} else {
 			return false // Circuit is open, reject request
 		}
@@ -87,7 +87,7 @@ func (p *circuitBreakerPolicy) AllowRequest(serviceID, endpointPath string) bool
 	return true // Circuit is closed or half-open, allow request
 }
 
-func (p *circuitBreakerPolicy) RecordSuccess(serviceID, endpointPath string) {
+func (p *circuitBreakerPolicy) RecordSuccess(serviceID, endpointPath string, currentTime time.Time) {
 	if !p.enabled {
 		return
 	}
@@ -109,7 +109,7 @@ func (p *circuitBreakerPolicy) RecordSuccess(serviceID, endpointPath string) {
 		if circuit.successCount >= p.successThreshold {
 			circuit.state = CircuitStateClosed
 			circuit.failureCount = 0
-			circuit.lastStateChange = time.Now()
+			circuit.lastStateChange = currentTime
 		}
 	} else if circuit.state == CircuitStateClosed {
 		// Reset failure count on success
@@ -117,7 +117,7 @@ func (p *circuitBreakerPolicy) RecordSuccess(serviceID, endpointPath string) {
 	}
 }
 
-func (p *circuitBreakerPolicy) RecordFailure(serviceID, endpointPath string) {
+func (p *circuitBreakerPolicy) RecordFailure(serviceID, endpointPath string, currentTime time.Time) {
 	if !p.enabled {
 		return
 	}
@@ -132,7 +132,7 @@ func (p *circuitBreakerPolicy) RecordFailure(serviceID, endpointPath string) {
 		if circuit, exists = p.circuits[key]; !exists {
 			circuit = &circuitState{
 				state:           CircuitStateClosed,
-				lastStateChange: time.Now(),
+				lastStateChange: currentTime,
 			}
 			p.circuits[key] = circuit
 		}
@@ -143,23 +143,23 @@ func (p *circuitBreakerPolicy) RecordFailure(serviceID, endpointPath string) {
 	defer circuit.mu.Unlock()
 
 	circuit.failureCount++
-	circuit.lastFailureTime = time.Now()
+	circuit.lastFailureTime = currentTime
 
 	if circuit.state == CircuitStateHalfOpen {
 		// Any failure in half-open state immediately opens the circuit
 		circuit.state = CircuitStateOpen
 		circuit.successCount = 0
-		circuit.lastStateChange = time.Now()
+		circuit.lastStateChange = currentTime
 	} else if circuit.state == CircuitStateClosed {
 		// Check if we've exceeded the failure threshold
 		if circuit.failureCount >= p.failureThreshold {
 			circuit.state = CircuitStateOpen
-			circuit.lastStateChange = time.Now()
+			circuit.lastStateChange = currentTime
 		}
 	}
 }
 
-func (p *circuitBreakerPolicy) GetState(serviceID, endpointPath string) CircuitState {
+func (p *circuitBreakerPolicy) CheckAndGetState(serviceID, endpointPath string, currentTime time.Time) CircuitState {
 	if !p.enabled {
 		return CircuitStateClosed
 	}
@@ -178,10 +178,10 @@ func (p *circuitBreakerPolicy) GetState(serviceID, endpointPath string) CircuitS
 
 	// Check if we should transition from open to half-open
 	if circuit.state == CircuitStateOpen {
-		if time.Since(circuit.lastStateChange) >= p.timeout {
+		if currentTime.Sub(circuit.lastStateChange) >= p.timeout {
 			circuit.state = CircuitStateHalfOpen
 			circuit.successCount = 0
-			circuit.lastStateChange = time.Now()
+			circuit.lastStateChange = currentTime
 		}
 	}
 

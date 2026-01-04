@@ -30,8 +30,8 @@ type RateLimitingPolicy interface {
 	Policy
 	// AllowRequest checks if a request should be allowed based on rate limits
 	AllowRequest(serviceID, endpointPath string, requestTime time.Time) bool
-	// GetRemainingQuota returns the remaining quota for a service/endpoint
-	GetRemainingQuota(serviceID, endpointPath string) int
+	// GetRemainingQuota returns the remaining quota for a service/endpoint at the given time
+	GetRemainingQuota(serviceID, endpointPath string, currentTime time.Time) int
 }
 
 // RetryPolicy handles retry logic for failed requests
@@ -49,22 +49,22 @@ type RetryPolicy interface {
 type CircuitBreakerPolicy interface {
 	Policy
 	// AllowRequest checks if a request should be allowed (circuit not open)
-	AllowRequest(serviceID, endpointPath string) bool
+	AllowRequest(serviceID, endpointPath string, currentTime time.Time) bool
 	// RecordSuccess records a successful request
-	RecordSuccess(serviceID, endpointPath string)
+	RecordSuccess(serviceID, endpointPath string, currentTime time.Time)
 	// RecordFailure records a failed request
-	RecordFailure(serviceID, endpointPath string)
-	// GetState returns the current circuit breaker state
-	GetState(serviceID, endpointPath string) CircuitState
+	RecordFailure(serviceID, endpointPath string, currentTime time.Time)
+	// CheckAndGetState returns the current circuit breaker state and may transition from open to half-open if timeout has elapsed
+	CheckAndGetState(serviceID, endpointPath string, currentTime time.Time) CircuitState
 }
 
 // CircuitState represents the state of a circuit breaker
 type CircuitState string
 
 const (
-	CircuitStateClosed   CircuitState = "closed"   // Normal operation
-	CircuitStateOpen     CircuitState = "open"     // Failing, rejecting requests
-	CircuitStateHalfOpen CircuitState = "halfopen" // Testing if service recovered
+	CircuitStateClosed   CircuitState = "closed"    // Normal operation
+	CircuitStateOpen     CircuitState = "open"      // Failing, rejecting requests
+	CircuitStateHalfOpen CircuitState = "half-open" // Testing if service recovered
 )
 
 // Manager manages all active policies
@@ -86,7 +86,8 @@ func NewPolicyManager(policies *config.Policies) *Manager {
 		if policies.Retries != nil && policies.Retries.Enabled {
 			pm.retry = NewRetryPolicyFromConfig(policies.Retries)
 		}
-		// Rate limiting and circuit breaker will be added when config types are extended
+		// Rate limiting and circuit breaker policies are initialized programmatically
+		// until configuration types are extended to support them.
 	}
 
 	return pm
