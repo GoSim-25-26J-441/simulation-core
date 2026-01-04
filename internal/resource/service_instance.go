@@ -227,8 +227,6 @@ func (s *ServiceInstance) QueueLength() int {
 
 // HasCapacity checks if the instance has capacity for a new request
 func (s *ServiceInstance) HasCapacity() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	// If no CPU cores are allocated, this instance cannot process requests
 	if s.cpuCores <= 0 {
