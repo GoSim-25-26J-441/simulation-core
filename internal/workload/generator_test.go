@@ -144,8 +144,9 @@ func TestGeneratorBurstyArrivalsLongDuration(t *testing.T) {
 	g := NewGenerator(12345)
 
 	startTime := time.Now()
-	// Test with a longer duration that would have exceeded the old 100k iteration limit
-	endTime := startTime.Add(3600 * time.Second) // 1 hour simulation
+	// Test with a longer duration and very high burst rate to ensure the function
+	// can handle scenarios that would have exceeded the previous 100k iteration limit
+	endTime := startTime.Add(time.Hour) // 1 hour simulation
 
 	arrival := config.ArrivalSpec{
 		Type:                 "bursty",
@@ -166,7 +167,7 @@ func TestGeneratorBurstyArrivalsLongDuration(t *testing.T) {
 		t.Fatalf("expected events to be scheduled for long duration simulation")
 	}
 	// With 1 hour, bursts of 5s every 15s, and 1000 RPS during bursts,
-	// we should have many events (this would have exceeded 100k iterations previously)
+	// we should have many events scheduled successfully
 	t.Logf("Scheduled %d events for 1-hour simulation with high burst rate", queueSize)
 }
 
