@@ -402,9 +402,8 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		// Get downstream calls using interaction manager
 		downstreamCalls, err := state.interact.GetDownstreamCalls(serviceID, endpointPath)
 		if err != nil {
-			// Log error but don't fail the request
-			fmt.Printf("warning: failed to get downstream calls for %s:%s: %v\n", serviceID, endpointPath, err)
-			return nil
+			// Propagate error to ensure configuration/validation issues are not silently ignored
+			return fmt.Errorf("failed to get downstream calls for %s:%s: %w", serviceID, endpointPath, err)
 		}
 
 		// Schedule downstream calls
