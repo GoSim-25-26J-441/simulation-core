@@ -89,9 +89,9 @@ func (ws *WorkloadState) Stop() {
 
 // UpdateRate updates the rate for a specific workload pattern
 func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error {
-	ws.mu.Lock()
+	ws.mu.RLock()
 	patternState, ok := ws.patterns[patternKey]
-	ws.mu.Unlock()
+	ws.mu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("workload pattern not found: %s", patternKey)
@@ -116,9 +116,9 @@ func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error
 
 // UpdatePattern updates an entire workload pattern
 func (ws *WorkloadState) UpdatePattern(patternKey string, pattern config.WorkloadPattern) error {
-	ws.mu.Lock()
+	ws.mu.RLock()
 	patternState, ok := ws.patterns[patternKey]
-	ws.mu.Unlock()
+	ws.mu.RUnlock()
 
 	if !ok {
 		return fmt.Errorf("workload pattern not found: %s", patternKey)
