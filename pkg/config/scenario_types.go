@@ -23,11 +23,12 @@ type Service struct {
 
 // Endpoint represents a service endpoint
 type Endpoint struct {
-	Path         string           `yaml:"path"`
-	MeanCPUMs    float64          `yaml:"mean_cpu_ms"`
-	CPUSigmaMs   float64          `yaml:"cpu_sigma_ms"`
-	Downstream   []DownstreamCall `yaml:"downstream"`
-	NetLatencyMs LatencySpec      `yaml:"net_latency_ms"`
+	Path            string           `yaml:"path"`
+	MeanCPUMs       float64          `yaml:"mean_cpu_ms"`
+	CPUSigmaMs      float64          `yaml:"cpu_sigma_ms"`
+	DefaultMemoryMB float64          `yaml:"default_memory_mb,omitempty"` // Default memory usage in MB (optional, defaults to 10.0)
+	Downstream      []DownstreamCall `yaml:"downstream"`
+	NetLatencyMs    LatencySpec      `yaml:"net_latency_ms"`
 }
 
 // DownstreamCall represents a call to a downstream service
