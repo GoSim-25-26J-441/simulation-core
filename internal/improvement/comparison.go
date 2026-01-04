@@ -187,7 +187,8 @@ func CompareRunHistory(runs []*RunMetricsWithID, objective ObjectiveFunction) (*
 	variance := variance(scores, avgScore)
 
 	// Determine trend
-	trend := determineTrend(scores, objective.Direction())
+	// Note: scores are already normalized (negated for maximization), so we don't need direction
+	trend := determineTrend(scores)
 
 	return &RunHistoryComparison{
 		Runs:             runs,
@@ -201,7 +202,7 @@ func CompareRunHistory(runs []*RunMetricsWithID, objective ObjectiveFunction) (*
 
 // determineTrend analyzes the trend of scores over time
 // Note: scores are already normalized (negated for maximization), so lower is always better
-func determineTrend(scores []float64, minimize bool) string {
+func determineTrend(scores []float64) string {
 	if len(scores) < 2 {
 		return "stable"
 	}
