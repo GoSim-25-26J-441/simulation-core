@@ -55,7 +55,7 @@ func (s *NoImprovementStrategy) Name() string {
 	return "no_improvement"
 }
 
-func (s *NoImprovementStrategy) CheckConvergence(history []OptimizationStep) (bool, string) {
+func (s *NoImprovementStrategy) CheckConvergence(history []OptimizationStep) (converged bool, reason string) {
 	if len(history) < s.config.MinIterations {
 		return false, ""
 	}
@@ -102,7 +102,7 @@ func (s *PlateauStrategy) Name() string {
 	return "plateau"
 }
 
-func (s *PlateauStrategy) CheckConvergence(history []OptimizationStep) (bool, string) {
+func (s *PlateauStrategy) CheckConvergence(history []OptimizationStep) (converged bool, reason string) {
 	if len(history) < s.config.MinIterations {
 		return false, ""
 	}
@@ -133,24 +133,24 @@ func (s *PlateauStrategy) CheckConvergence(history []OptimizationStep) (bool, st
 	return false, ""
 }
 
-// ImprovementThresholdStrategy detects convergence when improvements are below threshold
-type ImprovementThresholdStrategy struct {
+// ThresholdStrategy detects convergence when improvements are below threshold
+type ThresholdStrategy struct {
 	config *ConvergenceConfig
 }
 
-// NewImprovementThresholdStrategy creates a new improvement threshold convergence strategy
-func NewImprovementThresholdStrategy(config *ConvergenceConfig) *ImprovementThresholdStrategy {
+// NewThresholdStrategy creates a new improvement threshold convergence strategy
+func NewThresholdStrategy(config *ConvergenceConfig) *ThresholdStrategy {
 	if config == nil {
 		config = DefaultConvergenceConfig()
 	}
-	return &ImprovementThresholdStrategy{config: config}
+	return &ThresholdStrategy{config: config}
 }
 
-func (s *ImprovementThresholdStrategy) Name() string {
+func (s *ThresholdStrategy) Name() string {
 	return "improvement_threshold"
 }
 
-func (s *ImprovementThresholdStrategy) CheckConvergence(history []OptimizationStep) (bool, string) {
+func (s *ThresholdStrategy) CheckConvergence(history []OptimizationStep) (converged bool, reason string) {
 	if len(history) < s.config.MinIterations+1 {
 		return false, ""
 	}
@@ -207,7 +207,7 @@ func NewCombinedStrategy(config *ConvergenceConfig) *CombinedStrategy {
 		strategies: []ConvergenceStrategy{
 			NewNoImprovementStrategy(config),
 			NewPlateauStrategy(config),
-			NewImprovementThresholdStrategy(config),
+			NewThresholdStrategy(config),
 		},
 		config: config,
 	}
@@ -217,7 +217,7 @@ func (s *CombinedStrategy) Name() string {
 	return "combined"
 }
 
-func (s *CombinedStrategy) CheckConvergence(history []OptimizationStep) (bool, string) {
+func (s *CombinedStrategy) CheckConvergence(history []OptimizationStep) (converged bool, reason string) {
 	// Check each strategy
 	for _, strategy := range s.strategies {
 		converged, reason := strategy.CheckConvergence(history)
@@ -251,7 +251,7 @@ func (s *VarianceStrategy) Name() string {
 	return "variance"
 }
 
-func (s *VarianceStrategy) CheckConvergence(history []OptimizationStep) (bool, string) {
+func (s *VarianceStrategy) CheckConvergence(history []OptimizationStep) (converged bool, reason string) {
 	if len(history) < s.config.MinIterations {
 		return false, ""
 	}

@@ -88,7 +88,7 @@ func TestImprovementThresholdStrategy(t *testing.T) {
 		ImprovementThreshold:    0.01, // 1%
 		MinIterations:           2,
 	}
-	strategy := NewImprovementThresholdStrategy(cfg)
+	strategy := NewThresholdStrategy(cfg)
 
 	// Test with improvements below threshold
 	history := []OptimizationStep{
@@ -192,8 +192,8 @@ func TestConvergenceStrategiesName(t *testing.T) {
 	if NewPlateauStrategy(cfg).Name() != "plateau" {
 		t.Fatalf("unexpected name for PlateauStrategy")
 	}
-	if NewImprovementThresholdStrategy(cfg).Name() != "improvement_threshold" {
-		t.Fatalf("unexpected name for ImprovementThresholdStrategy")
+	if NewThresholdStrategy(cfg).Name() != "improvement_threshold" {
+		t.Fatalf("unexpected name for ThresholdStrategy")
 	}
 	if NewCombinedStrategy(cfg).Name() != "combined" {
 		t.Fatalf("unexpected name for CombinedStrategy")
