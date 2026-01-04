@@ -952,10 +952,10 @@ func TestHTTPServerListRunsWithStatusFilter(t *testing.T) {
 	rec1, _ := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "test"})
 	store.SetStatus("run-1", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
 
-	rec2, _ := store.Create("run-2", &simulationv1.RunInput{ScenarioYaml: "test"})
+	_, _ = store.Create("run-2", &simulationv1.RunInput{ScenarioYaml: "test"})
 	store.SetStatus("run-2", simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
 
-	rec3, _ := store.Create("run-3", &simulationv1.RunInput{ScenarioYaml: "test"})
+	_, _ = store.Create("run-3", &simulationv1.RunInput{ScenarioYaml: "test"})
 	store.SetStatus("run-3", simulationv1.RunStatus_RUN_STATUS_PENDING, "")
 
 	// Test filter by COMPLETED
