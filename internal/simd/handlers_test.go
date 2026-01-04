@@ -233,7 +233,7 @@ func TestScheduleWorkloadInvalidTarget(t *testing.T) {
 		Workload: []config.WorkloadPattern{
 			{
 				From: "client",
-				To:   "invalid", // Missing colon
+				To:   "", // Empty target - should error
 				Arrival: config.ArrivalSpec{
 					Type:    "poisson",
 					RateRPS: 100, // Higher rate to ensure events are scheduled
