@@ -130,10 +130,10 @@ func TestCombinedStrategy(t *testing.T) {
 
 	// Test with plateau (should trigger convergence)
 	history := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 100.01, Config: &config.Scenario{}},
-		{Iteration: 2, Score: 100.005, Config: &config.Scenario{}},
-		{Iteration: 3, Score: 100.002, Config: &config.Scenario{}},
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 100.01, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 2, Score: 100.005, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 3, Score: 100.002, Config: &config.Scenario{Services: []config.Service{}}},
 	}
 
 	converged, reason := strategy.CheckConvergence(history)
