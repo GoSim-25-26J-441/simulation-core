@@ -246,4 +246,3 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 
 	return nil
 }
-

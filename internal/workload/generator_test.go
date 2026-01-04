@@ -179,4 +179,3 @@ func TestGeneratorDefaultToPoisson(t *testing.T) {
 		t.Fatalf("expected events to be scheduled with default poisson")
 	}
 }
-

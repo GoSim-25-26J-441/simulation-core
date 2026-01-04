@@ -19,9 +19,9 @@ type UserFlow struct {
 
 // FlowStep represents a single step in a user flow
 type FlowStep struct {
-	ServiceID  string
-	Endpoint   string
-	DelayMs    float64 // Delay before this step (relative to previous step)
+	ServiceID   string
+	Endpoint    string
+	DelayMs     float64 // Delay before this step (relative to previous step)
 	Probability float64 // Probability of taking this step (for branching)
 }
 
@@ -130,4 +130,3 @@ func (g *UserFlowGenerator) ScheduleUserFlows(eng *engine.Engine, startTime, end
 
 	return nil
 }
-

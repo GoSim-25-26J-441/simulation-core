@@ -122,4 +122,3 @@ func TestUserFlowGeneratorInvalidRate(t *testing.T) {
 		t.Fatalf("expected error for invalid rate")
 	}
 }
-
