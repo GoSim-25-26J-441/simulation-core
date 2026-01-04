@@ -635,7 +635,7 @@ func TestServiceInstanceMethods(t *testing.T) {
 
 func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	instance := NewServiceInstance("inst-1", "svc1", "host-1", 2.0, 1024.0)
-	
+
 	// Test 1: CPU utilization within the same time window
 	simTime := time.Now()
 	instance.AllocateCPU(1000.0, simTime) // 1000ms CPU time
@@ -644,7 +644,7 @@ func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	if util < 0.49 || util > 0.51 {
 		t.Fatalf("expected ~0.5 CPU utilization within window, got %f", util)
 	}
-	
+
 	// Test 2: CPU utilization decays when time moves past the window
 	// Move simulation time forward by more than 1 second (the window duration)
 	futureTime := simTime.Add(2 * time.Second)
@@ -657,7 +657,7 @@ func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	if decayedUtil > 0.001 {
 		t.Fatalf("expected near-0 CPU utilization after window expires, got %f", decayedUtil)
 	}
-	
+
 	// Test 3: New CPU allocation in a new time window
 	instance.AllocateCPU(500.0, futureTime) // 500ms CPU time in new window
 	util = instance.CPUUtilization()
@@ -666,7 +666,7 @@ func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	if util < expected-0.01 || util > expected+0.01 {
 		t.Fatalf("expected ~%.2f CPU utilization in new window, got %f", expected, util)
 	}
-	
+
 	// Test 4: Multiple allocations within the same window accumulate
 	instance2 := NewServiceInstance("inst-2", "svc2", "host-1", 4.0, 1024.0)
 	t1 := time.Now()

@@ -17,9 +17,9 @@ type Host struct {
 type Service struct {
 	ID        string     `yaml:"id"`
 	Replicas  int        `yaml:"replicas"`
-	Model     string     `yaml:"model"`         // cpu, mixed, db_latency
-	CPUCores  float64    `yaml:"cpu_cores,omitempty"`     // CPU cores per instance (optional, defaults to 1.0)
-	MemoryMB  float64    `yaml:"memory_mb,omitempty"`     // Memory in MB per instance (optional, defaults to 512.0)
+	Model     string     `yaml:"model"`               // cpu, mixed, db_latency
+	CPUCores  float64    `yaml:"cpu_cores,omitempty"` // CPU cores per instance (optional, defaults to 1.0)
+	MemoryMB  float64    `yaml:"memory_mb,omitempty"` // Memory in MB per instance (optional, defaults to 512.0)
 	Endpoints []Endpoint `yaml:"endpoints"`
 }
 
