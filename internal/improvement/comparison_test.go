@@ -1,6 +1,7 @@
 package improvement
 
 import (
+	"math"
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -69,7 +70,7 @@ func TestCompareMetrics(t *testing.T) {
 
 	// Check error rate improvement
 	expectedErrorRateDiff := (2.0 / 100.0) - (5.0 / 100.0) // -0.03
-	if comparison.ErrorRateDiff != expectedErrorRateDiff {
+	if math.Abs(comparison.ErrorRateDiff-expectedErrorRateDiff) > 0.0001 {
 		t.Fatalf("expected error rate diff %f, got %f", expectedErrorRateDiff, comparison.ErrorRateDiff)
 	}
 

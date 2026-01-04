@@ -182,11 +182,14 @@ func CompareRunHistory(runs []*RunMetricsWithID, objective ObjectiveFunction) (*
 			}
 		} else {
 			// Maximization: higher is better
-			if score > bestScore {
+			// Note: scores are already negated for maximization objectives
+			// So the most negative score (lowest) represents the highest value
+			// Therefore, we treat it as minimization (lower is better)
+			if score < bestScore {
 				bestScore = score
 				bestIdx = i
 			}
-			if score < worstScore {
+			if score > worstScore {
 				worstScore = score
 				worstIdx = i
 			}
@@ -229,8 +232,9 @@ func determineTrend(scores []float64, minimize bool) string {
 
 	slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
 
-	// For minimization, negative slope means improving
-	// For maximization, positive slope means improving
+	// For minimization, negative slope means improving (scores decreasing)
+	// For maximization, scores are negated, so negative slope also means improving
+	// (actual values increasing, but negated scores decreasing)
 	if minimize {
 		if slope < -0.01 {
 			return "improving"
@@ -239,10 +243,11 @@ func determineTrend(scores []float64, minimize bool) string {
 			return "degrading"
 		}
 	} else {
-		if slope > 0.01 {
+		// For maximization with negated scores, negative slope means improving
+		if slope < -0.01 {
 			return "improving"
 		}
-		if slope < -0.01 {
+		if slope > 0.01 {
 			return "degrading"
 		}
 	}
