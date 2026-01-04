@@ -144,12 +144,12 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected request to exist")
 	}
-	
+
 	// Verify request was marked as failed
 	if req.Status != models.RequestStatusFailed {
 		t.Errorf("expected request status to be Failed, got %v", req.Status)
 	}
-	
+
 	// Verify error metrics were recorded
 	collector.Stop()
 	// Get error count from time series
@@ -217,12 +217,12 @@ func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected request to exist")
 	}
-	
+
 	// Verify request was marked as failed
 	if req.Status != models.RequestStatusFailed {
 		t.Errorf("expected request status to be Failed, got %v", req.Status)
 	}
-	
+
 	// Verify error metrics were recorded
 	collector.Stop()
 	// Get error count from time series
