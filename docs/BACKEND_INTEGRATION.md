@@ -1209,3 +1209,20 @@ For issues or questions:
 3. Check API documentation above
 4. Review error responses for detailed error messages
 
+---
+
+## Important Limitations
+
+### Dynamic Configuration and Request Rates
+
+⚠️ **The simulator does NOT currently support:**
+- Dynamic configuration changes during simulation execution
+- Real-time request rate adjustments (e.g., via frontend slider)
+- Modifying workload patterns after a run starts
+
+**Why**: All arrival events are pre-scheduled at the beginning of the simulation based on the scenario YAML. The event queue is fixed once execution starts.
+
+**Workaround**: Create multiple runs with different configurations/rates and compare results.
+
+**For details**: See [Dynamic Configuration Guide](./DYNAMIC_CONFIGURATION.md)
+
