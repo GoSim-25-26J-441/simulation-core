@@ -143,4 +143,3 @@ func TestHTTPServerWriteJSON(t *testing.T) {
 		t.Fatalf("expected key 'value', got %s", body["key"])
 	}
 }
-

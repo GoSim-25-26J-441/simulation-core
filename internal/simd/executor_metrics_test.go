@@ -132,7 +132,7 @@ services:
 	}
 
 	exec := NewRunExecutor(store)
-	rec, err := exec.Start("run-1")
+	_, err := exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start should not error immediately: %v", err)
 	}
@@ -200,4 +200,3 @@ workload:
 		t.Fatalf("expected metrics to exist")
 	}
 }
-

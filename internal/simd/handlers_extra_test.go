@@ -195,8 +195,8 @@ func TestHandleRequestCompleteWithQueueProcessing(t *testing.T) {
 		ArrivalTime: eng.GetSimTime(),
 		StartTime:   eng.GetSimTime(),
 		Metadata: map[string]interface{}{
-			"instance_id":        instance.ID(),
-			"allocated_cpu_ms":   5.0,
+			"instance_id":         instance.ID(),
+			"allocated_cpu_ms":    5.0,
 			"allocated_memory_mb": 10.0,
 		},
 	}
@@ -354,4 +354,3 @@ func TestScheduleWorkloadWithConstantDistribution(t *testing.T) {
 		t.Logf("expected around 4 events for constant rate, got %d", queueSize)
 	}
 }
-
