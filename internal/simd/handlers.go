@@ -263,8 +263,15 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			//
 			// For more accurate modeling, consider implementing a detailed queueing theory model
 			// (e.g., M/M/1, M/G/1) with actual service time distributions.
-			meanServiceTimeMs := endpoint.MeanCPUMs + endpoint.NetLatencyMs.Mean
-			queueDelayMs := float64(queueLength) * meanServiceTimeMs
+			queueDelayMs := 0.0
+			if queueLength > 0 {
+				meanServiceTimeMs := endpoint.MeanCPUMs + endpoint.NetLatencyMs.Mean
+				// Ensure non-negative service time
+				if meanServiceTimeMs < 0 {
+					meanServiceTimeMs = 0
+				}
+				queueDelayMs = float64(queueLength) * meanServiceTimeMs
+			}
 			request.Metadata["queue_delay_ms"] = queueDelayMs
 		}
 
