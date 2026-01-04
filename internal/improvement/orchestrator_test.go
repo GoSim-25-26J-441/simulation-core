@@ -1,9 +1,7 @@
 package improvement
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/simd"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
