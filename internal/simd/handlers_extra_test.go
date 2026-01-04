@@ -152,9 +152,10 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 	
 	// Verify error metrics were recorded
 	collector.Stop()
-	metrics := collector.ExportToRunMetrics()
-	if metrics.ErrorCount == 0 {
-		t.Error("expected error count to be greater than 0")
+	// Get error count from time series
+	errorMetrics := collector.GetTimeSeries("request_error_count", nil)
+	if len(errorMetrics) == 0 {
+		t.Error("expected error metrics to be recorded")
 	}
 }
 
@@ -224,9 +225,10 @@ func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
 	
 	// Verify error metrics were recorded
 	collector.Stop()
-	metrics := collector.ExportToRunMetrics()
-	if metrics.ErrorCount == 0 {
-		t.Error("expected error count to be greater than 0")
+	// Get error count from time series
+	errorMetrics := collector.GetTimeSeries("request_error_count", nil)
+	if len(errorMetrics) == 0 {
+		t.Error("expected error metrics to be recorded")
 	}
 }
 
