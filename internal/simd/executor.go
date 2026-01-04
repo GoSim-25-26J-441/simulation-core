@@ -25,8 +25,8 @@ import (
 type RunExecutor struct {
 	store *RunStore
 
-	mu            sync.Mutex
-	cancels       map[string]context.CancelFunc
+	mu             sync.Mutex
+	cancels        map[string]context.CancelFunc
 	workloadStates map[string]*WorkloadState // key: runID
 }
 
@@ -38,8 +38,8 @@ var (
 
 func NewRunExecutor(store *RunStore) *RunExecutor {
 	return &RunExecutor{
-		store:         store,
-		cancels:       make(map[string]context.CancelFunc),
+		store:          store,
+		cancels:        make(map[string]context.CancelFunc),
 		workloadStates: make(map[string]*WorkloadState),
 	}
 }

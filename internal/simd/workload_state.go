@@ -67,12 +67,12 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time) e
 		// Calculate first event time immediately to start generating events
 		firstEventTime := ws.calculateNextArrivalTime(workloadPattern.Arrival, startTime)
 		ws.patterns[patternKey] = &WorkloadPatternState{
-			Pattern:      workloadPattern,
-			ServiceID:    serviceID,
-			EndpointPath: endpointPath,
+			Pattern:       workloadPattern,
+			ServiceID:     serviceID,
+			EndpointPath:  endpointPath,
 			LastEventTime: startTime,
 			NextEventTime: firstEventTime,
-			Active:       true,
+			Active:        true,
 		}
 	}
 
@@ -318,4 +318,3 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 	}
 }
-

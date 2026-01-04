@@ -46,10 +46,10 @@ workload:
 	// Try to update immediately - discrete-event simulations can complete very quickly
 	// We'll attempt the update and handle the case where simulation has already completed
 	patternKey := patternKey("client", "svc1:/test")
-	
+
 	// Small delay to let workload state initialize
 	time.Sleep(5 * time.Millisecond)
-	
+
 	// Attempt update - if simulation completed, this will fail with "run not found"
 	err = exec.UpdateWorkloadRate("run-1", patternKey, 50.0)
 	if err != nil {
@@ -169,4 +169,3 @@ workload:
 	// Wait for completion
 	time.Sleep(6 * time.Second)
 }
-

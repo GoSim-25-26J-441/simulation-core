@@ -56,4 +56,3 @@ func (e *RunExecutor) GetWorkloadPattern(runID string, patternKey string) (*Work
 
 	return workloadState.GetPattern(patternKey)
 }
-
