@@ -14,12 +14,13 @@ import (
 
 // Orchestrator manages multi-run optimization experiments
 type Orchestrator struct {
-	store      *simd.RunStore
-	executor   *simd.RunExecutor
-	optimizer  *Optimizer
-	objective  ObjectiveFunction
-	mu         sync.RWMutex
-	activeRuns map[string]*RunContext
+	store           *simd.RunStore
+	executor        *simd.RunExecutor
+	optimizer       *Optimizer
+	objective       ObjectiveFunction
+	mu              sync.RWMutex
+	activeRuns      map[string]*RunContext
+	maxParallelRuns int // Maximum number of parallel runs
 }
 
 // RunContext tracks the context for a single optimization run
@@ -61,12 +62,22 @@ type ExperimentResult struct {
 // NewOrchestrator creates a new optimization orchestrator
 func NewOrchestrator(store *simd.RunStore, executor *simd.RunExecutor, optimizer *Optimizer, objective ObjectiveFunction) *Orchestrator {
 	return &Orchestrator{
-		store:      store,
-		executor:   executor,
-		optimizer:  optimizer,
-		objective:  objective,
-		activeRuns: make(map[string]*RunContext),
+		store:           store,
+		executor:        executor,
+		optimizer:       optimizer,
+		objective:       objective,
+		activeRuns:      make(map[string]*RunContext),
+		maxParallelRuns: 1, // Default to sequential execution
 	}
+}
+
+// WithMaxParallelRuns sets the maximum number of parallel runs
+func (o *Orchestrator) WithMaxParallelRuns(max int) *Orchestrator {
+	if max < 1 {
+		max = 1
+	}
+	o.maxParallelRuns = max
+	return o
 }
 
 // RunExperiment executes a full optimization experiment
@@ -81,6 +92,7 @@ func (o *Orchestrator) RunExperiment(ctx context.Context, initialConfig *config.
 	}
 
 	// Create evaluation function that runs a simulation and returns the score
+	// This function can be called in parallel by the optimizer
 	evaluateFunc := func(scenario *config.Scenario) (float64, error) {
 		return o.evaluateConfiguration(ctx, scenario, durationMs)
 	}
@@ -141,8 +153,8 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 		Seed:         0, // Use random seed for each run
 	}
 
-	// Generate run ID
-	runID := fmt.Sprintf("opt-%d", time.Now().UnixNano())
+	// Generate unique run ID (include goroutine ID for better uniqueness in parallel execution)
+	runID := fmt.Sprintf("opt-%d-%d", time.Now().UnixNano(), time.Now().Unix())
 
 	// Create run
 	_, err = o.store.Create(runID, runInput)
