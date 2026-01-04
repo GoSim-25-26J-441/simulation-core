@@ -7,14 +7,16 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
 	"google.golang.org/protobuf/proto"
 )
 
 type RunRecord struct {
-	Run     *simulationv1.Run
-	Input   *simulationv1.RunInput
-	Metrics *simulationv1.RunMetrics
+	Run       *simulationv1.Run
+	Input     *simulationv1.RunInput
+	Metrics   *simulationv1.RunMetrics
+	Collector *metrics.Collector
 }
 
 type RunStore struct {
@@ -127,6 +129,31 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	return nil
 }
 
+// SetCollector stores a metrics collector reference for a run
+func (s *RunStore) SetCollector(runID string, collector *metrics.Collector) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	rec.Collector = collector
+	return nil
+}
+
+// GetCollector retrieves the metrics collector for a run
+func (s *RunStore) GetCollector(runID string) (*metrics.Collector, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.runs[runID]
+	if !ok || rec.Collector == nil {
+		return nil, false
+	}
+	return rec.Collector, true
+}
+
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -138,10 +165,12 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 	if rec == nil {
 		return nil
 	}
+	// Note: Collector is not cloned as it's a reference that should be shared
 	return &RunRecord{
-		Run:     cloneRun(rec.Run),
-		Input:   cloneRunInput(rec.Input),
-		Metrics: cloneRunMetrics(rec.Metrics),
+		Run:       cloneRun(rec.Run),
+		Input:     cloneRunInput(rec.Input),
+		Metrics:   cloneRunMetrics(rec.Metrics),
+		Collector: rec.Collector,
 	}
 }
 

@@ -162,6 +162,12 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	metricsCollector := metrics.NewCollector()
 	metricsCollector.Start()
 
+	// Store collector reference for later access
+	if err := e.store.SetCollector(runID, metricsCollector); err != nil {
+		logger.Error("failed to store collector", "run_id", runID, "error", err)
+		// Continue anyway, as this is not critical for simulation execution
+	}
+
 	// Initialize policy manager from scenario
 	var policies *policy.Manager
 	if scenario.Policies != nil {
