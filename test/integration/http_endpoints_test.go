@@ -41,13 +41,11 @@ func TestIntegration_HTTPEndpoints_ListRuns(t *testing.T) {
 	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store))
 
 	// Create multiple runs
-	runIDs := make([]string, 0, 5)
 	for i := 0; i < 5; i++ {
 		rec, err := store.Create("", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
 		if err != nil {
 			t.Fatalf("Create error: %v", err)
 		}
-		runIDs = append(runIDs, rec.Run.Id)
 
 		// Set different statuses
 		switch i % 3 {
