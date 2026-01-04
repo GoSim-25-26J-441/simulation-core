@@ -143,6 +143,24 @@ docker run -p 50051:50051 -p 8080:8080 simulation-core:latest \
   -log-level info
 ```
 
+#### Docker Compose (Local Development)
+
+```bash
+# From project root
+cd deployments/docker
+
+# Start single instance
+docker-compose up --build
+
+# Start multiple instances (for testing concurrent runs)
+docker-compose up --scale simd-instance=3
+
+# Development mode (debug logging, source mounting)
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+See `deployments/docker/README.md` for detailed usage instructions.
+
 You should see startup logs indicating the configuration and that the simulation loop is ready.
 
 
