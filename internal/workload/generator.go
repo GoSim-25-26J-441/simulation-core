@@ -114,11 +114,13 @@ func (g *Generator) scheduleNormalArrivals(eng *engine.Engine, startTime, endTim
 
 	currentTime := startTime
 	meanInterArrivalSeconds := 1.0 / meanRateRPS
+	// Convert rate standard deviation (requests/second) to inter-arrival-time stddev (seconds/request)
+	stddevInterArrivalSeconds := stddevRPS / (meanRateRPS * meanRateRPS)
 
 	for currentTime.Before(endTime) {
 		// Generate inter-arrival time using normal distribution
 		// Clamp to ensure positive values
-		interArrivalSeconds := g.rng.NormFloat64(meanInterArrivalSeconds, stddevRPS/meanRateRPS)
+		interArrivalSeconds := g.rng.NormFloat64(meanInterArrivalSeconds, stddevInterArrivalSeconds)
 		if interArrivalSeconds < 0.001 { // Minimum 1ms
 			interArrivalSeconds = 0.001
 		}
