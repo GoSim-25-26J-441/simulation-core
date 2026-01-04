@@ -186,14 +186,14 @@ func TestCostObjective(t *testing.T) {
 	metrics := &simulationv1.RunMetrics{
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{
-				CpuUtilization:  0.5,
+				CpuUtilization:    0.5,
 				MemoryUtilization: 0.3,
-				ActiveReplicas: 2,
+				ActiveReplicas:    2,
 			},
 			{
-				CpuUtilization:  0.7,
+				CpuUtilization:    0.7,
 				MemoryUtilization: 0.4,
-				ActiveReplicas: 3,
+				ActiveReplicas:    3,
 			},
 		},
 	}
@@ -220,4 +220,3 @@ func TestCostObjective(t *testing.T) {
 		t.Fatalf("expected score 0 for no services, got %f", score)
 	}
 }
-
