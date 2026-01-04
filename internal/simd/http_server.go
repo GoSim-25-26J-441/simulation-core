@@ -327,8 +327,8 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 		}
 	}
 	// Validate time range when both bounds are provided
-	if !startTime.IsZero() && !endTime.IsZero() && !endTime.After(startTime) {
-		s.writeError(w, http.StatusBadRequest, "end_time must be after start_time")
+	if !startTime.IsZero() && !endTime.IsZero() && endTime.Before(startTime) {
+		s.writeError(w, http.StatusBadRequest, "end_time must not be before start_time")
 		return
 	}
 
@@ -608,7 +608,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 
 			// Send time-series metric updates if collector is available
 			// Re-check for a collector in case it became available after the stream started
-			if !hasCollector || collector == nil {
+			if !hasCollector {
 				if c, ok := s.store.GetCollector(runID); ok {
 					collector = c
 					hasCollector = true
