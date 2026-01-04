@@ -700,7 +700,7 @@ func TestHTTPServerExportRun(t *testing.T) {
 		TotalRequests:      100,
 		SuccessfulRequests: 95,
 		FailedRequests:     5,
-		LatencyP95Ms:      150.5,
+		LatencyP95Ms:       150.5,
 		ThroughputRps:      10.0,
 	}
 	if err := store.SetMetrics(rec.Run.Id, pbMetrics); err != nil {
