@@ -45,12 +45,12 @@ func (cs *CallSemantics) Mode() CallMode {
 
 // CallContext represents the context of a downstream call
 type CallContext struct {
-	ParentRequest   *models.Request
-	DownstreamCall  ResolvedCall
-	CallTime        time.Time
-	Semantics       *CallSemantics
-	CompletionTime  time.Time // For sync calls, when the downstream call completes
-	Blocking        bool      // Whether this call blocks the parent request
+	ParentRequest  *models.Request
+	DownstreamCall ResolvedCall
+	CallTime       time.Time
+	Semantics      *CallSemantics
+	CompletionTime time.Time // For sync calls, when the downstream call completes
+	Blocking       bool      // Whether this call blocks the parent request
 }
 
 // NewCallContext creates a new call context
@@ -76,4 +76,3 @@ func (cc *CallContext) Duration() time.Duration {
 	}
 	return cc.CompletionTime.Sub(cc.CallTime)
 }
-

@@ -167,4 +167,3 @@ func TestManagerValidateEndpoint(t *testing.T) {
 		t.Fatalf("expected error for nonexistent endpoint")
 	}
 }
-

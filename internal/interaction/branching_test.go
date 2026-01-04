@@ -62,7 +62,7 @@ func TestDefaultBranchingStrategyWithFractionalMean(t *testing.T) {
 
 func TestProbabilisticBranchingStrategy(t *testing.T) {
 	probabilities := map[string]float64{
-		"svc1:/api": 0.8,
+		"svc1:/api":  0.8,
 		"svc2:/test": 0.3,
 	}
 
@@ -92,4 +92,3 @@ func TestProbabilisticBranchingStrategy(t *testing.T) {
 		t.Fatalf("expected at most %d selected calls, got %d", len(calls), len(selected))
 	}
 }
-

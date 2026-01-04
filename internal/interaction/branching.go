@@ -86,4 +86,3 @@ func (s *ProbabilisticBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *
 
 	return selected
 }
-
