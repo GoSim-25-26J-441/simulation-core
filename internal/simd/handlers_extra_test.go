@@ -6,6 +6,7 @@ import (
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
@@ -37,7 +38,7 @@ func TestHandleRequestArrivalWithQueueing(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector)
+	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
 	RegisterHandlers(eng, state)
 
 	// Get instance and fill it to capacity
@@ -99,7 +100,7 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector)
+	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
 	RegisterHandlers(eng, state)
 
 	// Create a request
@@ -187,7 +188,7 @@ func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector)
+	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
 	RegisterHandlers(eng, state)
 
 	// Create a request with an invalid instance ID to force CPU allocation failure
@@ -275,7 +276,7 @@ func TestHandleRequestCompleteWithQueueProcessing(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector)
+	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
 	RegisterHandlers(eng, state)
 
 	// Get instance

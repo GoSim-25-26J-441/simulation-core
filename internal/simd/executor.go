@@ -11,6 +11,7 @@ import (
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -161,8 +162,21 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	metricsCollector := metrics.NewCollector()
 	metricsCollector.Start()
 
+	// Initialize policy manager from scenario
+	var policies *policy.Manager
+	if scenario.Policies != nil {
+		// Convert scenario.Policies to config.Policies for PolicyManager
+		configPolicies := &config.Policies{
+			Autoscaling: scenario.Policies.Autoscaling,
+			Retries:     scenario.Policies.Retries,
+		}
+		policies = policy.NewPolicyManager(configPolicies)
+	} else {
+		policies = policy.NewPolicyManager(nil)
+	}
+
 	// Create scenario state and register handlers
-	state := newScenarioState(scenario, rm, metricsCollector)
+	state := newScenarioState(scenario, rm, metricsCollector, policies)
 	RegisterHandlers(eng, state)
 
 	// Schedule workload

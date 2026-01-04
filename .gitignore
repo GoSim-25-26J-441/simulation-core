@@ -54,6 +54,15 @@ coverage_heuristic
 coverage_heuristic_optimization
 coverage_heuristic_optimization_bottleneck
 coverage_heuristic_optimization_deterministic
+coverage_policy
+coverage_policy_rate_limiting
+coverage_policy_circuit_breaker
+coverage_policy_retry
+coverage_policy_autoscaling
+coverage_policy_optimization
+coverage_policy_bottleneck
+coverage_policy_deterministic
+coverage_policy_heuristic
 
 # Generated protobuf code (buf output)
 gen/

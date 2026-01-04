@@ -41,7 +41,11 @@ It predicts latency, throughput, and resource utilization under configurable wor
   - Request latency, count, error tracking
   - CPU/memory utilization and queue length metrics
   - Automatic conversion to run metrics format
-- **Policy sandbox**: Auto-scaling strategies, rate limiting, retries, circuit breaking (planned).
+- **Policy sandbox**: 
+  - **Rate limiting**: Token bucket algorithm for per-service/per-endpoint request rate limiting
+  - **Circuit breaker**: Failure threshold-based circuit breaking with half-open state recovery
+  - **Retry policy**: Configurable retry logic with exponential, linear, or constant backoff
+  - **Autoscaling**: CPU-based scaling with scale up/down logic and hysteresis (implementation complete, integration pending)
 - **Optimization loop**: Heuristic hill-climbing for parameter tuning across runs (planned).
 - **Multi-cluster support**: Separate latency/capacity models and cross-cluster links (planned).
 - **API surface**: gRPC and HTTP APIs for external clients (CLI, UI, CI).
@@ -197,7 +201,133 @@ optimization:
   max_iterations: 20
 ```
 
+### Scenario Configuration
 
+Simulation runs are defined using scenario YAML files. Example `scenario.yaml`:
+
+```yaml
+hosts:
+  - id: host-1
+    cores: 4
+  - id: host-2
+    cores: 8
+
+services:
+  - id: auth
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 512
+    endpoints:
+      - path: /auth/login
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        net_latency_ms:
+          mean: 1
+          sigma: 0.5
+        default_memory_mb: 20
+
+workload:
+  - from: client
+    to: auth:/auth/login
+    arrival:
+      type: poisson
+      rate_rps: 100
+
+policies:
+  autoscaling:
+    enabled: true
+    target_cpu_util: 0.7
+    scale_step: 1
+  retries:
+    enabled: true
+    max_retries: 3
+    backoff: exponential
+    base_ms: 10
+```
+
+### Policy Configuration
+
+The simulation engine supports several policies for controlling request behavior and resource management:
+
+#### Rate Limiting
+
+Rate limiting uses a token bucket algorithm to control request rates per service/endpoint. Currently integrated into the simulation handlers to reject requests that exceed the configured rate limit.
+
+**Status**: ✅ Implemented (programmatic initialization only)
+
+**How it works**:
+- Token bucket algorithm with configurable rate limit per second
+- Per-service/per-endpoint rate limiting
+- Requests exceeding the rate limit are rejected immediately
+
+**Configuration**: Currently programmatic initialization only. YAML configuration support is planned.
+
+#### Circuit Breaker
+
+Circuit breaker pattern prevents cascading failures by opening the circuit when failure thresholds are exceeded.
+
+**Status**: ✅ Implemented (programmatic initialization only)
+
+**How it works**:
+- **Closed state**: Normal operation, requests are allowed
+- **Open state**: Circuit is open, requests are rejected immediately
+- **Half-open state**: Testing if service has recovered, allows limited requests
+- Automatically transitions based on failure/success thresholds and timeout
+- Per-service/per-endpoint circuit state tracking
+
+**Configuration** (programmatic initialization only, YAML support planned):
+- `failureThreshold`: Number of failures before opening circuit
+- `successThreshold`: Number of successes needed in half-open to close
+- `timeout`: Duration circuit stays open before transitioning to half-open
+
+**Integration**: Circuit breaker checks occur in `RequestArrival` handler. Failure events are recorded in `RequestStart` handler when resource allocation fails. Success recording is not yet implemented.
+
+#### Retry Policy
+
+Retry policy handles automatic retries for failed requests with configurable backoff strategies.
+
+**Status**: ✅ Implemented (integration pending)
+
+**Configuration**:
+```yaml
+policies:
+  retries:
+    enabled: true
+    max_retries: 3        # Maximum number of retry attempts
+    backoff: exponential  # Backoff type: exponential, linear, or constant
+    base_ms: 10           # Base delay in milliseconds
+```
+
+**Backoff types**:
+- **exponential**: Delay = `base_ms * 2^(attempt-1)`
+- **linear**: Delay = `base_ms * attempt`
+- **constant**: Delay = `base_ms` (same for all attempts)
+
+**Note**: Retry policy is implemented but not yet integrated into request handlers. Integration will require tracking retry attempts and scheduling retry events with backoff delays.
+
+#### Autoscaling Policy
+
+Autoscaling policy enables CPU-based automatic scaling of service instances.
+
+**Status**: ✅ Implemented (integration pending)
+
+**Configuration**:
+```yaml
+policies:
+  autoscaling:
+    enabled: true
+    target_cpu_util: 0.7  # Target CPU utilization (0.0 to 1.0)
+    scale_step: 1         # Number of replicas to add/remove per scaling action
+```
+
+**How it works**:
+- Monitors average CPU utilization across service instances
+- Scales up when CPU utilization exceeds target
+- Scales down when CPU utilization is below target (with hysteresis)
+- Uses scale step to incrementally adjust replica count
+
+**Note**: Autoscaling policy is implemented but requires integration with periodic evaluation and dynamic instance scaling in the resource manager.
 
 ## Development
 
@@ -275,6 +405,7 @@ go test -tags=integration ./...
 - **Resource modeling**: Tracks CPU and memory usage per service instance, enforces host capacity limits, and models queueing delays when instances are at capacity.
 - **Metrics collection**: Time-series metrics are collected during simulation with label-based aggregation, enabling detailed analysis of service performance, resource utilization, and request patterns.
 - **Workload patterns**: Multiple arrival distributions allow modeling of realistic traffic patterns, including bursty workloads and user flows.
+- **Policy sandbox**: Integrated policies (rate limiting, circuit breaker) provide runtime control over request behavior. Additional policies (retry, autoscaling) are implemented and ready for integration.
 - **Heuristic optimization**: Hill-climbing tunes scaling/configs across iterations (planned).
 - **Bottleneck detection**: Comes from analyzing metrics, not the heuristic.
 - **Deterministic seeds**: Ensure reproducibility of simulation runs.
