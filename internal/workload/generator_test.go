@@ -139,6 +139,38 @@ func TestGeneratorBurstyArrivals(t *testing.T) {
 	}
 }
 
+func TestGeneratorBurstyArrivalsLongDuration(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	g := NewGenerator(12345)
+
+	startTime := time.Now()
+	// Test with a longer duration and very high burst rate to ensure the function
+	// can handle scenarios that would have exceeded the previous 100k iteration limit
+	endTime := startTime.Add(time.Hour) // 1 hour simulation
+
+	arrival := config.ArrivalSpec{
+		Type:                 "bursty",
+		RateRPS:              10.0,
+		BurstRateRPS:         1000.0, // Very high burst rate
+		BurstDurationSeconds: 5.0,
+		QuietDurationSeconds: 10.0,
+	}
+
+	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
+	if err != nil {
+		t.Fatalf("ScheduleArrivals error for long duration: %v", err)
+	}
+
+	// Check that events were scheduled
+	queueSize := eng.GetEventQueue().Size()
+	if queueSize == 0 {
+		t.Fatalf("expected events to be scheduled for long duration simulation")
+	}
+	// With 1 hour, bursts of 5s every 15s, and 1000 RPS during bursts,
+	// we should have many events scheduled successfully
+	t.Logf("Scheduled %d events for 1-hour simulation with high burst rate", queueSize)
+}
+
 func TestGeneratorInvalidRate(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	g := NewGenerator(12345)

@@ -186,12 +186,9 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 
 	cycleDuration := burstDuration + quietDuration
 	currentTime := startTime
-	maxIterations := 100000 // Safety limit to prevent infinite loops
-	iteration := 0
+	lastTime := time.Time{} // Track last time to detect if progress is being made
 
-	for currentTime.Before(endTime) && iteration < maxIterations {
-		iteration++
-
+	for currentTime.Before(endTime) {
 		// Calculate position in burst/quiet cycle
 		timeSinceStart := currentTime.Sub(startTime).Seconds()
 		cycleNumber := int(timeSinceStart / cycleDuration)
@@ -206,6 +203,11 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 			if nextBurstStart.After(endTime) {
 				break
 			}
+			// Safety check: ensure time is progressing to prevent infinite loops
+			if !lastTime.IsZero() && !nextBurstStart.After(lastTime) {
+				return fmt.Errorf("bursty arrivals not making progress: time stuck at %v", currentTime)
+			}
+			lastTime = currentTime
 			currentTime = nextBurstStart
 			continue
 		}
@@ -215,7 +217,14 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 		if interArrivalSeconds < 0.001 {
 			interArrivalSeconds = 0.001 // Minimum 1ms
 		}
-		currentTime = currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
+		nextTime := currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
+
+		// Safety check: ensure time is progressing to prevent infinite loops
+		if !lastTime.IsZero() && !nextTime.After(lastTime) {
+			return fmt.Errorf("bursty arrivals not making progress: time stuck at %v", currentTime)
+		}
+		lastTime = currentTime
+		currentTime = nextTime
 
 		// Check if we've exceeded the burst period
 		timeSinceStart = currentTime.Sub(startTime).Seconds()
@@ -228,6 +237,11 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 			if nextBurstStart.After(endTime) {
 				break
 			}
+			// Safety check: ensure time is progressing
+			if !lastTime.IsZero() && !nextBurstStart.After(lastTime) {
+				return fmt.Errorf("bursty arrivals not making progress: time stuck at %v", currentTime)
+			}
+			lastTime = currentTime
 			currentTime = nextBurstStart
 			continue
 		}
@@ -240,10 +254,6 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 			"service_id":    serviceID,
 			"endpoint_path": endpointPath,
 		})
-	}
-
-	if iteration >= maxIterations {
-		return fmt.Errorf("bursty arrivals exceeded maximum iterations (%d), possible infinite loop", maxIterations)
 	}
 
 	return nil
