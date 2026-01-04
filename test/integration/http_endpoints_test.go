@@ -397,4 +397,3 @@ func TestIntegration_HTTPEndpoints_FullLifecycle(t *testing.T) {
 		t.Fatalf("expected metrics in export")
 	}
 }
-
