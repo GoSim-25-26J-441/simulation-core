@@ -102,7 +102,8 @@ func (s *ParetoOptimalStrategy) SelectBest(candidates []*ConfigurationCandidate,
 	}
 
 	// Find Pareto optimal candidates
-	paretoOptimal := findParetoOptimal(evaluated, objective, s.secondaryObjectives)
+	// Note: primary objective is already evaluated and stored in candidate.Score
+	paretoOptimal := findParetoOptimal(evaluated, s.secondaryObjectives)
 
 	if len(paretoOptimal) == 0 {
 		// Fallback to best score if no Pareto optimal found
@@ -122,7 +123,8 @@ func (s *ParetoOptimalStrategy) SelectBest(candidates []*ConfigurationCandidate,
 }
 
 // findParetoOptimal finds configurations that are not dominated by any other
-func findParetoOptimal(candidates []*ConfigurationCandidate, primary ObjectiveFunction, secondary []ObjectiveFunction) []*ConfigurationCandidate {
+// Note: primary objective is already evaluated and stored in candidate.Score
+func findParetoOptimal(candidates []*ConfigurationCandidate, secondary []ObjectiveFunction) []*ConfigurationCandidate {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -138,7 +140,7 @@ func findParetoOptimal(candidates []*ConfigurationCandidate, primary ObjectiveFu
 				continue
 			}
 
-			if dominates(other, candidate, primary, secondary) {
+			if dominates(other, candidate, secondary) {
 				isDominated = true
 				break
 			}
@@ -154,8 +156,9 @@ func findParetoOptimal(candidates []*ConfigurationCandidate, primary ObjectiveFu
 
 // dominates checks if candidate1 dominates candidate2
 // candidate1 dominates candidate2 if it's better or equal in all objectives and better in at least one
-func dominates(candidate1, candidate2 *ConfigurationCandidate, primary ObjectiveFunction, secondary []ObjectiveFunction) bool {
-	// Check primary objective
+// Note: primary objective is already evaluated and stored in candidate.Score
+func dominates(candidate1, candidate2 *ConfigurationCandidate, secondary []ObjectiveFunction) bool {
+	// Check primary objective (already evaluated and stored in Score)
 	primaryBetter := candidate1.Score <= candidate2.Score
 	primaryEqual := math.Abs(candidate1.Score-candidate2.Score) < 0.0001
 
