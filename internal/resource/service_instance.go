@@ -178,8 +178,18 @@ func (s *ServiceInstance) QueueLength() int {
 func (s *ServiceInstance) HasCapacity() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	// Simple check: if CPU utilization is below 100%, we have capacity
-	return s.CPUUtilization() < 1.0
+
+	// If no CPU cores are allocated, this instance cannot process requests.
+	if s.cpuCores <= 0 {
+		return false
+	}
+
+	// Simple check: if CPU utilization is below 100%, we have capacity.
+	// We compute utilization directly from the guarded fields to avoid
+	// calling CPUUtilization() (which also acquires a lock) while holding
+	// the read lock.
+	utilization := s.activeCPUTimeMs / s.cpuCores
+	return utilization < 1.0
 }
 
 // ActiveMemoryMB returns the active memory usage in MB (for internal use)
