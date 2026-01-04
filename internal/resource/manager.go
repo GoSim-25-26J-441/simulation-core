@@ -393,17 +393,6 @@ func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
 	return instances
 }
 
-// updateHostCPUUtilization recalculates host CPU utilization from all instances
-func (m *Manager) updateHostCPUUtilization(hostID string) {
-	host, ok := m.hosts[hostID]
-	if !ok {
-		return
-	}
-
-	instances := m.collectInstancesForHost(hostID)
-	m.updateHostCPUUtilizationWithData(host, instances)
-}
-
 // updateHostCPUUtilizationWithData updates host CPU utilization using pre-collected data
 // This version can be called without holding the Manager lock
 func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*ServiceInstance) {
@@ -428,17 +417,6 @@ func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*Serv
 		}
 		host.SetCPUUtilization(hostUtil)
 	}
-}
-
-// updateHostMemoryUtilization recalculates host memory utilization from all instances
-func (m *Manager) updateHostMemoryUtilization(hostID string) {
-	host, ok := m.hosts[hostID]
-	if !ok {
-		return
-	}
-
-	instances := m.collectInstancesForHost(hostID)
-	m.updateHostMemoryUtilizationWithData(host, instances)
 }
 
 // updateHostMemoryUtilizationWithData updates host memory utilization using pre-collected data
