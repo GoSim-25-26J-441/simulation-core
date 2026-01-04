@@ -216,7 +216,7 @@ hosts:
   - id: svc1`,
 		},
 		{
-			name: "Invalid YAML syntax",
+			name:     "Invalid YAML syntax",
 			yamlText: `hosts: {{{invalid}}}`,
 		},
 	}
@@ -248,7 +248,7 @@ log_level: info
   - name: test`,
 		},
 		{
-			name: "Invalid YAML syntax",
+			name:     "Invalid YAML syntax",
 			yamlText: `log_level: {{{invalid}}}`,
 		},
 	}
