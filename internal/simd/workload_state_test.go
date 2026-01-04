@@ -168,6 +168,73 @@ func TestWorkloadStateUpdateRateNotFound(t *testing.T) {
 	ws.Stop()
 }
 
+func TestWorkloadStateUpdateRateInvalidValues(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(5 * time.Second)
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID: "svc1",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+		Workload: []config.WorkloadPattern{
+			{
+				From: "client",
+				To:   "svc1:/test",
+				Arrival: config.ArrivalSpec{
+					Type:    "poisson",
+					RateRPS: 10.0,
+				},
+			},
+		},
+	}
+
+	ws := NewWorkloadState("test-run", eng, endTime)
+	err := ws.Start(scenario, startTime)
+	if err != nil {
+		t.Fatalf("Start() returned error: %v", err)
+	}
+
+	patternKey := patternKey("client", "svc1:/test")
+
+	// Test with negative rate - should still work but will be clamped to default in event generation
+	err = ws.UpdateRate(patternKey, -10.0)
+	if err != nil {
+		t.Errorf("UpdateRate() with negative value should not error: %v", err)
+	}
+
+	// Test with zero rate - should still work but will be clamped to default in event generation
+	err = ws.UpdateRate(patternKey, 0.0)
+	if err != nil {
+		t.Errorf("UpdateRate() with zero value should not error: %v", err)
+	}
+
+	// Verify that rate was actually set (even if invalid)
+	patternState, ok := ws.GetPattern(patternKey)
+	if !ok {
+		t.Fatal("Pattern not found")
+	}
+
+	// The rate should be set to 0.0 as requested, but the event generation will clamp it
+	if patternState.Pattern.Arrival.RateRPS != 0.0 {
+		t.Errorf("Expected rate 0.0 (as set), got %f", patternState.Pattern.Arrival.RateRPS)
+	}
+
+	// Cleanup
+	ws.Stop()
+}
+
 func TestWorkloadStateStop(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	startTime := eng.GetSimTime()
