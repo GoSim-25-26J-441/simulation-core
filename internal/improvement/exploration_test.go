@@ -55,7 +55,7 @@ func TestDefaultExplorerWithPolicies(t *testing.T) {
 			Retries: &config.RetryPolicy{
 				Enabled:    true,
 				MaxRetries: 3,
-				BaseMs:    10,
+				BaseMs:     10,
 			},
 		},
 	}
@@ -196,4 +196,3 @@ func TestDefaultExplorerReplicaBounds(t *testing.T) {
 		t.Fatalf("should not generate neighbors above maximum replicas")
 	}
 }
-
