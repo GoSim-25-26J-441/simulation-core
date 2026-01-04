@@ -106,6 +106,7 @@ func (h *Host) UpdateMemoryUtilization() {
 	// TODO: Implement host-level memory utilization aggregation based on serviceInstances
 	// For now, utilization is tracked and updated at the Manager level via SetMemoryUtilization.
 	// This method is intentionally left as a placeholder for future aggregation logic.
+}
 
 // SetCPUUtilization sets the CPU utilization (called by Manager)
 func (h *Host) SetCPUUtilization(util float64) {
