@@ -10,15 +10,16 @@ import (
 
 // Optimizer implements a hill-climbing optimization algorithm
 type Optimizer struct {
-	objective     ObjectiveFunction
-	maxIterations int
-	stepSize      float64           // Step size for parameter adjustments
-	explorer      ParameterExplorer // Parameter space exploration strategy
-	mu            sync.RWMutex
-	bestScore     float64
-	bestConfig    *config.Scenario
-	iteration     int
-	history       []OptimizationStep
+	objective           ObjectiveFunction
+	maxIterations       int
+	stepSize            float64             // Step size for parameter adjustments
+	explorer            ParameterExplorer   // Parameter space exploration strategy
+	convergenceStrategy ConvergenceStrategy // Convergence detection strategy
+	mu                  sync.RWMutex
+	bestScore           float64
+	bestConfig          *config.Scenario
+	iteration           int
+	history             []OptimizationStep
 }
 
 // OptimizationStep represents a single optimization step
@@ -44,18 +45,25 @@ func NewOptimizer(objective ObjectiveFunction, maxIterations int, stepSize float
 		stepSize = 1.0 // Default step size
 	}
 	return &Optimizer{
-		objective:     objective,
-		maxIterations: maxIterations,
-		stepSize:      stepSize,
-		explorer:      NewDefaultExplorer(), // Use default exploration strategy
-		bestScore:     math.MaxFloat64,      // Start with worst possible score
-		history:       make([]OptimizationStep, 0),
+		objective:           objective,
+		maxIterations:       maxIterations,
+		stepSize:            stepSize,
+		explorer:            NewDefaultExplorer(),                            // Use default exploration strategy
+		convergenceStrategy: NewCombinedStrategy(DefaultConvergenceConfig()), // Use combined convergence strategy
+		bestScore:           math.MaxFloat64,                                 // Start with worst possible score
+		history:             make([]OptimizationStep, 0),
 	}
 }
 
 // WithExplorer sets a custom parameter exploration strategy
 func (o *Optimizer) WithExplorer(explorer ParameterExplorer) *Optimizer {
 	o.explorer = explorer
+	return o
+}
+
+// WithConvergenceStrategy sets a custom convergence detection strategy
+func (o *Optimizer) WithConvergenceStrategy(strategy ConvergenceStrategy) *Optimizer {
+	o.convergenceStrategy = strategy
 	return o
 }
 
@@ -142,31 +150,23 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 			})
 			o.mu.Unlock()
 		} else {
-			// No improvement found, check for convergence
+			// No improvement found, record the iteration
 			o.mu.Lock()
 			o.history = append(o.history, OptimizationStep{
 				Iteration: iteration,
 				Score:     currentScore,
 				Config:    cloneScenario(currentConfig),
 			})
+			historyCopy := make([]OptimizationStep, len(o.history))
+			copy(historyCopy, o.history)
 			o.mu.Unlock()
 
-			// If no improvement for several iterations, we might have converged
-			// For now, we'll continue until max iterations
-		}
-
-		// Early stopping if no improvement (optional - can be made configurable)
-		if !improved && iteration > 3 {
-			// Check if we've had no improvement for a while
-			// This is a simple convergence check
-			recentImprovements := 0
-			for i := len(o.history) - 1; i >= 0 && i >= len(o.history)-3; i-- {
-				if i > 0 && o.history[i].Score < o.history[i-1].Score {
-					recentImprovements++
+			// Check for convergence using the configured strategy
+			if o.convergenceStrategy != nil {
+				converged, reason := o.convergenceStrategy.CheckConvergence(historyCopy)
+				if converged {
+					return o.buildResult(true, reason), nil
 				}
-			}
-			if recentImprovements == 0 {
-				return o.buildResult(true, "no improvement in recent iterations"), nil
 			}
 		}
 	}
