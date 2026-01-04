@@ -375,11 +375,11 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 	if !startTime.IsZero() || !endTime.IsZero() {
 		filtered := make([]*models.MetricPoint, 0, len(allPoints))
 		for _, point := range allPoints {
-			// Include points >= startTime (use !Before to include equal timestamps)
+			// Exclude points before startTime (includes points >= startTime)
 			if !startTime.IsZero() && point.Timestamp.Before(startTime) {
 				continue
 			}
-			// Include points <= endTime (use !After to include equal timestamps)
+			// Exclude points after endTime (includes points <= endTime)
 			if !endTime.IsZero() && point.Timestamp.After(endTime) {
 				continue
 			}
