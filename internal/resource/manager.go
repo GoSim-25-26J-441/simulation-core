@@ -10,18 +10,16 @@ import (
 
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
-	mu              sync.RWMutex
-	hosts           map[string]*Host
-	instances       map[string]*ServiceInstance
-	hostToInstances map[string][]string // host ID -> instance IDs
+	mu        sync.RWMutex
+	hosts     map[string]*Host
+	instances map[string]*ServiceInstance
 }
 
 // NewManager creates a new resource manager
 func NewManager() *Manager {
 	return &Manager{
-		hosts:           make(map[string]*Host),
-		instances:       make(map[string]*ServiceInstance),
-		hostToInstances: make(map[string][]string),
+		hosts:     make(map[string]*Host),
+		instances: make(map[string]*ServiceInstance),
 	}
 }
 
@@ -34,7 +32,6 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 	for _, hostConfig := range scenario.Hosts {
 		host := NewHost(hostConfig.ID, hostConfig.Cores, 0) // Memory not specified in config, default to 0
 		m.hosts[hostConfig.ID] = host
-		m.hostToInstances[hostConfig.ID] = make([]string, 0)
 	}
 
 	// Initialize service instances
@@ -57,7 +54,6 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 
 			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, 1.0, 512.0) // Default: 1 CPU core, 512MB memory
 			m.instances[instanceIDStr] = instance
-			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
 			m.hosts[hostID].AddService(instanceIDStr)
 		}
 	}
@@ -294,12 +290,10 @@ func (m *Manager) updateHostCPUUtilization(hostID string) {
 		return
 	}
 
-	instanceIDs := m.hostToInstances[hostID]
 	totalCPUUsed := 0.0
 
-	for _, instanceID := range instanceIDs {
-		instance, ok := m.instances[instanceID]
-		if !ok {
+	for _, instance := range m.instances {
+		if instance.HostID() != hostID {
 			continue
 		}
 		// Sum up CPU utilization from all instances
@@ -326,12 +320,10 @@ func (m *Manager) updateHostMemoryUtilization(hostID string) {
 		return
 	}
 
-	instanceIDs := m.hostToInstances[hostID]
 	totalMemoryUsedMB := 0.0
 
-	for _, instanceID := range instanceIDs {
-		instance, ok := m.instances[instanceID]
-		if !ok {
+	for _, instance := range m.instances {
+		if instance.HostID() != hostID {
 			continue
 		}
 		// Sum up memory usage from all instances
