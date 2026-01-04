@@ -88,7 +88,11 @@ func (m *Manager) GetHost(hostID string) (*Host, bool) {
 func (m *Manager) GetInstancesForService(serviceName string) []*ServiceInstance {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.getInstancesForServiceLocked(serviceName)
+}
 
+// getInstancesForServiceLocked returns instances for a service (assumes lock is held)
+func (m *Manager) getInstancesForServiceLocked(serviceName string) []*ServiceInstance {
 	instances := make([]*ServiceInstance, 0)
 	for _, instance := range m.instances {
 		if instance.ServiceName() == serviceName {
@@ -103,12 +107,7 @@ func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	instances := make([]*ServiceInstance, 0)
-	for _, instance := range m.instances {
-		if instance.ServiceName() == serviceName {
-			instances = append(instances, instance)
-		}
-	}
+	instances := m.getInstancesForServiceLocked(serviceName)
 
 	if len(instances) == 0 {
 		return nil, fmt.Errorf("no instances available for service %s", serviceName)
