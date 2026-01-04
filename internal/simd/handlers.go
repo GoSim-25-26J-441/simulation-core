@@ -436,6 +436,3 @@ func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration ti
 
 	return nil
 }
-
-// Legacy functions removed - now using workload.Generator
-// These are kept for backward compatibility but delegate to the new generator
