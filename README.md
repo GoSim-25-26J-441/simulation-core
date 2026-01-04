@@ -22,15 +22,29 @@ It predicts latency, throughput, and resource utilization under configurable wor
 
 ## Features
 
-- Discrete-event simulation of request lifecycles and inter-service fan-out.
-- Workload modeling: arrival processes, concurrency, burstiness, and user flows.
-- Interaction modeling: service DAGs, branching probabilities, sync/async calls.
-- Resource modeling: CPU, memory, network, I/O, queueing effects.
-- Metrics: Prometheus-style exporters, run artifacts, summary reports.
-- Policy sandbox: auto-scaling strategies, rate limiting, retries, circuit breaking.
-- Optimization loop: heuristic hill-climbing for parameter tuning across runs.
-- Multi-cluster support: separate latency/capacity models and cross-cluster links.
-- API surface for external clients (CLI, UI, CI).
+- **Discrete-event simulation**: High-performance event-driven simulation of request lifecycles and inter-service fan-out.
+- **Workload modeling**: 
+  - Multiple arrival distributions: Poisson/Exponential, Uniform, Normal/Gaussian, Constant rate
+  - Bursty workloads with configurable on/off periods
+  - User flow modeling for multi-step request sequences
+  - Configurable arrival rates and patterns
+- **Interaction modeling**: Service DAGs, branching probabilities, sync/async calls, downstream service calls.
+- **Resource modeling**: 
+  - CPU and memory tracking per service instance
+  - Host capacity constraints and resource limits
+  - Queueing effects and capacity-based request queuing
+  - Instance selection and load distribution
+- **Metrics collection**: 
+  - Time-series metrics collection during simulation
+  - Label-based metric aggregation (service, endpoint, instance, host)
+  - Percentile calculations (P50, P95, P99) and statistical aggregations
+  - Request latency, count, error tracking
+  - CPU/memory utilization and queue length metrics
+  - Automatic conversion to run metrics format
+- **Policy sandbox**: Auto-scaling strategies, rate limiting, retries, circuit breaking (planned).
+- **Optimization loop**: Heuristic hill-climbing for parameter tuning across runs (planned).
+- **Multi-cluster support**: Separate latency/capacity models and cross-cluster links (planned).
+- **API surface**: gRPC and HTTP APIs for external clients (CLI, UI, CI).
 
 ---
 
@@ -257,11 +271,14 @@ go test -tags=integration ./...
 
 ## Design Notes
 
-- Discrete-event simulation enables scalability and controlled fidelity.
-- Heuristic optimization (hill-climbing) tunes scaling/configs across iterations.
-- Bottleneck detection comes from analyzing metrics, not the heuristic.
-- Deterministic seeds ensure reproducibility.
-- Each run exports metrics, logs, and summaries for validation.
+- **Discrete-event simulation**: Enables scalability and controlled fidelity by processing events in chronological order.
+- **Resource modeling**: Tracks CPU and memory usage per service instance, enforces host capacity limits, and models queueing delays when instances are at capacity.
+- **Metrics collection**: Time-series metrics are collected during simulation with label-based aggregation, enabling detailed analysis of service performance, resource utilization, and request patterns.
+- **Workload patterns**: Multiple arrival distributions allow modeling of realistic traffic patterns, including bursty workloads and user flows.
+- **Heuristic optimization**: Hill-climbing tunes scaling/configs across iterations (planned).
+- **Bottleneck detection**: Comes from analyzing metrics, not the heuristic.
+- **Deterministic seeds**: Ensure reproducibility of simulation runs.
+- **Each run exports**: Metrics, logs, and summaries for validation and analysis.
 
 ---
 

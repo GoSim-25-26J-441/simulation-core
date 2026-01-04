@@ -2,11 +2,13 @@ package simd
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/workload"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
@@ -18,15 +20,19 @@ type scenarioState struct {
 	services  map[string]*config.Service  // service ID -> service
 	endpoints map[string]*config.Endpoint // "serviceID:path" -> endpoint
 	rng       *utils.RandSource
+	rm        *resource.Manager  // Resource manager for tracking CPU/memory/queueing
+	collector *metrics.Collector // Metrics collector for time-series metrics
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
-func newScenarioState(scenario *config.Scenario) *scenarioState {
+func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector) *scenarioState {
 	state := &scenarioState{
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
 		endpoints: make(map[string]*config.Endpoint),
 		rng:       utils.NewRandSource(time.Now().UnixNano()),
+		rm:        rm,
+		collector: collector,
 	}
 
 	// Build service and endpoint maps
@@ -102,9 +108,38 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
 
-		// Schedule request start immediately (no queue delay for MVP)
+		// Record request arrival metric
+		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+		metrics.RecordRequestCount(state.collector, 1.0, simTime, labels)
+
+		// Select an instance for this service
+		instance, err := state.rm.SelectInstanceForService(serviceID)
+		if err != nil {
+			// No instances available, mark request as failed
+			request.Status = models.RequestStatusFailed
+			// Record error
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
+		}
+
+		// Check if instance has capacity
+		if !instance.HasCapacity() {
+			// Instance is at capacity, enqueue the request
+			if err := state.rm.EnqueueRequest(instance.ID(), requestID); err != nil {
+				return fmt.Errorf("failed to enqueue request: %w", err)
+			}
+			// Request will be processed when capacity becomes available
+			// Store instance ID in request metadata for later processing
+			request.Metadata["instance_id"] = instance.ID()
+			return nil
+		}
+
+		// Instance has capacity, schedule request start immediately
+		// Store instance ID in request metadata
+		request.Metadata["instance_id"] = instance.ID()
 		eng.ScheduleAt(engine.EventTypeRequestStart, simTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
+			"instance_id":   instance.ID(),
 		})
 
 		return nil
@@ -131,6 +166,23 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			return fmt.Errorf("endpoint not found: %s", endpointKey)
 		}
 
+		// Get instance ID from event data or request metadata
+		instanceID, ok := evt.Data["instance_id"].(string)
+		if !ok {
+			// Fallback to metadata
+			if id, ok := request.Metadata["instance_id"].(string); ok {
+				instanceID = id
+			} else {
+				// Select instance if not already assigned
+				instance, err := state.rm.SelectInstanceForService(serviceID)
+				if err != nil {
+					return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
+				}
+				instanceID = instance.ID()
+				request.Metadata["instance_id"] = instanceID
+			}
+		}
+
 		// Update request status
 		request.Status = models.RequestStatusProcessing
 		request.StartTime = simTime
@@ -149,13 +201,92 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		}
 		request.NetworkLatencyMs = netLatencyMs
 
-		// Total processing time = CPU time + network latency
-		processingTime := time.Duration(cpuTimeMs+netLatencyMs) * time.Millisecond
+		// Get memory usage from configuration or metadata
+		memoryMB := endpoint.DefaultMemoryMB
+		if memoryMB == 0 {
+			memoryMB = 10.0 // Fallback to 10MB if not configured
+		}
+		// Allow override from metadata
+		if mem, ok := request.Metadata["memory_mb"].(float64); ok {
+			memoryMB = mem
+		}
+
+		// Allocate resources
+		if err := state.rm.AllocateCPU(instanceID, cpuTimeMs, simTime); err != nil {
+			// Mark request as failed and record error metric
+			request.Status = models.RequestStatusFailed
+			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+			return fmt.Errorf("failed to allocate CPU: %w", err)
+		}
+		if err := state.rm.AllocateMemory(instanceID, memoryMB); err != nil {
+			// If memory allocation fails, release CPU and fail request
+			state.rm.ReleaseCPU(instanceID, cpuTimeMs, simTime)
+			request.Status = models.RequestStatusFailed
+			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+			return fmt.Errorf("failed to allocate memory: %w", err)
+		}
+
+		// Store resource allocation in metadata for cleanup
+		request.Metadata["allocated_cpu_ms"] = cpuTimeMs
+		request.Metadata["allocated_memory_mb"] = memoryMB
+
+		// Record resource utilization metrics
+		instance, ok := state.rm.GetServiceInstance(instanceID)
+		if ok {
+			// Record CPU utilization
+			cpuUtil := instance.CPUUtilization()
+			instanceLabels := metrics.CreateInstanceLabels(serviceID, instanceID)
+			metrics.RecordCPUUtilization(state.collector, cpuUtil, simTime, instanceLabels)
+
+			// Record memory utilization
+			memUtil := instance.MemoryUtilization()
+			metrics.RecordMemoryUtilization(state.collector, memUtil, simTime, instanceLabels)
+
+			// Record queue length
+			queueLength := instance.QueueLength()
+			metrics.RecordQueueLength(state.collector, float64(queueLength), simTime, instanceLabels)
+
+			// Model queueing delay based on mean service time
+			// Queue delay is estimated as the sum of expected service times for all queued requests.
+			// This assumes:
+			// - FIFO queue processing
+			// - Independent, identically distributed service times
+			// - Mean service time ≈ mean CPU time + mean network latency
+			// - No variance in service times (uses mean values)
+			//
+			// Limitations:
+			// - Does not account for actual variability in service times
+			// - Assumes all queued requests have similar characteristics
+			// - Does not model complex queueing effects (e.g., head-of-line blocking)
+			//
+			// For more accurate modeling, consider implementing a detailed queueing theory model
+			// (e.g., M/M/1, M/G/1) with actual service time distributions.
+			queueDelayMs := 0.0
+			if queueLength > 0 {
+				meanServiceTimeMs := endpoint.MeanCPUMs + endpoint.NetLatencyMs.Mean
+				// Ensure non-negative service time
+				if meanServiceTimeMs < 0 {
+					meanServiceTimeMs = 0
+				}
+				queueDelayMs = float64(queueLength) * meanServiceTimeMs
+			}
+			request.Metadata["queue_delay_ms"] = queueDelayMs
+		}
+
+		// Total processing time = CPU time + network latency + queue delay
+		var queueDelayMs float64
+		if qd, ok := request.Metadata["queue_delay_ms"].(float64); ok {
+			queueDelayMs = qd
+		}
+		processingTime := time.Duration(cpuTimeMs+netLatencyMs+queueDelayMs) * time.Millisecond
 
 		// Schedule completion
 		completionTime := simTime.Add(processingTime)
 		eng.ScheduleAt(engine.EventTypeRequestComplete, completionTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
+			"instance_id":   instanceID,
 		})
 
 		return nil
@@ -176,13 +307,48 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		serviceID := request.ServiceName
 		endpointPath := request.Endpoint
 
+		// Get instance ID from metadata
+		instanceID, ok := request.Metadata["instance_id"].(string)
+		if ok {
+			// Release resources
+			if cpuMs, ok := request.Metadata["allocated_cpu_ms"].(float64); ok {
+				state.rm.ReleaseCPU(instanceID, cpuMs, simTime)
+			}
+			if memoryMB, ok := request.Metadata["allocated_memory_mb"].(float64); ok {
+				state.rm.ReleaseMemory(instanceID, memoryMB)
+			}
+
+			// Process next queued request if available
+			nextRequestID, hasNext := state.rm.DequeueRequest(instanceID)
+			if hasNext {
+				// Find the request in the run manager
+				// Note: This is a simplified approach - in a real system, we'd maintain a request store
+				// Schedule a request start event for the dequeued request on this instance
+				eng.ScheduleAt(engine.EventTypeRequestStart, simTime, nil, serviceID, map[string]interface{}{
+					"service_id":    serviceID,
+					"endpoint_path": endpointPath,
+					"queued_id":     nextRequestID,
+					"instance_id":   instanceID,
+				})
+			}
+		}
+
 		// Mark request as completed
 		request.Status = models.RequestStatusCompleted
 		request.CompletionTime = simTime
 		request.Duration = simTime.Sub(request.ArrivalTime)
 
-		// Record latency
+		// Record latency metric
 		totalLatencyMs := float64(request.Duration.Milliseconds())
+		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+		metrics.RecordLatency(state.collector, totalLatencyMs, simTime, labels)
+
+		// Also record in run manager for backward compatibility.
+		// NOTE: The metrics collector above is the primary/source-of-truth metrics system.
+		//       This run manager metric is kept only to support legacy consumers that
+		//       still depend on RunManager-based metrics.
+		// TODO: Remove rm.RecordLatency once all metrics consumers have migrated
+		//       to the new collector-based metrics pipeline.
 		rm.RecordLatency(totalLatencyMs)
 
 		// Find endpoint to check for downstream calls
@@ -275,84 +441,19 @@ func handleDownstreamCall(state *scenarioState, eng *engine.Engine) engine.Event
 func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration time.Duration) error {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(duration)
-	rng := utils.NewRandSource(time.Now().UnixNano())
+	generator := workload.NewGenerator(time.Now().UnixNano())
 
-	for _, workload := range scenario.Workload {
+	for _, workloadPattern := range scenario.Workload {
 		// Parse target: "serviceID:path"
-		serviceID, endpointPath, err := parseWorkloadTarget(workload.To)
+		serviceID, endpointPath, err := parseWorkloadTarget(workloadPattern.To)
 		if err != nil {
-			return fmt.Errorf("invalid workload target %s: %w", workload.To, err)
+			return fmt.Errorf("invalid workload target %s: %w", workloadPattern.To, err)
 		}
 
-		// Generate arrivals based on arrival type
-		switch workload.Arrival.Type {
-		case "poisson":
-			if err := schedulePoissonArrivals(eng, rng, startTime, endTime, workload.Arrival.RateRPS, serviceID, endpointPath); err != nil {
-				return err
-			}
-		case "uniform":
-			if err := scheduleUniformArrivals(eng, rng, startTime, endTime, workload.Arrival.RateRPS, serviceID, endpointPath); err != nil {
-				return err
-			}
-		default:
-			// Default to poisson
-			if err := schedulePoissonArrivals(eng, rng, startTime, endTime, workload.Arrival.RateRPS, serviceID, endpointPath); err != nil {
-				return err
-			}
+		// Use the new workload generator
+		if err := generator.ScheduleArrivals(eng, startTime, endTime, workloadPattern.Arrival, serviceID, endpointPath); err != nil {
+			return fmt.Errorf("failed to schedule arrivals for %s: %w", workloadPattern.To, err)
 		}
-	}
-
-	return nil
-}
-
-// schedulePoissonArrivals schedules arrivals using Poisson process
-func schedulePoissonArrivals(eng *engine.Engine, rng *utils.RandSource, startTime, endTime time.Time, rateRPS float64, serviceID, endpointPath string) error {
-	// Generate inter-arrival times using exponential distribution
-	currentTime := startTime
-	lambda := rateRPS // rate parameter for exponential distribution
-
-	for currentTime.Before(endTime) {
-		// Generate next inter-arrival time (exponential with rate lambda)
-		interArrivalSeconds := rng.ExpFloat64(lambda)
-		if interArrivalSeconds < 0 {
-			interArrivalSeconds = 0
-		}
-		currentTime = currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
-
-		if currentTime.After(endTime) {
-			break
-		}
-
-		// Schedule arrival event
-		eng.ScheduleAt(engine.EventTypeRequestArrival, currentTime, nil, serviceID, map[string]interface{}{
-			"service_id":    serviceID,
-			"endpoint_path": endpointPath,
-		})
-	}
-
-	return nil
-}
-
-// scheduleUniformArrivals schedules arrivals uniformly over the duration
-func scheduleUniformArrivals(eng *engine.Engine, rng *utils.RandSource, startTime, endTime time.Time, rateRPS float64, serviceID, endpointPath string) error {
-	duration := endTime.Sub(startTime)
-	totalSeconds := duration.Seconds()
-	expectedArrivals := int64(math.Round(rateRPS * totalSeconds))
-
-	// Distribute arrivals uniformly
-	for i := int64(0); i < expectedArrivals; i++ {
-		// Uniform distribution over duration
-		offsetSeconds := rng.UniformFloat64(0, totalSeconds)
-		arrivalTime := startTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
-
-		if arrivalTime.After(endTime) {
-			continue
-		}
-
-		eng.ScheduleAt(engine.EventTypeRequestArrival, arrivalTime, nil, serviceID, map[string]interface{}{
-			"service_id":    serviceID,
-			"endpoint_path": endpointPath,
-		})
 	}
 
 	return nil
