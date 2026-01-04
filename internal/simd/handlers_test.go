@@ -31,7 +31,10 @@ func TestNewScenarioState(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
 	if state == nil {
 		t.Fatalf("expected non-nil state")
 	}
@@ -117,7 +120,10 @@ func TestRegisterHandlers(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
 	RegisterHandlers(eng, state)
 
 	// Verify handlers are registered by checking if they exist

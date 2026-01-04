@@ -38,7 +38,10 @@ func TestHandleRequestArrivalWithQueueing(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
 	RegisterHandlers(eng, state)
 
 	// Get instance and fill it to capacity
@@ -100,7 +103,10 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
 	RegisterHandlers(eng, state)
 
 	// Create a request
@@ -122,7 +128,7 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 	})
 
 	// Run simulation
-	err := eng.Run(50 * time.Millisecond)
+	err = eng.Run(50 * time.Millisecond)
 	if err != nil {
 		t.Fatalf("Engine run error: %v", err)
 	}
@@ -188,7 +194,10 @@ func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
 	RegisterHandlers(eng, state)
 
 	// Create a request with an invalid instance ID to force CPU allocation failure
@@ -210,7 +219,7 @@ func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
 	})
 
 	// Run simulation
-	err := eng.Run(50 * time.Millisecond)
+	err = eng.Run(50 * time.Millisecond)
 	if err != nil {
 		t.Fatalf("Engine run error: %v", err)
 	}
@@ -276,7 +285,10 @@ func TestHandleRequestCompleteWithQueueProcessing(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
 	RegisterHandlers(eng, state)
 
 	// Get instance

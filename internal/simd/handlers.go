@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
@@ -21,13 +22,20 @@ type scenarioState struct {
 	services  map[string]*config.Service  // service ID -> service
 	endpoints map[string]*config.Endpoint // "serviceID:path" -> endpoint
 	rng       *utils.RandSource
-	rm        *resource.Manager  // Resource manager for tracking CPU/memory/queueing
-	collector *metrics.Collector // Metrics collector for time-series metrics
-	policies  *policy.Manager    // Policy manager for autoscaling, rate limiting, retries, circuit breaking
+	rm        *resource.Manager      // Resource manager for tracking CPU/memory/queueing
+	collector *metrics.Collector     // Metrics collector for time-series metrics
+	policies  *policy.Manager        // Policy manager for autoscaling, rate limiting, retries, circuit breaking
+	interact  *interaction.Manager   // Interaction manager for service graph and downstream calls
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
-func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector, policies *policy.Manager) *scenarioState {
+func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector, policies *policy.Manager) (*scenarioState, error) {
+	// Create interaction manager
+	interact, err := interaction.NewManager(scenario)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create interaction manager: %w", err)
+	}
+
 	state := &scenarioState{
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
@@ -36,9 +44,10 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 		rm:        rm,
 		collector: collector,
 		policies:  policies,
+		interact:  interact,
 	}
 
-	// Build service and endpoint maps
+	// Build service and endpoint maps (kept for backward compatibility and quick lookups)
 	for i := range scenario.Services {
 		svc := &scenario.Services[i]
 		state.services[svc.ID] = svc
@@ -49,7 +58,7 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 		}
 	}
 
-	return state
+	return state, nil
 }
 
 // parseWorkloadTarget parses "serviceID:path" format
@@ -390,42 +399,20 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		//       to the new collector-based metrics pipeline.
 		rm.RecordLatency(totalLatencyMs)
 
-		// Find endpoint to check for downstream calls
-		endpointKey := fmt.Sprintf("%s:%s", serviceID, endpointPath)
-		endpoint, ok := state.endpoints[endpointKey]
-		if !ok {
-			// Endpoint not found, but request is complete
+		// Get downstream calls using interaction manager
+		downstreamCalls, err := state.interact.GetDownstreamCalls(serviceID, endpointPath)
+		if err != nil {
+			// Log error but don't fail the request
+			fmt.Printf("warning: failed to get downstream calls for %s:%s: %v\n", serviceID, endpointPath, err)
 			return nil
 		}
 
-		// Handle downstream calls
-		for _, ds := range endpoint.Downstream {
-			// Parse downstream target (should be "serviceID:path" or just "serviceID")
-			downstreamTarget := ds.To
-			var downstreamServiceID, downstreamPath string
-			if strings.Contains(downstreamTarget, ":") {
-				var err error
-				downstreamServiceID, downstreamPath, err = parseWorkloadTarget(downstreamTarget)
-				if err != nil {
-					// If parsing fails, log a warning and treat entire string as service ID with default path
-					fmt.Printf("warning: failed to parse downstream target %q: %v; treating as service ID with default path\n", downstreamTarget, err)
-					downstreamServiceID = downstreamTarget
-					downstreamPath = "/"
-				}
-			} else {
-				downstreamServiceID = downstreamTarget
-				downstreamPath = "/"
-			}
-
-			// Check if downstream service exists
-			if _, exists := state.services[downstreamServiceID]; !exists {
-				continue
-			}
-
-			// Schedule downstream call
-			// For MVP, we schedule it immediately after current request completes
-			eng.ScheduleAt(engine.EventTypeDownstreamCall, simTime, request, downstreamServiceID, map[string]interface{}{
-				"endpoint_path":     downstreamPath,
+		// Schedule downstream calls
+		for _, downstreamCall := range downstreamCalls {
+			// Schedule downstream call event
+			// For MVP, we schedule it immediately after current request completes (sync behavior)
+			eng.ScheduleAt(engine.EventTypeDownstreamCall, simTime, request, downstreamCall.ServiceID, map[string]interface{}{
+				"endpoint_path":     downstreamCall.Path,
 				"parent_request_id": request.ID,
 			})
 		}
@@ -451,18 +438,20 @@ func handleDownstreamCall(state *scenarioState, eng *engine.Engine) engine.Event
 			endpointPath = "/"
 		}
 
-		// Create new request for downstream service
-		requestID := utils.GenerateRequestID()
-		downstreamRequest := &models.Request{
-			ID:          requestID,
-			TraceID:     parentRequest.TraceID, // Same trace
-			ParentID:    parentRequest.ID,
-			ServiceName: downstreamServiceID,
-			Endpoint:    endpointPath,
-			Status:      models.RequestStatusPending,
-			ArrivalTime: simTime,
-			Metadata:    make(map[string]interface{}),
+		// Create resolved call for interaction manager
+		resolvedCall := interaction.ResolvedCall{
+			ServiceID: downstreamServiceID,
+			Path:      endpointPath,
 		}
+
+		// Use interaction manager to create downstream request
+		downstreamRequest, err := state.interact.CreateDownstreamRequest(parentRequest, resolvedCall)
+		if err != nil {
+			return fmt.Errorf("failed to create downstream request: %w", err)
+		}
+
+		// Set arrival time to simulation time
+		downstreamRequest.ArrivalTime = simTime
 
 		rm := eng.GetRunManager()
 		rm.AddRequest(downstreamRequest)
@@ -483,8 +472,8 @@ func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration ti
 	generator := workload.NewGenerator(time.Now().UnixNano())
 
 	for _, workloadPattern := range scenario.Workload {
-		// Parse target: "serviceID:path"
-		serviceID, endpointPath, err := parseWorkloadTarget(workloadPattern.To)
+		// Parse target: "serviceID:path" using interaction resolver
+		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {
 			return fmt.Errorf("invalid workload target %s: %w", workloadPattern.To, err)
 		}

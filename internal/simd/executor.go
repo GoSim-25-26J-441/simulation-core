@@ -176,7 +176,14 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	}
 
 	// Create scenario state and register handlers
-	state := newScenarioState(scenario, rm, metricsCollector, policies)
+	state, err := newScenarioState(scenario, rm, metricsCollector, policies)
+	if err != nil {
+		logger.Error("failed to create scenario state", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
 	RegisterHandlers(eng, state)
 
 	// Schedule workload
