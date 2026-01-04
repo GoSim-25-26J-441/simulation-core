@@ -96,15 +96,16 @@ func (h *Host) RemoveService(instanceID string) {
 // UpdateCPUUtilization recalculates CPU utilization based on service instances
 // This should be called after resource allocations change
 func (h *Host) UpdateCPUUtilization() {
-	// For now, we'll track this at the manager level
-	// This method is a placeholder for future aggregation logic
-	// The actual calculation happens in the Manager when allocating resources
+	// TODO: Implement host-level CPU utilization aggregation based on serviceInstances
+	// For now, utilization is tracked and updated at the Manager level via SetCPUUtilization.
+	// This method is intentionally left as a placeholder for future aggregation logic.
 }
 
 // UpdateMemoryUtilization recalculates memory utilization based on service instances
 func (h *Host) UpdateMemoryUtilization() {
-	// For now, we'll track this at the manager level
-	// This method is a placeholder for future aggregation logic
+	// TODO: Implement host-level memory utilization aggregation based on serviceInstances
+	// For now, utilization is tracked and updated at the Manager level via SetMemoryUtilization.
+	// This method is intentionally left as a placeholder for future aggregation logic.
 }
 
 // SetCPUUtilization sets the CPU utilization (called by Manager)

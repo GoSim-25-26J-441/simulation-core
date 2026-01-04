@@ -9,6 +9,13 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
+const (
+	// DefaultInstanceCPUCores is the default number of CPU cores allocated to a service instance
+	DefaultInstanceCPUCores = 1.0
+	// DefaultInstanceMemoryMB is the default amount of memory (in MB) allocated to a service instance
+	DefaultInstanceMemoryMB = 512.0
+)
+
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
 	mu                   sync.RWMutex
@@ -39,7 +46,6 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 	for _, hostConfig := range scenario.Hosts {
 		host := NewHost(hostConfig.ID, hostConfig.Cores, 16*1024) // Memory not specified in config, default to 16GB (in MB units)
 		m.hosts[hostConfig.ID] = host
-		m.hostToInstances[hostConfig.ID] = make([]string, 0)
 	}
 
 	// Initialize service instances
@@ -60,9 +66,18 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
 			instanceID++
 
-			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, 1.0, 512.0) // Default: 1 CPU core, 512MB memory
+			// Use configured values if provided, otherwise use defaults
+			cpuCores := serviceConfig.CPUCores
+			if cpuCores == 0 {
+				cpuCores = DefaultInstanceCPUCores
+			}
+			memoryMB := serviceConfig.MemoryMB
+			if memoryMB == 0 {
+				memoryMB = DefaultInstanceMemoryMB
+			}
+
+			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
 			m.instances[instanceIDStr] = instance
-			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
 			m.hosts[hostID].AddService(instanceIDStr)
 		}
 	}
@@ -151,92 +166,128 @@ func (m *Manager) rebuildSortedInstanceCache() {
 
 // AllocateCPU allocates CPU resources for a request
 func (m *Manager) AllocateCPU(instanceID string, cpuTimeMs float64, simTime time.Time) error {
+	// Collect references while holding Manager lock
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	instance, ok := m.instances[instanceID]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("instance not found: %s", instanceID)
 	}
 
-	host, ok := m.hosts[instance.HostID()]
+	// Get host ID while we have the instance reference
+	hostID := instance.HostID()
+	host, ok := m.hosts[hostID]
 	if !ok {
-		return fmt.Errorf("host not found: %s", instance.HostID())
+		m.mu.Unlock()
+		return fmt.Errorf("host not found: %s", hostID)
 	}
 
-	// Check host capacity
-	// We'll check at the instance level, not host level for now
-	// Host capacity checking can be added later if needed
+	// Get all instances on this host for utilization calculation
+	instances := m.collectInstancesForHost(hostID)
+	m.mu.Unlock()
 
+	// Now perform operations without holding Manager lock
 	// Allocate CPU on instance
 	instance.AllocateCPU(cpuTimeMs, simTime)
 
 	// Update host utilization (aggregate from all instances on this host)
-	m.updateHostCPUUtilization(host.ID())
+	m.updateHostCPUUtilizationWithData(host, instances)
 
 	return nil
 }
 
 // ReleaseCPU releases CPU resources for a request
 func (m *Manager) ReleaseCPU(instanceID string, cpuTimeMs float64, simTime time.Time) {
+	// Collect references while holding Manager lock
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	instance, ok := m.instances[instanceID]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
 
-	instance.ReleaseCPU(cpuTimeMs, simTime)
-
-	host, ok := m.hosts[instance.HostID()]
-	if ok {
-		m.updateHostCPUUtilization(host.ID())
+	hostID := instance.HostID()
+	host, ok := m.hosts[hostID]
+	if !ok {
+		m.mu.Unlock()
+		return
 	}
+
+	// Get all instances on this host for utilization calculation
+	instances := m.collectInstancesForHost(hostID)
+	m.mu.Unlock()
+
+	// Release CPU and update utilization without holding Manager lock
+	instance.ReleaseCPU(cpuTimeMs, simTime)
+	m.updateHostCPUUtilizationWithData(host, instances)
 }
 
 // AllocateMemory allocates memory resources
 func (m *Manager) AllocateMemory(instanceID string, memoryMB float64) error {
+	// Collect references while holding Manager lock
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	instance, ok := m.instances[instanceID]
 	if !ok {
+		m.mu.Unlock()
 		return fmt.Errorf("instance not found: %s", instanceID)
 	}
 
-	host, ok := m.hosts[instance.HostID()]
+	hostID := instance.HostID()
+	host, ok := m.hosts[hostID]
 	if !ok {
-		return fmt.Errorf("host not found: %s", instance.HostID())
+		m.mu.Unlock()
+		return fmt.Errorf("host not found: %s", hostID)
 	}
 
 	// Check host memory capacity (skip check if host has unlimited memory, i.e., 0 GB configured)
-	if host.MemoryGB() > 0 && host.MemoryUtilization()+(memoryMB/1024.0)/float64(host.MemoryGB()) > 1.0 {
-		return fmt.Errorf("host memory at capacity")
+	// Note: This check is best-effort. We read host memory utilization without holding the Manager
+	// lock for the entire allocation operation to avoid lock hierarchy issues. This means another
+	// goroutine could allocate memory between our check and allocation, potentially causing
+	// over-allocation. This is an acceptable trade-off for better concurrency.
+	hostMemoryGB := host.MemoryGB()
+	if hostMemoryGB > 0 {
+		hostMemUtil := host.MemoryUtilization()
+		if hostMemUtil+(memoryMB/1024.0)/float64(hostMemoryGB) > 1.0 {
+			m.mu.Unlock()
+			return fmt.Errorf("host memory at capacity")
+		}
 	}
 
+	// Get all instances on this host for utilization calculation
+	instances := m.collectInstancesForHost(hostID)
+	m.mu.Unlock()
+
+	// Allocate memory and update utilization without holding Manager lock
 	instance.AllocateMemory(memoryMB)
-	m.updateHostMemoryUtilization(host.ID())
+	m.updateHostMemoryUtilizationWithData(host, instances)
 
 	return nil
 }
 
 // ReleaseMemory releases memory resources
 func (m *Manager) ReleaseMemory(instanceID string, memoryMB float64) {
+	// Collect references while holding Manager lock
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	instance, ok := m.instances[instanceID]
 	if !ok {
+		m.mu.Unlock()
 		return
 	}
 
-	instance.ReleaseMemory(memoryMB)
-
-	host, ok := m.hosts[instance.HostID()]
-	if ok {
-		m.updateHostMemoryUtilization(host.ID())
+	hostID := instance.HostID()
+	host, ok := m.hosts[hostID]
+	if !ok {
+		m.mu.Unlock()
+		return
 	}
+
+	// Get all instances on this host for utilization calculation
+	instances := m.collectInstancesForHost(hostID)
+	m.mu.Unlock()
+
+	// Release memory and update utilization without holding Manager lock
+	instance.ReleaseMemory(memoryMB)
+	m.updateHostMemoryUtilizationWithData(host, instances)
 }
 
 // EnqueueRequest adds a request to the instance queue
@@ -329,19 +380,23 @@ func (m *Manager) GetAllInstances() []*ServiceInstance {
 	return instances
 }
 
-// updateHostCPUUtilization recalculates host CPU utilization from all instances
-func (m *Manager) updateHostCPUUtilization(hostID string) {
-	host, ok := m.hosts[hostID]
-	if !ok {
-		return
-	}
-
+// collectInstancesForHost gathers all ServiceInstance pointers for a given host.
+// This helper method assumes the Manager lock is already held by the caller.
+func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
 	instanceIDs := m.hostToInstances[hostID]
+	instances := make([]*ServiceInstance, 0, len(instanceIDs))
+	for _, id := range instanceIDs {
+		if inst, ok := m.instances[id]; ok {
+			instances = append(instances, inst)
+		}
+	}
+	return instances
+}
+
 	totalCPUUsed := 0.0
 
-	for _, instanceID := range instanceIDs {
-		instance, ok := m.instances[instanceID]
-		if !ok {
+	for _, instance := range m.instances {
+		if instance.HostID() != hostID {
 			continue
 		}
 		// Sum up CPU utilization from all instances
@@ -353,12 +408,15 @@ func (m *Manager) updateHostCPUUtilization(hostID string) {
 		totalCPUUsed += instanceUtil * instanceCores
 	}
 
-	// Host utilization = total CPU used / host CPU cores
-	hostUtil := totalCPUUsed / float64(host.CPUCores())
-	if hostUtil > 1.0 {
-		hostUtil = 1.0
+	// Get host CPU cores and calculate utilization
+	hostCPUCores := host.CPUCores()
+	if hostCPUCores > 0 {
+		hostUtil := totalCPUUsed / float64(hostCPUCores)
+		if hostUtil > 1.0 {
+			hostUtil = 1.0
+		}
+		host.SetCPUUtilization(hostUtil)
 	}
-	host.SetCPUUtilization(hostUtil)
 }
 
 // updateHostMemoryUtilization recalculates host memory utilization from all instances
@@ -368,21 +426,20 @@ func (m *Manager) updateHostMemoryUtilization(hostID string) {
 		return
 	}
 
-	instanceIDs := m.hostToInstances[hostID]
 	totalMemoryUsedMB := 0.0
 
-	for _, instanceID := range instanceIDs {
-		instance, ok := m.instances[instanceID]
-		if !ok {
+	for _, instance := range m.instances {
+		if instance.HostID() != hostID {
 			continue
 		}
 		// Sum up memory usage from all instances
 		totalMemoryUsedMB += instance.ActiveMemoryMB()
 	}
 
-	// Host utilization = total memory used / host memory
-	if host.MemoryGB() > 0 {
-		hostUtil := (totalMemoryUsedMB / 1024.0) / float64(host.MemoryGB())
+	// Get host memory and calculate utilization
+	hostMemoryGB := host.MemoryGB()
+	if hostMemoryGB > 0 {
+		hostUtil := (totalMemoryUsedMB / 1024.0) / float64(hostMemoryGB)
 		if hostUtil > 1.0 {
 			hostUtil = 1.0
 		}

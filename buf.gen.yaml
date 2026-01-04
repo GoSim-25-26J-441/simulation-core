@@ -2,13 +2,12 @@ version: v2
 
 plugins:
   # Go message types
-  - remote: buf.build/protocolbuffers/go
+  - local: protoc-gen-go
     out: gen/go
     opt: paths=source_relative
 
   # Go gRPC service stubs
-  - remote: buf.build/grpc/go
+  - local: protoc-gen-go-grpc
     out: gen/go
     opt: paths=source_relative
-
 
