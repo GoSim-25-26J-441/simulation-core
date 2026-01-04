@@ -182,7 +182,7 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 	if timeout < 30*time.Second {
 		timeout = 30 * time.Second // Minimum timeout
 	}
-	timeout = timeout * 2 // Allow some buffer
+	timeout *= 2 // Allow some buffer
 
 	completionCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
