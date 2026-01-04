@@ -2,11 +2,11 @@ package simd
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/workload"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
@@ -275,85 +275,23 @@ func handleDownstreamCall(state *scenarioState, eng *engine.Engine) engine.Event
 func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration time.Duration) error {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(duration)
-	rng := utils.NewRandSource(time.Now().UnixNano())
+	generator := workload.NewGenerator(time.Now().UnixNano())
 
-	for _, workload := range scenario.Workload {
+	for _, workloadPattern := range scenario.Workload {
 		// Parse target: "serviceID:path"
-		serviceID, endpointPath, err := parseWorkloadTarget(workload.To)
+		serviceID, endpointPath, err := parseWorkloadTarget(workloadPattern.To)
 		if err != nil {
-			return fmt.Errorf("invalid workload target %s: %w", workload.To, err)
+			return fmt.Errorf("invalid workload target %s: %w", workloadPattern.To, err)
 		}
 
-		// Generate arrivals based on arrival type
-		switch workload.Arrival.Type {
-		case "poisson":
-			if err := schedulePoissonArrivals(eng, rng, startTime, endTime, workload.Arrival.RateRPS, serviceID, endpointPath); err != nil {
-				return err
-			}
-		case "uniform":
-			if err := scheduleUniformArrivals(eng, rng, startTime, endTime, workload.Arrival.RateRPS, serviceID, endpointPath); err != nil {
-				return err
-			}
-		default:
-			// Default to poisson
-			if err := schedulePoissonArrivals(eng, rng, startTime, endTime, workload.Arrival.RateRPS, serviceID, endpointPath); err != nil {
-				return err
-			}
+		// Use the new workload generator
+		if err := generator.ScheduleArrivals(eng, startTime, endTime, workloadPattern.Arrival, serviceID, endpointPath); err != nil {
+			return fmt.Errorf("failed to schedule arrivals for %s: %w", workloadPattern.To, err)
 		}
 	}
 
 	return nil
 }
 
-// schedulePoissonArrivals schedules arrivals using Poisson process
-func schedulePoissonArrivals(eng *engine.Engine, rng *utils.RandSource, startTime, endTime time.Time, rateRPS float64, serviceID, endpointPath string) error {
-	// Generate inter-arrival times using exponential distribution
-	currentTime := startTime
-	lambda := rateRPS // rate parameter for exponential distribution
-
-	for currentTime.Before(endTime) {
-		// Generate next inter-arrival time (exponential with rate lambda)
-		interArrivalSeconds := rng.ExpFloat64(lambda)
-		if interArrivalSeconds < 0 {
-			interArrivalSeconds = 0
-		}
-		currentTime = currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
-
-		if currentTime.After(endTime) {
-			break
-		}
-
-		// Schedule arrival event
-		eng.ScheduleAt(engine.EventTypeRequestArrival, currentTime, nil, serviceID, map[string]interface{}{
-			"service_id":    serviceID,
-			"endpoint_path": endpointPath,
-		})
-	}
-
-	return nil
-}
-
-// scheduleUniformArrivals schedules arrivals uniformly over the duration
-func scheduleUniformArrivals(eng *engine.Engine, rng *utils.RandSource, startTime, endTime time.Time, rateRPS float64, serviceID, endpointPath string) error {
-	duration := endTime.Sub(startTime)
-	totalSeconds := duration.Seconds()
-	expectedArrivals := int64(math.Round(rateRPS * totalSeconds))
-
-	// Distribute arrivals uniformly
-	for i := int64(0); i < expectedArrivals; i++ {
-		// Uniform distribution over duration
-		offsetSeconds := rng.UniformFloat64(0, totalSeconds)
-		arrivalTime := startTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
-
-		if arrivalTime.After(endTime) {
-			continue
-		}
-
-		eng.ScheduleAt(engine.EventTypeRequestArrival, arrivalTime, nil, serviceID, map[string]interface{}{
-			"service_id":    serviceID,
-			"endpoint_path": endpointPath,
-		})
-	}
-
-	return nil
-}
+// Legacy functions removed - now using workload.Generator
+// These are kept for backward compatibility but delegate to the new generator

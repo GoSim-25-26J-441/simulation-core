@@ -53,6 +53,10 @@ type WorkloadPattern struct {
 
 // ArrivalSpec represents arrival process specification
 type ArrivalSpec struct {
-	Type    string  `yaml:"type"` // poisson, uniform, etc.
-	RateRPS float64 `yaml:"rate_rps"`
+	Type                  string  `yaml:"type"`                    // poisson, uniform, normal, bursty, constant
+	RateRPS               float64 `yaml:"rate_rps"`                // Mean/constant rate in requests per second
+	StdDevRPS             float64 `yaml:"stddev_rps,omitempty"`    // Standard deviation for normal distribution
+	BurstRateRPS          float64 `yaml:"burst_rate_rps,omitempty"` // Rate during bursts (for bursty type)
+	BurstDurationSeconds  float64 `yaml:"burst_duration_seconds,omitempty"` // Duration of burst periods
+	QuietDurationSeconds float64 `yaml:"quiet_duration_seconds,omitempty"` // Duration of quiet periods between bursts
 }
