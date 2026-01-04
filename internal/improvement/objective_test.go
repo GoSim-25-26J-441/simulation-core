@@ -123,7 +123,7 @@ func TestP95LatencyObjective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if score != 1e9 {
+	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty for zero latency, got %f", score)
 	}
 }
@@ -161,7 +161,7 @@ func TestP99LatencyObjective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if score != 1e9 {
+	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty for zero latency, got %f", score)
 	}
 }
@@ -199,7 +199,7 @@ func TestMeanLatencyObjective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if score != 1e9 {
+	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty for zero latency, got %f", score)
 	}
 }
@@ -238,7 +238,7 @@ func TestThroughputObjective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if score != 1e9 {
+	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty for zero throughput, got %f", score)
 	}
 
@@ -248,7 +248,7 @@ func TestThroughputObjective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if score != 1e9 {
+	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty for negative throughput, got %f", score)
 	}
 }
