@@ -393,12 +393,23 @@ func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
 	return instances
 }
 
+// updateHostCPUUtilization recalculates host CPU utilization from all instances
+func (m *Manager) updateHostCPUUtilization(hostID string) {
+	host, ok := m.hosts[hostID]
+	if !ok {
+		return
+	}
+
+	instances := m.collectInstancesForHost(hostID)
+	m.updateHostCPUUtilizationWithData(host, instances)
+}
+
+// updateHostCPUUtilizationWithData updates host CPU utilization using pre-collected data
+// This version can be called without holding the Manager lock
+func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*ServiceInstance) {
 	totalCPUUsed := 0.0
 
-	for _, instance := range m.instances {
-		if instance.HostID() != hostID {
-			continue
-		}
+	for _, instance := range instances {
 		// Sum up CPU utilization from all instances
 		// CPU utilization is measured as cores used per second
 		// We need to aggregate the active CPU time
@@ -426,12 +437,16 @@ func (m *Manager) updateHostMemoryUtilization(hostID string) {
 		return
 	}
 
+	instances := m.collectInstancesForHost(hostID)
+	m.updateHostMemoryUtilizationWithData(host, instances)
+}
+
+// updateHostMemoryUtilizationWithData updates host memory utilization using pre-collected data
+// This version can be called without holding the Manager lock
+func (m *Manager) updateHostMemoryUtilizationWithData(host *Host, instances []*ServiceInstance) {
 	totalMemoryUsedMB := 0.0
 
-	for _, instance := range m.instances {
-		if instance.HostID() != hostID {
-			continue
-		}
+	for _, instance := range instances {
 		// Sum up memory usage from all instances
 		totalMemoryUsedMB += instance.ActiveMemoryMB()
 	}
