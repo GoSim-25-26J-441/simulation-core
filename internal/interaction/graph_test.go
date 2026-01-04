@@ -125,4 +125,3 @@ func TestNewGraphWithInvalidDownstream(t *testing.T) {
 		t.Fatalf("expected error for invalid downstream service, got nil")
 	}
 }
-

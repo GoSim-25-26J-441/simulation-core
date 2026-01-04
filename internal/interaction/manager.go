@@ -110,4 +110,3 @@ func (m *Manager) ValidateService(serviceID string) error {
 	}
 	return nil
 }
-

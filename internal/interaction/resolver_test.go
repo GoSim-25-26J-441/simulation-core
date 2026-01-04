@@ -96,4 +96,3 @@ func TestGraphResolveDownstreamCalls(t *testing.T) {
 		t.Fatalf("expected second call to be svc3:/, got %s:%s", calls[1].ServiceID, calls[1].Path)
 	}
 }
-

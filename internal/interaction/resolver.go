@@ -88,4 +88,3 @@ func (g *Graph) ValidateDownstreamTarget(target string) error {
 
 	return nil
 }
-

@@ -22,10 +22,10 @@ type scenarioState struct {
 	services  map[string]*config.Service  // service ID -> service
 	endpoints map[string]*config.Endpoint // "serviceID:path" -> endpoint
 	rng       *utils.RandSource
-	rm        *resource.Manager      // Resource manager for tracking CPU/memory/queueing
-	collector *metrics.Collector     // Metrics collector for time-series metrics
-	policies  *policy.Manager        // Policy manager for autoscaling, rate limiting, retries, circuit breaking
-	interact  *interaction.Manager   // Interaction manager for service graph and downstream calls
+	rm        *resource.Manager    // Resource manager for tracking CPU/memory/queueing
+	collector *metrics.Collector   // Metrics collector for time-series metrics
+	policies  *policy.Manager      // Policy manager for autoscaling, rate limiting, retries, circuit breaking
+	interact  *interaction.Manager // Interaction manager for service graph and downstream calls
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
