@@ -5,6 +5,7 @@ type Scenario struct {
 	Hosts    []Host            `yaml:"hosts"`
 	Services []Service         `yaml:"services"`
 	Workload []WorkloadPattern `yaml:"workload"`
+	Policies *Policies         `yaml:"policies,omitempty"`
 }
 
 // Host represents a physical host

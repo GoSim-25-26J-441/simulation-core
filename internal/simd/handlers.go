@@ -7,6 +7,7 @@ import (
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/workload"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -22,10 +23,11 @@ type scenarioState struct {
 	rng       *utils.RandSource
 	rm        *resource.Manager  // Resource manager for tracking CPU/memory/queueing
 	collector *metrics.Collector // Metrics collector for time-series metrics
+	policies  *policy.Manager    // Policy manager for autoscaling, rate limiting, retries, circuit breaking
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
-func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector) *scenarioState {
+func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector, policies *policy.Manager) *scenarioState {
 	state := &scenarioState{
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
@@ -33,6 +35,7 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 		rng:       utils.NewRandSource(time.Now().UnixNano()),
 		rm:        rm,
 		collector: collector,
+		policies:  policies,
 	}
 
 	// Build service and endpoint maps
@@ -107,6 +110,28 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
+
+		// Check rate limiting policy
+		if state.policies != nil {
+			rateLimiting := state.policies.GetRateLimiting()
+			if rateLimiting != nil && !rateLimiting.AllowRequest(serviceID, endpointPath, simTime) {
+				// Rate limit exceeded, reject request
+				request.Status = models.RequestStatusFailed
+				labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+				return fmt.Errorf("rate limit exceeded for %s:%s", serviceID, endpointPath)
+			}
+
+			// Check circuit breaker policy
+			circuitBreaker := state.policies.GetCircuitBreaker()
+			if circuitBreaker != nil && !circuitBreaker.AllowRequest(serviceID, endpointPath) {
+				// Circuit is open, reject request
+				request.Status = models.RequestStatusFailed
+				labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+				return fmt.Errorf("circuit breaker open for %s:%s", serviceID, endpointPath)
+			}
+		}
 
 		// Record request arrival metric
 		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
@@ -217,6 +242,13 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			request.Status = models.RequestStatusFailed
 			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
 			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+			// Update circuit breaker policy (record failure)
+			if state.policies != nil {
+				circuitBreaker := state.policies.GetCircuitBreaker()
+				if circuitBreaker != nil {
+					circuitBreaker.RecordFailure(serviceID, endpointPath)
+				}
+			}
 			return fmt.Errorf("failed to allocate CPU: %w", err)
 		}
 		if err := state.rm.AllocateMemory(instanceID, memoryMB); err != nil {
@@ -225,6 +257,13 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			request.Status = models.RequestStatusFailed
 			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
 			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+			// Update circuit breaker policy (record failure)
+			if state.policies != nil {
+				circuitBreaker := state.policies.GetCircuitBreaker()
+				if circuitBreaker != nil {
+					circuitBreaker.RecordFailure(serviceID, endpointPath)
+				}
+			}
 			return fmt.Errorf("failed to allocate memory: %w", err)
 		}
 

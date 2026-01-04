@@ -6,6 +6,7 @@ import (
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
@@ -30,7 +31,7 @@ func TestNewScenarioState(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector)
+	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
 	if state == nil {
 		t.Fatalf("expected non-nil state")
 	}
@@ -116,7 +117,7 @@ func TestRegisterHandlers(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state := newScenarioState(scenario, rm, collector)
+	state := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
 	RegisterHandlers(eng, state)
 
 	// Verify handlers are registered by checking if they exist
