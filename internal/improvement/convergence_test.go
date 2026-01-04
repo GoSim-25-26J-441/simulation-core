@@ -70,10 +70,10 @@ func TestPlateauStrategy(t *testing.T) {
 
 	// Test with varying scores
 	history2 := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 90.0, Config: &config.Scenario{}},
-		{Iteration: 2, Score: 95.0, Config: &config.Scenario{}},
-		{Iteration: 3, Score: 85.0, Config: &config.Scenario{}},
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 90.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 2, Score: 95.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 3, Score: 85.0, Config: &config.Scenario{Services: []config.Service{}}},
 	}
 
 	converged, _ = strategy.CheckConvergence(history2)
@@ -171,10 +171,10 @@ func TestVarianceStrategy(t *testing.T) {
 
 	// Test with high variance
 	history2 := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 90.0, Config: &config.Scenario{}},
-		{Iteration: 2, Score: 95.0, Config: &config.Scenario{}},
-		{Iteration: 3, Score: 85.0, Config: &config.Scenario{}},
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 90.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 2, Score: 95.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 3, Score: 85.0, Config: &config.Scenario{Services: []config.Service{}}},
 	}
 
 	converged, _ = strategy.CheckConvergence(history2)
