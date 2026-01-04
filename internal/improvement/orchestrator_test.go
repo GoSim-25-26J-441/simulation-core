@@ -66,6 +66,81 @@ func TestConfigsMatch(t *testing.T) {
 	if configsMatch(c1, c4) {
 		t.Fatalf("expected c1 and c4 not to match (different service count)")
 	}
+
+	// Test nil scenarios
+	if !configsMatch(nil, nil) {
+		t.Fatalf("expected nil scenarios to match")
+	}
+	if configsMatch(c1, nil) {
+		t.Fatalf("expected c1 and nil not to match")
+	}
+	if configsMatch(nil, c1) {
+		t.Fatalf("expected nil and c1 not to match")
+	}
+
+	// Test CPU and Memory differences
+	c5 := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1.0, MemoryMB: 512},
+		},
+	}
+	c6 := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 2.0, MemoryMB: 512}, // Different CPU
+		},
+	}
+	c7 := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1.0, MemoryMB: 1024}, // Different memory
+		},
+	}
+	if configsMatch(c5, c6) {
+		t.Fatalf("expected c5 and c6 not to match (different CPU)")
+	}
+	if configsMatch(c5, c7) {
+		t.Fatalf("expected c5 and c7 not to match (different memory)")
+	}
+
+	// Test workload differences
+	c8 := &config.Scenario{
+		Services: []config.Service{{ID: "svc1", Replicas: 2}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 100}},
+		},
+	}
+	c9 := &config.Scenario{
+		Services: []config.Service{{ID: "svc1", Replicas: 2}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 200}}, // Different rate
+		},
+	}
+	if configsMatch(c8, c9) {
+		t.Fatalf("expected c8 and c9 not to match (different workload rate)")
+	}
+
+	// Test policies differences
+	c10 := &config.Scenario{
+		Services: []config.Service{{ID: "svc1", Replicas: 2}},
+		Policies: &config.Policies{
+			Autoscaling: &config.AutoscalingPolicy{Enabled: true, TargetCPUUtil: 0.7, ScaleStep: 1},
+		},
+	}
+	c11 := &config.Scenario{
+		Services: []config.Service{{ID: "svc1", Replicas: 2}},
+		Policies: &config.Policies{
+			Autoscaling: &config.AutoscalingPolicy{Enabled: true, TargetCPUUtil: 0.8, ScaleStep: 1}, // Different target
+		},
+	}
+	c12 := &config.Scenario{
+		Services: []config.Service{{ID: "svc1", Replicas: 2}},
+		// No policies
+	}
+	if configsMatch(c10, c11) {
+		t.Fatalf("expected c10 and c11 not to match (different autoscaling policy)")
+	}
+	if configsMatch(c10, c12) {
+		t.Fatalf("expected c10 and c12 not to match (one has policies, one doesn't)")
+	}
 }
 
 func TestOrchestratorGetActiveRuns(t *testing.T) {
