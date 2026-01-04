@@ -139,11 +139,94 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 		t.Fatalf("Engine run error: %v", err)
 	}
 
-	// Request should have failed or been handled
+	// Request should have failed due to memory allocation failure
 	req, ok := eng.GetRunManager().GetRequest("req-1")
-	if ok {
-		// Request may have failed or been processed
-		_ = req
+	if !ok {
+		t.Fatalf("expected request to exist")
+	}
+	
+	// Verify request was marked as failed
+	if req.Status != models.RequestStatusFailed {
+		t.Errorf("expected request status to be Failed, got %v", req.Status)
+	}
+	
+	// Verify error metrics were recorded
+	collector.Stop()
+	metrics := collector.ExportToRunMetrics()
+	if metrics.ErrorCount == 0 {
+		t.Error("expected error count to be greater than 0")
+	}
+}
+
+func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10.0,
+						CPUSigmaMs:   2.0,
+						NetLatencyMs: config.LatencySpec{Mean: 1.0, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state := newScenarioState(scenario, rm, collector)
+	RegisterHandlers(eng, state)
+
+	// Create a request with an invalid instance ID to force CPU allocation failure
+	request := &models.Request{
+		ID:          "req-cpu-fail",
+		TraceID:     "trace-cpu-fail",
+		ServiceName: "svc1",
+		Endpoint:    "/test",
+		Status:      models.RequestStatusPending,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata:    make(map[string]interface{}),
+	}
+	eng.GetRunManager().AddRequest(request)
+
+	// Schedule request start with invalid instance ID to trigger CPU allocation failure
+	eng.ScheduleAt(engine.EventTypeRequestStart, eng.GetSimTime(), request, "svc1", map[string]interface{}{
+		"endpoint_path": "/test",
+		"instance_id":   "invalid-instance-id",
+	})
+
+	// Run simulation
+	err := eng.Run(50 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("Engine run error: %v", err)
+	}
+
+	// Request should have failed due to CPU allocation failure
+	req, ok := eng.GetRunManager().GetRequest("req-cpu-fail")
+	if !ok {
+		t.Fatalf("expected request to exist")
+	}
+	
+	// Verify request was marked as failed
+	if req.Status != models.RequestStatusFailed {
+		t.Errorf("expected request status to be Failed, got %v", req.Status)
+	}
+	
+	// Verify error metrics were recorded
+	collector.Stop()
+	metrics := collector.ExportToRunMetrics()
+	if metrics.ErrorCount == 0 {
+		t.Error("expected error count to be greater than 0")
 	}
 }
 
