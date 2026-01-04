@@ -8,6 +8,13 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
+const (
+	// DefaultInstanceCPUCores is the default number of CPU cores allocated to a service instance
+	DefaultInstanceCPUCores = 1.0
+	// DefaultInstanceMemoryMB is the default amount of memory (in MB) allocated to a service instance
+	DefaultInstanceMemoryMB = 512.0
+)
+
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
 	mu        sync.RWMutex
@@ -52,7 +59,17 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
 			instanceID++
 
-			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, 1.0, 512.0) // Default: 1 CPU core, 512MB memory
+			// Use configured values if provided, otherwise use defaults
+			cpuCores := serviceConfig.CPUCores
+			if cpuCores == 0 {
+				cpuCores = DefaultInstanceCPUCores
+			}
+			memoryMB := serviceConfig.MemoryMB
+			if memoryMB == 0 {
+				memoryMB = DefaultInstanceMemoryMB
+			}
+
+			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
 			m.instances[instanceIDStr] = instance
 			m.hosts[hostID].AddService(instanceIDStr)
 		}
