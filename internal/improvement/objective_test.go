@@ -123,7 +123,83 @@ func TestP95LatencyObjective(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if score != 1e9 {
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty for zero latency, got %f", score)
+	}
+}
+
+func TestP99LatencyObjective(t *testing.T) {
+	obj := &P99LatencyObjective{}
+	if obj.Name() != "p99_latency_ms" {
+		t.Fatalf("expected name p99_latency_ms, got %s", obj.Name())
+	}
+	if !obj.Direction() {
+		t.Fatalf("expected minimize direction")
+	}
+
+	// Test with valid metrics
+	metrics := &simulationv1.RunMetrics{
+		LatencyP99Ms: 150.5,
+	}
+	score, err := obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 150.5 {
+		t.Fatalf("expected score 150.5, got %f", score)
+	}
+
+	// Test with nil metrics
+	_, err = obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
+	}
+
+	// Test with zero latency (should return high penalty)
+	metrics.LatencyP99Ms = 0
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty for zero latency, got %f", score)
+	}
+}
+
+func TestMeanLatencyObjective(t *testing.T) {
+	obj := &MeanLatencyObjective{}
+	if obj.Name() != "mean_latency_ms" {
+		t.Fatalf("expected name mean_latency_ms, got %s", obj.Name())
+	}
+	if !obj.Direction() {
+		t.Fatalf("expected minimize direction")
+	}
+
+	// Test with valid metrics
+	metrics := &simulationv1.RunMetrics{
+		LatencyMeanMs: 75.5,
+	}
+	score, err := obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 75.5 {
+		t.Fatalf("expected score 75.5, got %f", score)
+	}
+
+	// Test with nil metrics
+	_, err = obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
+	}
+
+	// Test with zero latency (should return high penalty)
+	metrics.LatencyMeanMs = 0
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty for zero latency, got %f", score)
 	}
 }
@@ -149,6 +225,32 @@ func TestThroughputObjective(t *testing.T) {
 	if score != -100.0 {
 		t.Fatalf("expected score -100.0, got %f", score)
 	}
+
+	// Test with nil metrics
+	_, err = obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
+	}
+
+	// Test with zero throughput (should return high penalty)
+	metrics.ThroughputRps = 0
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty for zero throughput, got %f", score)
+	}
+
+	// Test with negative throughput (should return high penalty)
+	metrics.ThroughputRps = -10.0
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty for negative throughput, got %f", score)
+	}
 }
 
 func TestErrorRateObjective(t *testing.T) {
@@ -166,6 +268,12 @@ func TestErrorRateObjective(t *testing.T) {
 	expected := 5.0 / 100.0
 	if score != expected {
 		t.Fatalf("expected score %f, got %f", expected, score)
+	}
+
+	// Test with nil metrics
+	_, err = obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
 	}
 
 	// Test with zero requests
@@ -208,6 +316,12 @@ func TestCostObjective(t *testing.T) {
 	expected := 0.6*0.4 + 0.35*0.3 + 5.0*0.3
 	if score != expected {
 		t.Fatalf("expected score %f, got %f", expected, score)
+	}
+
+	// Test with nil metrics
+	_, err = obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
 	}
 
 	// Test with no service metrics
