@@ -25,8 +25,9 @@ import (
 type RunExecutor struct {
 	store *RunStore
 
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
+	mu            sync.Mutex
+	cancels       map[string]context.CancelFunc
+	workloadStates map[string]*WorkloadState // key: runID
 }
 
 var (
@@ -37,8 +38,9 @@ var (
 
 func NewRunExecutor(store *RunStore) *RunExecutor {
 	return &RunExecutor{
-		store:   store,
-		cancels: make(map[string]context.CancelFunc),
+		store:         store,
+		cancels:       make(map[string]context.CancelFunc),
+		workloadStates: make(map[string]*WorkloadState),
 	}
 }
 
@@ -108,6 +110,11 @@ func (e *RunExecutor) cleanup(runID string) {
 		// Ensure cancel is called and remove.
 		cancel()
 		delete(e.cancels, runID)
+	}
+	// Stop and remove workload state
+	if ws, ok := e.workloadStates[runID]; ok {
+		ws.Stop()
+		delete(e.workloadStates, runID)
 	}
 	e.mu.Unlock()
 }
@@ -192,14 +199,22 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	}
 	RegisterHandlers(eng, state)
 
-	// Schedule workload
-	if err := ScheduleWorkload(eng, scenario, duration); err != nil {
-		logger.Error("failed to schedule workload", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload scheduling failed: %v", err)); setErr != nil {
+	// Initialize workload state for continuous event generation
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(duration)
+	workloadState := NewWorkloadState(runID, eng, endTime)
+	if err := workloadState.Start(scenario, startTime); err != nil {
+		logger.Error("failed to start workload state", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		}
 		return
 	}
+
+	// Store workload state for rate updates
+	e.mu.Lock()
+	e.workloadStates[runID] = workloadState
+	e.mu.Unlock()
 
 	// Run simulation
 	logger.Info("starting simulation", "run_id", runID, "duration", duration)
@@ -215,6 +230,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		}
 		return
 	}
+
+	// Stop workload state
+	e.mu.Lock()
+	if ws, ok := e.workloadStates[runID]; ok {
+		ws.Stop()
+	}
+	e.mu.Unlock()
 
 	// Stop metrics collection
 	metricsCollector.Stop()
