@@ -13,9 +13,9 @@ func TestHTTPServerHandleRunsMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store))
 
-	// Test GET /v1/runs (should be method not allowed)
+	// Test PUT /v1/runs (should be method not allowed)
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	req := httptest.NewRequest(http.MethodPut, "/v1/runs", nil)
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
