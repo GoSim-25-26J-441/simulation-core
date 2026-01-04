@@ -171,7 +171,6 @@ func TestGeneratorBurstyArrivalsLongDuration(t *testing.T) {
 	t.Logf("Scheduled %d events for 1-hour simulation with high burst rate", queueSize)
 }
 
-
 func TestGeneratorInvalidRate(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	g := NewGenerator(12345)

@@ -218,7 +218,7 @@ func (g *Generator) scheduleBurstyArrivals(eng *engine.Engine, startTime, endTim
 			interArrivalSeconds = 0.001 // Minimum 1ms
 		}
 		nextTime := currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
-		
+
 		// Safety check: ensure time is progressing to prevent infinite loops
 		if !lastTime.IsZero() && !nextTime.After(lastTime) {
 			return fmt.Errorf("bursty arrivals not making progress: time stuck at %v", currentTime)
