@@ -132,7 +132,7 @@ services:
 	}
 
 	exec := NewRunExecutor(store)
-	_, err := exec.Start("run-1")
+	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start should not error immediately: %v", err)
 	}
