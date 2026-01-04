@@ -500,17 +500,19 @@ func TestServiceInstanceMethods(t *testing.T) {
 
 	// Test CPU allocation and utilization
 	simTime := time.Now()
-	instance.AllocateCPU(2000.0, simTime) // 2000ms = 2 seconds of CPU time
+	instance.AllocateCPU(1000.0, simTime) // 1000ms = 1 second of CPU time
 	util = instance.CPUUtilization()
-	// Utilization = (2000ms / 1000) / 2.0 cores = 1.0 (100%)
-	if util != 1.0 {
-		t.Fatalf("expected 1.0 CPU utilization, got %f", util)
+	// Utilization = (1000ms / 1000ms window) / 2.0 cores = 0.5 (50%)
+	expected := 0.5
+	if util < expected-0.01 || util > expected+0.01 {
+		t.Fatalf("expected ~%.2f CPU utilization, got %f", expected, util)
 	}
 
-	// Test CPU utilization > 1.0 is clamped
-	instance.AllocateCPU(1000.0, simTime) // Additional 1 second
+	// Test CPU utilization clamping at 1.0
+	instance.AllocateCPU(3000.0, simTime) // Additional 3 seconds = 4 total
 	util = instance.CPUUtilization()
-	if util > 1.0 {
+	// Utilization = (4000ms / 1000ms window) / 2.0 cores = 2.0, clamped to 1.0
+	if util != 1.0 {
 		t.Fatalf("expected CPU utilization clamped to 1.0, got %f", util)
 	}
 
@@ -533,7 +535,8 @@ func TestServiceInstanceMethods(t *testing.T) {
 		t.Fatalf("expected no capacity when CPU at 100%%")
 	}
 
-	// Test release CPU
+	// Test release CPU - note that with time-window tracking, releasing
+	// doesn't reduce cpuUsageInWindow because the CPU was already consumed
 	instance.ReleaseCPU(2000.0, simTime)
 	if instance.ActiveRequests() == 0 {
 		t.Fatalf("expected active requests > 0 after partial release")
@@ -557,6 +560,53 @@ func TestServiceInstanceMethods(t *testing.T) {
 	util = instance.MemoryUtilization()
 	if util < 0 {
 		t.Fatalf("memory utilization should not be negative")
+	}
+}
+
+func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
+	instance := NewServiceInstance("inst-1", "svc1", "host-1", 2.0, 1024.0)
+	
+	// Test 1: CPU utilization within the same time window
+	simTime := time.Now()
+	instance.AllocateCPU(1000.0, simTime) // 1000ms CPU time
+	util := instance.CPUUtilization()
+	// Utilization = (1000ms / 1000ms window) / 2.0 cores = 0.5
+	if util < 0.49 || util > 0.51 {
+		t.Fatalf("expected ~0.5 CPU utilization within window, got %f", util)
+	}
+	
+	// Test 2: CPU utilization decays when time moves past the window
+	// Move simulation time forward by more than 1 second (the window duration)
+	futureTime := simTime.Add(2 * time.Second)
+	// Allocate CPU at the future time, which will start a new window
+	instance.AllocateCPU(0.001, futureTime) // Allocate minimal CPU to trigger window update
+	instance.ReleaseCPU(0.001, futureTime)  // Release it immediately
+	decayedUtil := instance.CPUUtilization()
+	// Utilization should be near 0 since the previous window has expired
+	// and we only allocated a negligible amount in the new window
+	if decayedUtil > 0.001 {
+		t.Fatalf("expected near-0 CPU utilization after window expires, got %f", decayedUtil)
+	}
+	
+	// Test 3: New CPU allocation in a new time window
+	instance.AllocateCPU(500.0, futureTime) // 500ms CPU time in new window
+	util = instance.CPUUtilization()
+	// Utilization = (500ms / 1000ms window) / 2.0 cores = 0.25
+	expected := 0.25
+	if util < expected-0.01 || util > expected+0.01 {
+		t.Fatalf("expected ~%.2f CPU utilization in new window, got %f", expected, util)
+	}
+	
+	// Test 4: Multiple allocations within the same window accumulate
+	instance2 := NewServiceInstance("inst-2", "svc2", "host-1", 4.0, 1024.0)
+	t1 := time.Now()
+	instance2.AllocateCPU(1000.0, t1)
+	instance2.AllocateCPU(1000.0, t1.Add(100*time.Millisecond)) // Still in same window
+	util = instance2.CPUUtilization()
+	// Utilization = (2000ms / 1000ms window) / 4.0 cores = 0.5
+	expected = 0.5
+	if util < expected-0.01 || util > expected+0.01 {
+		t.Fatalf("expected ~%.2f CPU utilization with multiple allocations, got %f", expected, util)
 	}
 }
 
