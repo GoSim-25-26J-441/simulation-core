@@ -156,7 +156,14 @@ func (s *ThresholdStrategy) CheckConvergence(history []OptimizationStep) (conver
 	}
 
 	// Check recent improvements
-	recentSteps := history[len(history)-s.config.NoImprovementIterations:]
+	windowSize := s.config.NoImprovementIterations
+	if len(history) < windowSize {
+		windowSize = len(history)
+	}
+	if windowSize < 2 {
+		return false, ""
+	}
+	recentSteps := history[len(history)-windowSize:]
 	if len(recentSteps) < 2 {
 		return false, ""
 	}
