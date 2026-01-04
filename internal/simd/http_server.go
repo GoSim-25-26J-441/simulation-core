@@ -10,6 +10,7 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
@@ -72,6 +73,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		runID := strings.TrimSuffix(path, ":stop")
 		if r.Method == http.MethodPost {
 			s.handleStopRun(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
+	// Check for /export suffix
+	if strings.HasSuffix(path, "/export") {
+		runID := strings.TrimSuffix(path, "/export")
+		if r.Method == http.MethodGet {
+			s.handleExportRun(w, r, runID)
 		} else {
 			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -324,6 +336,97 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 		"run_id": runID,
 		"points": pointsJSON,
 	})
+}
+
+// handleExportRun handles GET /v1/runs/{id}/export
+func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, runID string) {
+	rec, ok := s.store.Get(runID)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	// Build export data
+	export := map[string]any{
+		"run": convertRunToJSON(rec.Run),
+	}
+
+	// Include input/scenario configuration
+	if rec.Input != nil {
+		export["input"] = map[string]any{
+			"scenario_yaml": rec.Input.ScenarioYaml,
+			"duration_ms":   rec.Input.DurationMs,
+		}
+	}
+
+	// Include aggregated metrics if available
+	if rec.Metrics != nil {
+		export["metrics"] = convertMetricsToJSON(rec.Metrics)
+	}
+
+	// Include time-series data if collector is available
+	collector, hasCollector := s.store.GetCollector(runID)
+	if hasCollector && collector != nil {
+		timeSeriesData := s.exportTimeSeriesData(collector)
+		if len(timeSeriesData) > 0 {
+			export["time_series"] = timeSeriesData
+		}
+	}
+
+	s.writeJSON(w, http.StatusOK, export)
+}
+
+// exportTimeSeriesData exports all time-series data from collector
+func (s *HTTPServer) exportTimeSeriesData(collector *metrics.Collector) []map[string]any {
+	metricNames := collector.GetMetricNames()
+	if len(metricNames) == 0 {
+		return nil
+	}
+
+	result := make([]map[string]any, 0)
+
+	for _, metricName := range metricNames {
+		labelCombos := collector.GetLabelsForMetric(metricName)
+		if len(labelCombos) == 0 {
+			// Try with empty labels
+			points := collector.GetTimeSeries(metricName, nil)
+			if len(points) > 0 {
+				pointsJSON := make([]map[string]any, 0, len(points))
+				for _, point := range points {
+					pointsJSON = append(pointsJSON, map[string]any{
+						"timestamp": point.Timestamp.Format(time.RFC3339Nano),
+						"value":     point.Value,
+						"labels":    point.Labels,
+					})
+				}
+				result = append(result, map[string]any{
+					"metric": metricName,
+					"points": pointsJSON,
+				})
+			}
+		} else {
+			// Collect all points for this metric across all label combinations
+			allPoints := make([]map[string]any, 0)
+			for _, labels := range labelCombos {
+				points := collector.GetTimeSeries(metricName, labels)
+				for _, point := range points {
+					allPoints = append(allPoints, map[string]any{
+						"timestamp": point.Timestamp.Format(time.RFC3339Nano),
+						"value":     point.Value,
+						"labels":    point.Labels,
+					})
+				}
+			}
+			if len(allPoints) > 0 {
+				result = append(result, map[string]any{
+					"metric": metricName,
+					"points": allPoints,
+				})
+			}
+		}
+	}
+
+	return result
 }
 
 // parseTime parses time from ISO 8601 or Unix milliseconds

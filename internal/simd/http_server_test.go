@@ -657,3 +657,168 @@ func TestHTTPServerMetricsStreamWithInterval(t *testing.T) {
 		t.Fatalf("expected Content-Type text/event-stream")
 	}
 }
+
+func TestHTTPServerExportRun(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
+
+	// Create a run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Set status to running
+	_, err = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	if err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	// Create and store a collector with test data
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	now := time.Now()
+	labels := map[string]string{"service": "svc1", "instance": "svc1-1"}
+	collector.Record("cpu_utilization", 0.65, now, labels)
+	collector.Record("cpu_utilization", 0.72, now.Add(time.Second), labels)
+	collector.Record("memory_utilization", 0.45, now, labels)
+
+	collector.Stop()
+
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	// Set metrics
+	pbMetrics := &simulationv1.RunMetrics{
+		TotalRequests:      100,
+		SuccessfulRequests: 95,
+		FailedRequests:     5,
+		LatencyP95Ms:      150.5,
+		ThroughputRps:      10.0,
+	}
+	if err := store.SetMetrics(rec.Run.Id, pbMetrics); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+
+	// Test export endpoint
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var export map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &export); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	// Check run data
+	runData, ok := export["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run data")
+	}
+	if runData["id"] != "test-run" {
+		t.Fatalf("expected run id test-run, got %v", runData["id"])
+	}
+
+	// Check input data
+	inputData, ok := export["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input data")
+	}
+	if inputData["scenario_yaml"] != testScenarioYAML {
+		t.Fatalf("expected scenario yaml")
+	}
+
+	// Check metrics
+	metricsData, ok := export["metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metrics data")
+	}
+	if metricsData["total_requests"].(float64) != 100 {
+		t.Fatalf("expected total_requests 100, got %v", metricsData["total_requests"])
+	}
+
+	// Check time-series data
+	timeSeriesData, ok := export["time_series"].([]any)
+	if !ok {
+		t.Fatalf("expected time_series data")
+	}
+	if len(timeSeriesData) == 0 {
+		t.Fatalf("expected time-series data")
+	}
+}
+
+func TestHTTPServerExportRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/nonexistent/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHTTPServerExportRunWithoutCollector(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Create a run without collector
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Set metrics
+	pbMetrics := &simulationv1.RunMetrics{
+		TotalRequests: 50,
+	}
+	if err := store.SetMetrics(rec.Run.Id, pbMetrics); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+
+	// Test export (should work without collector, just no time-series)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var export map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &export); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	// Should have run, input, and metrics, but no time_series
+	if _, ok := export["run"]; !ok {
+		t.Fatalf("expected run data")
+	}
+	if _, ok := export["input"]; !ok {
+		t.Fatalf("expected input data")
+	}
+	if _, ok := export["metrics"]; !ok {
+		t.Fatalf("expected metrics data")
+	}
+	// time_series should not be present
+	if _, ok := export["time_series"]; ok {
+		t.Fatalf("expected no time_series data when collector not available")
+	}
+}
