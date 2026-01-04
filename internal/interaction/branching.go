@@ -25,21 +25,17 @@ func (s *DefaultBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *rand.R
 
 	for _, call := range calls {
 		// Use call_count_mean to determine how many times to call this downstream service
-		// For now, we round to nearest integer (could use Poisson distribution)
 		countMean := call.Call.CallCountMean
 		if countMean <= 0 {
 			countMean = 1.0 // Default to 1 call if not specified
 		}
 
-		// Round to nearest integer, with some randomness
-		count := int(math.Round(countMean))
-		if countMean < 1.0 {
-			// For fractional means, use probability
-			if rng.Float64() < countMean {
-				count = 1
-			} else {
-				count = 0
-			}
+		// Stochastic rounding: use integer part plus one extra with probability equal to the fractional part
+		base := int(math.Floor(countMean))
+		frac := countMean - float64(base)
+		count := base
+		if frac > 0 && rng.Float64() < frac {
+			count++
 		}
 
 		// Add the call count times
