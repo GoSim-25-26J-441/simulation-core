@@ -91,7 +91,9 @@ func (s *ServiceInstance) CPUUtilization() float64 {
 	return s.cpuUtilizationAt(time.Now())
 }
 
-// cpuUtilizationAt calculates CPU utilization at a specific time (internal, lock must be held)
+// cpuUtilizationAt calculates CPU utilization at a specific time.
+// This is an internal method that assumes the caller holds the read lock (s.mu.RLock).
+// For public use, call CPUUtilization() instead.
 func (s *ServiceInstance) cpuUtilizationAt(currentTime time.Time) float64 {
 	if s.cpuCores == 0 {
 		return 0.0

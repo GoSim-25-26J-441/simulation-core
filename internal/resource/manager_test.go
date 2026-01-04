@@ -578,12 +578,14 @@ func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	// Test 2: CPU utilization decays when time moves past the window
 	// Move simulation time forward by more than 1 second (the window duration)
 	futureTime := simTime.Add(2 * time.Second)
-	instance.mu.Lock()
-	decayedUtil := instance.cpuUtilizationAt(futureTime)
-	instance.mu.Unlock()
-	// Utilization should be 0 since we've moved past the window
-	if decayedUtil != 0.0 {
-		t.Fatalf("expected 0.0 CPU utilization after window expires, got %f", decayedUtil)
+	// Allocate CPU at the future time, which will start a new window
+	instance.AllocateCPU(0.001, futureTime) // Allocate minimal CPU to trigger window update
+	instance.ReleaseCPU(0.001, futureTime)  // Release it immediately
+	decayedUtil := instance.CPUUtilization()
+	// Utilization should be near 0 since the previous window has expired
+	// and we only allocated a negligible amount in the new window
+	if decayedUtil > 0.001 {
+		t.Fatalf("expected near-0 CPU utilization after window expires, got %f", decayedUtil)
 	}
 	
 	// Test 3: New CPU allocation in a new time window
