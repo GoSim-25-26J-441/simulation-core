@@ -11,20 +11,22 @@ import (
 
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
-	mu              sync.RWMutex
-	hosts           map[string]*Host
-	instances       map[string]*ServiceInstance
-	hostToInstances map[string][]string // host ID -> instance IDs
-	roundRobinIdx   map[string]int      // service name -> last selected instance index
+	mu                   sync.RWMutex
+	hosts                map[string]*Host
+	instances            map[string]*ServiceInstance
+	hostToInstances      map[string][]string           // host ID -> instance IDs
+	roundRobinIdx        map[string]int                // service name -> last selected instance index
+	sortedServiceInstMap map[string][]*ServiceInstance // service name -> sorted instances (cached)
 }
 
 // NewManager creates a new resource manager
 func NewManager() *Manager {
 	return &Manager{
-		hosts:           make(map[string]*Host),
-		instances:       make(map[string]*ServiceInstance),
-		hostToInstances: make(map[string][]string),
-		roundRobinIdx:   make(map[string]int),
+		hosts:                make(map[string]*Host),
+		instances:            make(map[string]*ServiceInstance),
+		hostToInstances:      make(map[string][]string),
+		roundRobinIdx:        make(map[string]int),
+		sortedServiceInstMap: make(map[string][]*ServiceInstance),
 	}
 }
 
@@ -64,6 +66,9 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 			m.hosts[hostID].AddService(instanceIDStr)
 		}
 	}
+
+	// Build the sorted instance cache for each service
+	m.rebuildSortedInstanceCache()
 
 	return nil
 }
@@ -107,16 +112,11 @@ func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	instances := m.getInstancesForServiceLocked(serviceName)
-
-	if len(instances) == 0 {
+	// Use cached sorted instances if available
+	instances, ok := m.sortedServiceInstMap[serviceName]
+	if !ok || len(instances) == 0 {
 		return nil, fmt.Errorf("no instances available for service %s", serviceName)
 	}
-
-	// Sort instances by ID for consistent ordering across calls
-	sort.Slice(instances, func(i, j int) bool {
-		return instances[i].ID() < instances[j].ID()
-	})
 
 	// Get the current index for this service (defaults to 0)
 	idx := m.roundRobinIdx[serviceName]
@@ -128,6 +128,25 @@ func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance
 	m.roundRobinIdx[serviceName] = (idx + 1) % len(instances)
 
 	return selectedInstance, nil
+}
+
+// rebuildSortedInstanceCache rebuilds the cache of sorted instances per service
+// Assumes lock is already held by caller
+func (m *Manager) rebuildSortedInstanceCache() {
+	// Group instances by service
+	serviceInstances := make(map[string][]*ServiceInstance)
+	for _, instance := range m.instances {
+		serviceName := instance.ServiceName()
+		serviceInstances[serviceName] = append(serviceInstances[serviceName], instance)
+	}
+
+	// Sort and cache each service's instances
+	for serviceName, instances := range serviceInstances {
+		sort.Slice(instances, func(i, j int) bool {
+			return instances[i].ID() < instances[j].ID()
+		})
+		m.sortedServiceInstMap[serviceName] = instances
+	}
 }
 
 // AllocateCPU allocates CPU resources for a request
