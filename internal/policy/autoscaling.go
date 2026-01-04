@@ -27,7 +27,7 @@ func NewAutoscalingPolicyFromConfig(cfg *config.AutoscalingPolicy) AutoscalingPo
 	if targetCPU <= 0 {
 		targetCPU = 0.7 // Default to 70% if invalid
 	}
-	
+
 	return &autoscalingPolicy{
 		enabled:       cfg.Enabled,
 		targetCPUUtil: targetCPU,
@@ -43,7 +43,7 @@ func NewAutoscalingPolicy(enabled bool, targetCPUUtil float64, scaleStep, minRep
 	if targetCPUUtil <= 0 {
 		targetCPUUtil = 0.7 // Default to 70% if invalid
 	}
-	
+
 	return &autoscalingPolicy{
 		enabled:       enabled,
 		targetCPUUtil: targetCPUUtil,
