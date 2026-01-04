@@ -213,11 +213,18 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 
 		// Allocate resources
 		if err := state.rm.AllocateCPU(instanceID, cpuTimeMs, simTime); err != nil {
+			// Mark request as failed and record error metric
+			request.Status = models.RequestStatusFailed
+			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
 			return fmt.Errorf("failed to allocate CPU: %w", err)
 		}
 		if err := state.rm.AllocateMemory(instanceID, memoryMB); err != nil {
 			// If memory allocation fails, release CPU and fail request
 			state.rm.ReleaseCPU(instanceID, cpuTimeMs, simTime)
+			request.Status = models.RequestStatusFailed
+			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
 			return fmt.Errorf("failed to allocate memory: %w", err)
 		}
 

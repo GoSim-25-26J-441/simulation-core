@@ -231,14 +231,14 @@ func TestManagerAllocateMemory(t *testing.T) {
 	instances := m.GetInstancesForService("svc1")
 	instanceID := instances[0].ID()
 
-	// Since host has 0GB memory (default), allocation should fail
-	// This tests the capacity check
+	// Since host has 0GB memory (default), this means unlimited capacity
+	// Memory allocation should succeed
 	err = m.AllocateMemory(instanceID, 100.0) // 100MB
-	if err == nil {
-		t.Fatalf("expected error when host memory is 0GB")
+	if err != nil {
+		t.Fatalf("expected no error when host has unlimited memory (0GB), got: %v", err)
 	}
 
-	// Test direct instance memory allocation (bypassing host check for this test)
+	// Test direct instance memory allocation
 	instance, ok := m.GetServiceInstance(instanceID)
 	if !ok {
 		t.Fatalf("expected instance to exist")
@@ -287,10 +287,10 @@ func TestManagerAllocateMemoryErrorCases(t *testing.T) {
 	instances := m.GetInstancesForService("svc1")
 	instanceID := instances[0].ID()
 
-	// Try to allocate memory - should fail because host has 0GB memory
+	// Host has 0GB memory (unlimited), so allocation should succeed
 	err = m.AllocateMemory(instanceID, 100.0) // 100MB
-	if err == nil {
-		t.Fatalf("expected error when host memory is 0GB")
+	if err != nil {
+		t.Fatalf("expected no error when host has unlimited memory (0GB), got: %v", err)
 	}
 }
 

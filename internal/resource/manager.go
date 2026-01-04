@@ -168,8 +168,8 @@ func (m *Manager) AllocateMemory(instanceID string, memoryMB float64) error {
 		return fmt.Errorf("host not found: %s", instance.HostID())
 	}
 
-	// Check host memory capacity
-	if host.MemoryUtilization()+(memoryMB/1024.0)/float64(host.MemoryGB()) > 1.0 {
+	// Check host memory capacity (skip check if host has unlimited memory, i.e., 0 GB configured)
+	if host.MemoryGB() > 0 && host.MemoryUtilization()+(memoryMB/1024.0)/float64(host.MemoryGB()) > 1.0 {
 		return fmt.Errorf("host memory at capacity")
 	}
 
