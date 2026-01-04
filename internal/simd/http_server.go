@@ -326,10 +326,14 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 			return
 		}
 	}
-	// Validate time range when both bounds are provided
-	if !startTime.IsZero() && !endTime.IsZero() && endTime.Before(startTime) {
-		s.writeError(w, http.StatusBadRequest, "end_time must not be before start_time")
-		return
+
+	// Build labels filter
+	labels := make(map[string]string)
+	if service != "" {
+		labels["service"] = service
+	}
+	if instance != "" {
+		labels["instance"] = instance
 	}
 
 	// Collect time-series points
@@ -371,15 +375,13 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 		}
 	}
 
-	// Filter by time range if specified (inclusive on both ends)
+	// Filter by time range if specified
 	if !startTime.IsZero() || !endTime.IsZero() {
 		filtered := make([]*models.MetricPoint, 0, len(allPoints))
 		for _, point := range allPoints {
-			// Exclude points before startTime (includes points >= startTime)
 			if !startTime.IsZero() && point.Timestamp.Before(startTime) {
 				continue
 			}
-			// Exclude points after endTime (includes points <= endTime)
 			if !endTime.IsZero() && point.Timestamp.After(endTime) {
 				continue
 			}
@@ -507,6 +509,7 @@ func parseTime(timeStr string) (time.Time, error) {
 	formats := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
 		"2006-01-02T15:04:05",
 	}
 
@@ -607,14 +610,6 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			}
 
 			// Send time-series metric updates if collector is available
-			// Re-check for a collector in case it became available after the stream started
-			if !hasCollector {
-				if c, ok := s.store.GetCollector(runID); ok {
-					collector = c
-					hasCollector = true
-				}
-			}
-
 			if hasCollector && collector != nil {
 				// Get all metrics and send new/updated points
 				metricNames := collector.GetMetricNames()

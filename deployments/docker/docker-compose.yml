@@ -22,7 +22,7 @@ services:
     networks:
       - sim-network
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --spider http://localhost:8080/healthz || exit 1"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -48,7 +48,7 @@ services:
     # Ports are not exposed for scaled instances (use internal networking)
     # Backend can access via service name: simd-instance_1, simd-instance_2, etc.
     healthcheck:
-      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --spider http://localhost:8080/healthz || exit 1"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
