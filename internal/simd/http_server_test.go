@@ -822,3 +822,169 @@ func TestHTTPServerExportRunWithoutCollector(t *testing.T) {
 		t.Fatalf("expected no time_series data when collector not available")
 	}
 }
+
+func TestHTTPServerListRuns(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Create some test runs
+	for i := 0; i < 5; i++ {
+		_, err := store.Create("", &simulationv1.RunInput{ScenarioYaml: "test"})
+		if err != nil {
+			t.Fatalf("Create error: %v", err)
+		}
+	}
+
+	// Test GET /v1/runs (default)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	runs, ok := body["runs"].([]any)
+	if !ok {
+		t.Fatalf("expected runs array")
+	}
+	if len(runs) == 0 {
+		t.Fatalf("expected at least one run")
+	}
+
+	pagination, ok := body["pagination"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pagination object")
+	}
+	if pagination["limit"] == nil {
+		t.Fatalf("expected limit in pagination")
+	}
+	if pagination["offset"] == nil {
+		t.Fatalf("expected offset in pagination")
+	}
+	if pagination["count"] == nil {
+		t.Fatalf("expected count in pagination")
+	}
+}
+
+func TestHTTPServerListRunsWithPagination(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Create 10 test runs
+	for i := 0; i < 10; i++ {
+		_, err := store.Create("", &simulationv1.RunInput{ScenarioYaml: "test"})
+		if err != nil {
+			t.Fatalf("Create error: %v", err)
+		}
+	}
+
+	// Test with limit
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs?limit=3", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	runs, ok := body["runs"].([]any)
+	if !ok {
+		t.Fatalf("expected runs array")
+	}
+	if len(runs) != 3 {
+		t.Fatalf("expected 3 runs, got %d", len(runs))
+	}
+
+	pagination, ok := body["pagination"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pagination object")
+	}
+	if pagination["limit"].(float64) != 3 {
+		t.Fatalf("expected limit 3, got %v", pagination["limit"])
+	}
+
+	// Test with offset
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/v1/runs?limit=3&offset=3", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	runs, ok = body["runs"].([]any)
+	if !ok {
+		t.Fatalf("expected runs array")
+	}
+	if len(runs) != 3 {
+		t.Fatalf("expected 3 runs with offset, got %d", len(runs))
+	}
+
+	pagination, ok = body["pagination"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pagination object")
+	}
+	if pagination["offset"].(float64) != 3 {
+		t.Fatalf("expected offset 3, got %v", pagination["offset"])
+	}
+}
+
+func TestHTTPServerListRunsWithStatusFilter(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Create runs with different statuses
+	rec1, _ := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "test"})
+	store.SetStatus("run-1", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+
+	rec2, _ := store.Create("run-2", &simulationv1.RunInput{ScenarioYaml: "test"})
+	store.SetStatus("run-2", simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+
+	rec3, _ := store.Create("run-3", &simulationv1.RunInput{ScenarioYaml: "test"})
+	store.SetStatus("run-3", simulationv1.RunStatus_RUN_STATUS_PENDING, "")
+
+	// Test filter by COMPLETED
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs?status=completed", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	runs, ok := body["runs"].([]any)
+	if !ok {
+		t.Fatalf("expected runs array")
+	}
+	if len(runs) != 1 {
+		t.Fatalf("expected 1 completed run, got %d", len(runs))
+	}
+
+	run, ok := runs[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run object")
+	}
+	if run["id"].(string) != rec1.Run.Id {
+		t.Fatalf("expected run-1, got %v", run["id"])
+	}
+}

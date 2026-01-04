@@ -2,6 +2,7 @@ package simd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -73,20 +74,52 @@ func (s *RunStore) Get(runID string) (*RunRecord, bool) {
 }
 
 func (s *RunStore) List(limit int) []*RunRecord {
+	return s.ListFiltered(limit, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)
+}
+
+// ListFiltered returns runs with pagination and optional status filter
+// limit: maximum number of runs to return (default: 50)
+// offset: number of runs to skip (default: 0)
+// status: filter by status (RUN_STATUS_UNSPECIFIED means no filter)
+func (s *RunStore) ListFiltered(limit, offset int, status simulationv1.RunStatus) []*RunRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if limit <= 0 {
 		limit = 50
 	}
-	out := make([]*RunRecord, 0, minInt(limit, len(s.runs)))
-	for _, rec := range s.runs {
-		out = append(out, cloneRunRecord(rec))
-		if len(out) >= limit {
-			break
-		}
+	if offset < 0 {
+		offset = 0
 	}
-	return out
+
+	// Collect all matching runs
+	allRuns := make([]*RunRecord, 0, len(s.runs))
+	for _, rec := range s.runs {
+		// Filter by status if specified
+		if status != simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED && rec.Run.Status != status {
+			continue
+		}
+		allRuns = append(allRuns, cloneRunRecord(rec))
+	}
+
+	// Sort by creation time (newest first)
+	sortRunRecords(allRuns)
+
+	// Apply pagination
+	start := offset
+	if start > len(allRuns) {
+		return []*RunRecord{}
+	}
+	end := start + limit
+	if end > len(allRuns) {
+		end = len(allRuns)
+	}
+
+	if start >= end {
+		return []*RunRecord{}
+	}
+
+	return allRuns[start:end]
 }
 
 func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg string) (*RunRecord, error) {
@@ -159,6 +192,13 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// sortRunRecords sorts runs by creation time (newest first)
+func sortRunRecords(runs []*RunRecord) {
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].Run.CreatedAtUnixMs > runs[j].Run.CreatedAtUnixMs
+	})
 }
 
 func cloneRunRecord(rec *RunRecord) *RunRecord {

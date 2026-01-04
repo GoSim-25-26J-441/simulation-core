@@ -54,6 +54,8 @@ func (s *HTTPServer) handleRuns(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		s.handleCreateRun(w, r)
+	case http.MethodGet:
+		s.handleListRuns(w, r)
 	default:
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -165,6 +167,73 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusCreated, map[string]any{
 		"run": convertRunToJSON(rec.Run),
 	})
+}
+
+// handleListRuns handles GET /v1/runs with pagination and filtering
+func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
+	// Parse query parameters
+	limit := 50
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 {
+			limit = parsed
+			// Cap at reasonable maximum
+			if limit > 1000 {
+				limit = 1000
+			}
+		}
+	}
+
+	offset := 0
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		if parsed, err := strconv.Atoi(offsetStr); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+
+	// Parse status filter
+	var statusFilter simulationv1.RunStatus = simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED
+	if statusStr := r.URL.Query().Get("status"); statusStr != "" {
+		statusFilter = parseRunStatus(statusStr)
+	}
+
+	// Get filtered and paginated runs
+	runs := s.store.ListFiltered(limit, offset, statusFilter)
+
+	// Convert to JSON format
+	runsJSON := make([]map[string]any, 0, len(runs))
+	for _, rec := range runs {
+		runsJSON = append(runsJSON, convertRunToJSON(rec.Run))
+	}
+
+	// Return response with pagination metadata
+	response := map[string]any{
+		"runs": runsJSON,
+		"pagination": map[string]any{
+			"limit":  limit,
+			"offset": offset,
+			"count":  len(runs),
+		},
+	}
+
+	s.writeJSON(w, http.StatusOK, response)
+}
+
+// parseRunStatus parses a status string to RunStatus enum
+func parseRunStatus(statusStr string) simulationv1.RunStatus {
+	switch strings.ToUpper(statusStr) {
+	case "PENDING":
+		return simulationv1.RunStatus_RUN_STATUS_PENDING
+	case "RUNNING":
+		return simulationv1.RunStatus_RUN_STATUS_RUNNING
+	case "COMPLETED":
+		return simulationv1.RunStatus_RUN_STATUS_COMPLETED
+	case "FAILED":
+		return simulationv1.RunStatus_RUN_STATUS_FAILED
+	case "CANCELLED":
+		return simulationv1.RunStatus_RUN_STATUS_CANCELLED
+	default:
+		return simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED
+	}
 }
 
 // handleGetRun handles GET /v1/runs/{id}
