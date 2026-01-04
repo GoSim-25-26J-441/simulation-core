@@ -321,7 +321,12 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
 		metrics.RecordLatency(state.collector, totalLatencyMs, simTime, labels)
 
-		// Also record in run manager for backward compatibility
+		// Also record in run manager for backward compatibility.
+		// NOTE: The metrics collector above is the primary/source-of-truth metrics system.
+		//       This run manager metric is kept only to support legacy consumers that
+		//       still depend on RunManager-based metrics.
+		// TODO: Remove rm.RecordLatency once all metrics consumers have migrated
+		//       to the new collector-based metrics pipeline.
 		rm.RecordLatency(totalLatencyMs)
 
 		// Find endpoint to check for downstream calls
