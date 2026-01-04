@@ -231,13 +231,6 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		return
 	}
 
-	// Stop workload state
-	e.mu.Lock()
-	if ws, ok := e.workloadStates[runID]; ok {
-		ws.Stop()
-	}
-	e.mu.Unlock()
-
 	// Stop metrics collection
 	metricsCollector.Stop()
 

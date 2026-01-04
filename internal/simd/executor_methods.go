@@ -12,6 +12,10 @@ func (e *RunExecutor) UpdateWorkloadRate(runID string, patternKey string, newRat
 		return ErrRunIDMissing
 	}
 
+	if newRateRPS <= 0 {
+		return fmt.Errorf("rate must be positive, got: %f", newRateRPS)
+	}
+
 	e.mu.Lock()
 	workloadState, ok := e.workloadStates[runID]
 	e.mu.Unlock()

@@ -32,7 +32,7 @@ type WorkloadState struct {
 	engine    *engine.Engine
 	ctx       context.Context
 	cancel    context.CancelFunc
-	endTime   time.Time
+	endTime   time.Time // Immutable after initialization, safe to read without lock
 	mu        sync.RWMutex
 }
 
@@ -90,9 +90,9 @@ func (ws *WorkloadState) Stop() {
 // UpdateRate updates the rate for a specific workload pattern
 func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error {
 	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
 	patternState, ok := ws.patterns[patternKey]
+	ws.mu.Unlock()
+
 	if !ok {
 		return fmt.Errorf("workload pattern not found: %s", patternKey)
 	}
@@ -117,9 +117,9 @@ func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error
 // UpdatePattern updates an entire workload pattern
 func (ws *WorkloadState) UpdatePattern(patternKey string, pattern config.WorkloadPattern) error {
 	ws.mu.Lock()
-	defer ws.mu.Unlock()
-
 	patternState, ok := ws.patterns[patternKey]
+	ws.mu.Unlock()
+
 	if !ok {
 		return fmt.Errorf("workload pattern not found: %s", patternKey)
 	}
@@ -256,8 +256,9 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		}
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 
-	case "uniform":
-		// Uniform distribution - constant inter-arrival time
+	case "uniform", "constant":
+		// Uniform/Constant distribution - deterministic constant inter-arrival time
+		// Both types produce the same behavior: fixed interval = 1/rate
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
 			rateRPS = 1.0
@@ -283,18 +284,10 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		}
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 
-	case "constant":
-		// Constant rate
-		rateRPS := arrival.RateRPS
-		if rateRPS <= 0 {
-			rateRPS = 1.0
-		}
-		interArrivalSeconds := 1.0 / rateRPS
-		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
-
 	case "bursty":
-		// Bursty - simplified: use base rate for now
-		// TODO: Implement full bursty logic
+		// Bursty arrival pattern - currently uses exponential/Poisson distribution
+		// TODO: Implement full bursty logic with burst periods and idle periods
+		// For now, this is an alias for Poisson distribution
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
 			rateRPS = 1.0
