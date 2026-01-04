@@ -113,11 +113,12 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 
 	rec, err := s.store.Create(req.RunID, req.Input)
 	if err != nil {
-		if strings.Contains(err.Error(), "already exists") {
+		switch {
+		case strings.Contains(err.Error(), "already exists"):
 			s.writeError(w, http.StatusConflict, err.Error())
-		} else if strings.Contains(err.Error(), "cannot contain") {
+		case strings.Contains(err.Error(), "cannot contain"):
 			s.writeError(w, http.StatusBadRequest, err.Error())
-		} else {
+		default:
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 		}
 		return
