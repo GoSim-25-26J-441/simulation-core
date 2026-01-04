@@ -43,6 +43,17 @@ coverage.out
 coverage
 coverage.html
 *.prof
+coverage_metrics
+coverage_resource
+coverage_simd
+coverage_workload
+coverage_optimization
+coverage_bottleneck
+coverage_deterministic
+coverage_heuristic
+coverage_heuristic_optimization
+coverage_heuristic_optimization_bottleneck
+coverage_heuristic_optimization_deterministic
 
 # Generated protobuf code (buf output)
 gen/
