@@ -10,11 +10,13 @@ services:
       - path: /auth/login
         mean_cpu_ms: 50
         cpu_sigma_ms: 20
+        default_memory_mb: 15.0  # Auth login uses more memory
         downstream: []
         net_latency_ms: {mean: 2, sigma: 1}
       - path: /auth/verify
         mean_cpu_ms: 5
         cpu_sigma_ms: 3
+        default_memory_mb: 5.0  # Auth verify uses less memory
         downstream: []
         net_latency_ms: {mean: 1, sigma: 0.5}
 

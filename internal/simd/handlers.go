@@ -201,8 +201,12 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		}
 		request.NetworkLatencyMs = netLatencyMs
 
-		// Estimate memory usage (simplified: assume 10MB per request)
-		memoryMB := 10.0
+		// Get memory usage from configuration or metadata
+		memoryMB := endpoint.DefaultMemoryMB
+		if memoryMB == 0 {
+			memoryMB = 10.0 // Fallback to 10MB if not configured
+		}
+		// Allow override from metadata
 		if mem, ok := request.Metadata["memory_mb"].(float64); ok {
 			memoryMB = mem
 		}
