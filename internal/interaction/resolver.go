@@ -81,10 +81,9 @@ func (g *Graph) ValidateDownstreamTarget(target string) error {
 	}
 
 	// Optionally validate that the endpoint exists
-	if _, exists := g.GetEndpoint(serviceID, path); !exists {
-		// For now, we allow calls to non-existent endpoints (they'll fail at runtime)
-		// This allows more flexible scenarios
-	}
+	// For now, we allow calls to non-existent endpoints (they'll fail at runtime)
+	// This allows more flexible scenarios
+	_, _ = g.GetEndpoint(serviceID, path) // Check if endpoint exists, but don't fail if it doesn't
 
 	return nil
 }
