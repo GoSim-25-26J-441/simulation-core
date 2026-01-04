@@ -8,20 +8,25 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
+const (
+	// DefaultInstanceCPUCores is the default number of CPU cores allocated to a service instance
+	DefaultInstanceCPUCores = 1.0
+	// DefaultInstanceMemoryMB is the default amount of memory (in MB) allocated to a service instance
+	DefaultInstanceMemoryMB = 512.0
+)
+
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
-	mu              sync.RWMutex
-	hosts           map[string]*Host
-	instances       map[string]*ServiceInstance
-	hostToInstances map[string][]string // host ID -> instance IDs
+	mu        sync.RWMutex
+	hosts     map[string]*Host
+	instances map[string]*ServiceInstance
 }
 
 // NewManager creates a new resource manager
 func NewManager() *Manager {
 	return &Manager{
-		hosts:           make(map[string]*Host),
-		instances:       make(map[string]*ServiceInstance),
-		hostToInstances: make(map[string][]string),
+		hosts:     make(map[string]*Host),
+		instances: make(map[string]*ServiceInstance),
 	}
 }
 
@@ -34,7 +39,6 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 	for _, hostConfig := range scenario.Hosts {
 		host := NewHost(hostConfig.ID, hostConfig.Cores, 16*1024) // Memory not specified in config, default to 16GB (in MB units)
 		m.hosts[hostConfig.ID] = host
-		m.hostToInstances[hostConfig.ID] = make([]string, 0)
 	}
 
 	// Initialize service instances
@@ -55,9 +59,18 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
 			instanceID++
 
-			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, 1.0, 512.0) // Default: 1 CPU core, 512MB memory
+			// Use configured values if provided, otherwise use defaults
+			cpuCores := serviceConfig.CPUCores
+			if cpuCores == 0 {
+				cpuCores = DefaultInstanceCPUCores
+			}
+			memoryMB := serviceConfig.MemoryMB
+			if memoryMB == 0 {
+				memoryMB = DefaultInstanceMemoryMB
+			}
+
+			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
 			m.instances[instanceIDStr] = instance
-			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
 			m.hosts[hostID].AddService(instanceIDStr)
 		}
 	}
@@ -336,12 +349,12 @@ func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
 	return instances
 }
 
-// updateHostCPUUtilizationWithData recalculates host CPU utilization from provided instances
-// This method does not hold the Manager lock and operates on the provided data to avoid
-// lock hierarchy issues. It acquires locks only on the Host and ServiceInstance objects.
-func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*ServiceInstance) {
 	totalCPUUsed := 0.0
-	for _, instance := range instances {
+
+	for _, instance := range m.instances {
+		if instance.HostID() != hostID {
+			continue
+		}
 		// Sum up CPU utilization from all instances
 		// CPU utilization is measured as cores used per second
 		// We need to aggregate the active CPU time
@@ -362,12 +375,19 @@ func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*Serv
 	}
 }
 
-// updateHostMemoryUtilizationWithData recalculates host memory utilization from provided instances
-// This method does not hold the Manager lock and operates on the provided data to avoid
-// lock hierarchy issues. It acquires locks only on the Host and ServiceInstance objects.
-func (m *Manager) updateHostMemoryUtilizationWithData(host *Host, instances []*ServiceInstance) {
+// updateHostMemoryUtilization recalculates host memory utilization from all instances
+func (m *Manager) updateHostMemoryUtilization(hostID string) {
+	host, ok := m.hosts[hostID]
+	if !ok {
+		return
+	}
+
 	totalMemoryUsedMB := 0.0
-	for _, instance := range instances {
+
+	for _, instance := range m.instances {
+		if instance.HostID() != hostID {
+			continue
+		}
 		// Sum up memory usage from all instances
 		totalMemoryUsedMB += instance.ActiveMemoryMB()
 	}

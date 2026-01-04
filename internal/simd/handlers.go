@@ -248,8 +248,30 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			queueLength := instance.QueueLength()
 			metrics.RecordQueueLength(state.collector, float64(queueLength), simTime, instanceLabels)
 
-			// Model queueing delay: each queued request adds 1ms delay
-			queueDelayMs := float64(queueLength) * 1.0
+			// Model queueing delay based on mean service time
+			// Queue delay is estimated as the sum of expected service times for all queued requests.
+			// This assumes:
+			// - FIFO queue processing
+			// - Independent, identically distributed service times
+			// - Mean service time ≈ mean CPU time + mean network latency
+			// - No variance in service times (uses mean values)
+			//
+			// Limitations:
+			// - Does not account for actual variability in service times
+			// - Assumes all queued requests have similar characteristics
+			// - Does not model complex queueing effects (e.g., head-of-line blocking)
+			//
+			// For more accurate modeling, consider implementing a detailed queueing theory model
+			// (e.g., M/M/1, M/G/1) with actual service time distributions.
+			queueDelayMs := 0.0
+			if queueLength > 0 {
+				meanServiceTimeMs := endpoint.MeanCPUMs + endpoint.NetLatencyMs.Mean
+				// Ensure non-negative service time
+				if meanServiceTimeMs < 0 {
+					meanServiceTimeMs = 0
+				}
+				queueDelayMs = float64(queueLength) * meanServiceTimeMs
+			}
 			request.Metadata["queue_delay_ms"] = queueDelayMs
 		}
 
@@ -436,6 +458,3 @@ func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration ti
 
 	return nil
 }
-
-// Legacy functions removed - now using workload.Generator
-// These are kept for backward compatibility but delegate to the new generator
