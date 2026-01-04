@@ -126,13 +126,7 @@ func (m *Manager) AllocateCPU(instanceID string, cpuTimeMs float64, simTime time
 	}
 
 	// Get all instances on this host for utilization calculation
-	instanceIDs := m.hostToInstances[hostID]
-	instances := make([]*ServiceInstance, 0, len(instanceIDs))
-	for _, id := range instanceIDs {
-		if inst, ok := m.instances[id]; ok {
-			instances = append(instances, inst)
-		}
-	}
+	instances := m.collectInstancesForHost(hostID)
 	m.mu.Unlock()
 
 	// Now perform operations without holding Manager lock
@@ -163,13 +157,7 @@ func (m *Manager) ReleaseCPU(instanceID string, cpuTimeMs float64, simTime time.
 	}
 
 	// Get all instances on this host for utilization calculation
-	instanceIDs := m.hostToInstances[hostID]
-	instances := make([]*ServiceInstance, 0, len(instanceIDs))
-	for _, id := range instanceIDs {
-		if inst, ok := m.instances[id]; ok {
-			instances = append(instances, inst)
-		}
-	}
+	instances := m.collectInstancesForHost(hostID)
 	m.mu.Unlock()
 
 	// Release CPU and update utilization without holding Manager lock
@@ -195,6 +183,10 @@ func (m *Manager) AllocateMemory(instanceID string, memoryMB float64) error {
 	}
 
 	// Check host memory capacity (skip check if host has unlimited memory, i.e., 0 GB configured)
+	// Note: This check is best-effort. We read host memory utilization without holding the Manager
+	// lock for the entire allocation operation to avoid lock hierarchy issues. This means another
+	// goroutine could allocate memory between our check and allocation, potentially causing
+	// over-allocation. This is an acceptable trade-off for better concurrency.
 	hostMemoryGB := host.MemoryGB()
 	if hostMemoryGB > 0 {
 		hostMemUtil := host.MemoryUtilization()
@@ -205,13 +197,7 @@ func (m *Manager) AllocateMemory(instanceID string, memoryMB float64) error {
 	}
 
 	// Get all instances on this host for utilization calculation
-	instanceIDs := m.hostToInstances[hostID]
-	instances := make([]*ServiceInstance, 0, len(instanceIDs))
-	for _, id := range instanceIDs {
-		if inst, ok := m.instances[id]; ok {
-			instances = append(instances, inst)
-		}
-	}
+	instances := m.collectInstancesForHost(hostID)
 	m.mu.Unlock()
 
 	// Allocate memory and update utilization without holding Manager lock
@@ -239,13 +225,7 @@ func (m *Manager) ReleaseMemory(instanceID string, memoryMB float64) {
 	}
 
 	// Get all instances on this host for utilization calculation
-	instanceIDs := m.hostToInstances[hostID]
-	instances := make([]*ServiceInstance, 0, len(instanceIDs))
-	for _, id := range instanceIDs {
-		if inst, ok := m.instances[id]; ok {
-			instances = append(instances, inst)
-		}
-	}
+	instances := m.collectInstancesForHost(hostID)
 	m.mu.Unlock()
 
 	// Release memory and update utilization without holding Manager lock
@@ -339,6 +319,19 @@ func (m *Manager) GetAllInstances() []*ServiceInstance {
 	instances := make([]*ServiceInstance, 0, len(m.instances))
 	for _, instance := range m.instances {
 		instances = append(instances, instance)
+	}
+	return instances
+}
+
+// collectInstancesForHost gathers all ServiceInstance pointers for a given host.
+// This helper method assumes the Manager lock is already held by the caller.
+func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
+	instanceIDs := m.hostToInstances[hostID]
+	instances := make([]*ServiceInstance, 0, len(instanceIDs))
+	for _, id := range instanceIDs {
+		if inst, ok := m.instances[id]; ok {
+			instances = append(instances, inst)
+		}
 	}
 	return instances
 }
