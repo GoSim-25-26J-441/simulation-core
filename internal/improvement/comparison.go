@@ -170,29 +170,15 @@ func CompareRunHistory(runs []*RunMetricsWithID, objective ObjectiveFunction) (*
 	worstScore := scores[0]
 
 	for i, score := range scores {
-		if objective.Direction() {
-			// Minimization: lower is better
-			if score < bestScore {
-				bestScore = score
-				bestIdx = i
-			}
-			if score > worstScore {
-				worstScore = score
-				worstIdx = i
-			}
-		} else {
-			// Maximization: higher is better
-			// Note: scores are already negated for maximization objectives
-			// So the most negative score (lowest) represents the highest value
-			// Therefore, we treat it as minimization (lower is better)
-			if score < bestScore {
-				bestScore = score
-				bestIdx = i
-			}
-			if score > worstScore {
-				worstScore = score
-				worstIdx = i
-			}
+		// For both minimization and maximization, we treat lower scores as better
+		// because maximization objectives already negate their scores
+		if score < bestScore {
+			bestScore = score
+			bestIdx = i
+		}
+		if score > worstScore {
+			worstScore = score
+			worstIdx = i
 		}
 	}
 
@@ -214,6 +200,7 @@ func CompareRunHistory(runs []*RunMetricsWithID, objective ObjectiveFunction) (*
 }
 
 // determineTrend analyzes the trend of scores over time
+// Note: scores are already normalized (negated for maximization), so lower is always better
 func determineTrend(scores []float64, minimize bool) string {
 	if len(scores) < 2 {
 		return "stable"
@@ -232,24 +219,13 @@ func determineTrend(scores []float64, minimize bool) string {
 
 	slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
 
-	// For minimization, negative slope means improving (scores decreasing)
-	// For maximization, scores are negated, so negative slope also means improving
-	// (actual values increasing, but negated scores decreasing)
-	if minimize {
-		if slope < -0.01 {
-			return "improving"
-		}
-		if slope > 0.01 {
-			return "degrading"
-		}
-	} else {
-		// For maximization with negated scores, negative slope means improving
-		if slope < -0.01 {
-			return "improving"
-		}
-		if slope > 0.01 {
-			return "degrading"
-		}
+	// For both minimization and maximization, negative slope means improving
+	// because maximization objectives already negate their scores
+	if slope < -0.01 {
+		return "improving"
+	}
+	if slope > 0.01 {
+		return "degrading"
 	}
 
 	return "stable"
