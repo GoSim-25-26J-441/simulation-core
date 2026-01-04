@@ -422,7 +422,7 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 }
 
 // handleDownstreamCall creates a new request for a downstream service
-func handleDownstreamCall(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleDownstreamCall(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in downstream call event")
