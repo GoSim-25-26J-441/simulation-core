@@ -127,21 +127,24 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 		return status.Error(codes.NotFound, "run not found")
 	}
 
+	// Send initial status event
 	at := time.Now().UTC().UnixMilli()
+	previousStatus := simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED
 	if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
 		AtUnixMs: at,
 		RunId:    req.RunId,
 		Event: &simulationv1.RunEvent_StatusChanged{
 			StatusChanged: &simulationv1.RunStatusChanged{
-				Previous: simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED,
+				Previous: previousStatus,
 				Current:  rec.Run.Status,
 			},
 		},
 	}}); err != nil {
 		return err
 	}
+	previousStatus = rec.Run.Status
 
-	// Skeleton stream: poll a few times and exit when terminal.
+	// Poll for status changes and metrics updates
 	interval := 500 * time.Millisecond
 	if req.MetricsIntervalMs > 0 {
 		interval = time.Duration(req.MetricsIntervalMs) * time.Millisecond
@@ -159,6 +162,24 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 				return status.Error(codes.NotFound, "run not found")
 			}
 
+			// Check for status changes
+			if rec.Run.Status != previousStatus {
+				if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
+					AtUnixMs: time.Now().UTC().UnixMilli(),
+					RunId:    req.RunId,
+					Event: &simulationv1.RunEvent_StatusChanged{
+						StatusChanged: &simulationv1.RunStatusChanged{
+							Previous: previousStatus,
+							Current:  rec.Run.Status,
+						},
+					},
+				}}); err != nil {
+					return err
+				}
+				previousStatus = rec.Run.Status
+			}
+
+			// Send metrics snapshot if available
 			if rec.Metrics != nil {
 				if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
 					AtUnixMs: time.Now().UTC().UnixMilli(),
@@ -171,6 +192,7 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 				}
 			}
 
+			// Exit when terminal status is reached
 			if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
 				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
 				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
