@@ -81,7 +81,9 @@ func TestOptimizerGenerateNeighbors(t *testing.T) {
 	neighbors := opt.generateNeighbors(scenario)
 
 	// Should generate neighbors for each service (increase and decrease replicas)
-	// 2 services * 2 changes = 4 neighbors minimum
+	// With the new explorer, we also explore resources, workload, etc.
+	// 2 services * 2 replica changes = 4 neighbors minimum
+	// But with comprehensive exploration, we'll get many more
 	if len(neighbors) < 4 {
 		t.Fatalf("expected at least 4 neighbors, got %d", len(neighbors))
 	}
@@ -139,7 +141,8 @@ func TestOptimizerGenerateNeighborsWithPolicies(t *testing.T) {
 
 	neighbors := opt.generateNeighbors(scenario)
 
-	// Should generate neighbors for replicas (2) + autoscaling target (2) = at least 4
+	// Should generate neighbors for replicas (2) + autoscaling target (2) + resources + workload = many more
+	// With comprehensive exploration, we'll get many more than just 4
 	if len(neighbors) < 4 {
 		t.Fatalf("expected at least 4 neighbors with policies, got %d", len(neighbors))
 	}
