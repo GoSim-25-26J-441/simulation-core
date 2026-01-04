@@ -301,12 +301,12 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			if hasNext {
 				// Find the request in the run manager
 				// Note: This is a simplified approach - in a real system, we'd maintain a request store
-				// For now, we'll schedule a new arrival event for the queued request
-				// This will be handled by the arrival handler which will check capacity again
-				eng.ScheduleAt(engine.EventTypeRequestArrival, simTime, nil, serviceID, map[string]interface{}{
+				// Schedule a request start event for the dequeued request on this instance
+				eng.ScheduleAt(engine.EventTypeRequestStart, simTime, nil, serviceID, map[string]interface{}{
 					"service_id":    serviceID,
 					"endpoint_path": endpointPath,
 					"queued_id":     nextRequestID,
+					"instance_id":   instanceID,
 				})
 			}
 		}
