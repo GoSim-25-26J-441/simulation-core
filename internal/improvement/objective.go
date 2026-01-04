@@ -4,6 +4,16 @@ import (
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 )
 
+const (
+	// highPenaltyScore is returned when metrics are invalid or missing
+	highPenaltyScore = 1e9
+
+	// Cost weights for the cost objective function
+	cpuCostWeight     = 0.4
+	memoryCostWeight  = 0.3
+	replicaCostWeight = 0.3
+)
+
 // ObjectiveFunction evaluates a run's metrics and returns a score.
 // Lower scores are better (for minimization objectives).
 type ObjectiveFunction interface {
@@ -73,7 +83,7 @@ func (o *P95LatencyObjective) Evaluate(metrics *simulationv1.RunMetrics) (float6
 	}
 	if metrics.LatencyP95Ms <= 0 {
 		// If no latency data, return a high penalty
-		return 1e9, nil
+		return highPenaltyScore, nil
 	}
 	return metrics.LatencyP95Ms, nil
 }
@@ -95,7 +105,7 @@ func (o *P99LatencyObjective) Evaluate(metrics *simulationv1.RunMetrics) (float6
 	}
 	if metrics.LatencyP99Ms <= 0 {
 		// If no latency data, return a high penalty
-		return 1e9, nil
+		return highPenaltyScore, nil
 	}
 	return metrics.LatencyP99Ms, nil
 }
@@ -117,7 +127,7 @@ func (o *MeanLatencyObjective) Evaluate(metrics *simulationv1.RunMetrics) (float
 	}
 	if metrics.LatencyMeanMs <= 0 {
 		// If no latency data, return a high penalty
-		return 1e9, nil
+		return highPenaltyScore, nil
 	}
 	return metrics.LatencyMeanMs, nil
 }
@@ -139,7 +149,7 @@ func (o *ThroughputObjective) Evaluate(metrics *simulationv1.RunMetrics) (float6
 	}
 	if metrics.ThroughputRps <= 0 {
 		// If no throughput data, return a high penalty (low score)
-		return 1e9, nil
+		return highPenaltyScore, nil
 	}
 	// For maximization, we return negative so that lower is better
 	return -metrics.ThroughputRps, nil
@@ -169,7 +179,7 @@ func (o *ErrorRateObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64
 }
 
 // CostObjective minimizes cost (weighted combination of resources)
-// Cost = average CPU utilization + average Memory utilization + (total replicas * cost per replica)
+// Cost = 0.4 * average CPU utilization + 0.3 * average Memory utilization + 0.3 * total replicas
 type CostObjective struct{}
 
 func (o *CostObjective) Name() string {
@@ -201,9 +211,9 @@ func (o *CostObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64, err
 		avgCPU = totalCPU / float64(serviceCount)
 		avgMemory = totalMemory / float64(serviceCount)
 	}
-	cpuCost := avgCPU * 0.4
-	memoryCost := avgMemory * 0.3
-	replicaCost := float64(totalReplicas) * 0.3
+	cpuCost := avgCPU * cpuCostWeight
+	memoryCost := avgMemory * memoryCostWeight
+	replicaCost := float64(totalReplicas) * replicaCostWeight
 	return cpuCost + memoryCost + replicaCost, nil
 }
 
