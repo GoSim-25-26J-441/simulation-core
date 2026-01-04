@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 type HTTPServer struct {
@@ -69,6 +71,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		runID := strings.TrimSuffix(path, ":stop")
 		if r.Method == http.MethodPost {
 			s.handleStopRun(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
+	// Check for /metrics/timeseries suffix
+	if strings.HasSuffix(path, "/metrics/timeseries") {
+		runID := strings.TrimSuffix(path, "/metrics/timeseries")
+		if r.Method == http.MethodGet {
+			s.handleTimeSeries(w, r, runID)
 		} else {
 			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -180,6 +193,149 @@ func (s *HTTPServer) handleGetRunMetrics(w http.ResponseWriter, _ *http.Request,
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"metrics": convertMetricsToJSON(rec.Metrics),
 	})
+}
+
+// handleTimeSeries handles GET /v1/runs/{id}/metrics/timeseries
+func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, runID string) {
+	// Check if run exists
+	if _, ok := s.store.Get(runID); !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	collector, ok := s.store.GetCollector(runID)
+	if !ok || collector == nil {
+		s.writeError(w, http.StatusPreconditionFailed, "time-series metrics not available")
+		return
+	}
+
+	// Parse query parameters
+	metricName := r.URL.Query().Get("metric")
+	service := r.URL.Query().Get("service")
+	instance := r.URL.Query().Get("instance")
+	startTimeStr := r.URL.Query().Get("start_time")
+	endTimeStr := r.URL.Query().Get("end_time")
+
+	// Parse time range
+	var startTime, endTime time.Time
+	var err error
+	if startTimeStr != "" {
+		startTime, err = parseTime(startTimeStr)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid start_time format: "+err.Error())
+			return
+		}
+	}
+	if endTimeStr != "" {
+		endTime, err = parseTime(endTimeStr)
+		if err != nil {
+			s.writeError(w, http.StatusBadRequest, "invalid end_time format: "+err.Error())
+			return
+		}
+	}
+
+	// Build labels filter
+	labels := make(map[string]string)
+	if service != "" {
+		labels["service"] = service
+	}
+	if instance != "" {
+		labels["instance"] = instance
+	}
+
+	// Collect time-series points
+	var allPoints []*models.MetricPoint
+
+	// Determine which metrics to query
+	metricNames := []string{}
+	if metricName != "" {
+		metricNames = []string{metricName}
+	} else {
+		metricNames = collector.GetMetricNames()
+	}
+
+	// For each metric, get all label combinations and filter
+	for _, name := range metricNames {
+		labelCombos := collector.GetLabelsForMetric(name)
+		if len(labelCombos) == 0 {
+			// Try with empty labels (for metrics without labels)
+			points := collector.GetTimeSeries(name, nil)
+			allPoints = append(allPoints, points...)
+			continue
+		}
+
+		// Check each label combination against our filter
+		for _, labelCombo := range labelCombos {
+			// Check if this label combination matches our filter
+			matches := true
+			if service != "" && labelCombo["service"] != service {
+				matches = false
+			}
+			if instance != "" && labelCombo["instance"] != instance {
+				matches = false
+			}
+
+			if matches {
+				points := collector.GetTimeSeries(name, labelCombo)
+				allPoints = append(allPoints, points...)
+			}
+		}
+	}
+
+	// Filter by time range if specified
+	if !startTime.IsZero() || !endTime.IsZero() {
+		filtered := make([]*models.MetricPoint, 0, len(allPoints))
+		for _, point := range allPoints {
+			if !startTime.IsZero() && point.Timestamp.Before(startTime) {
+				continue
+			}
+			if !endTime.IsZero() && point.Timestamp.After(endTime) {
+				continue
+			}
+			filtered = append(filtered, point)
+		}
+		allPoints = filtered
+	}
+
+	// Convert to JSON format
+	pointsJSON := make([]map[string]any, 0, len(allPoints))
+	for _, point := range allPoints {
+		pointsJSON = append(pointsJSON, map[string]any{
+			"timestamp": point.Timestamp.Format(time.RFC3339Nano),
+			"metric":    point.Name,
+			"value":     point.Value,
+			"labels":    point.Labels,
+		})
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"run_id": runID,
+		"points": pointsJSON,
+	})
+}
+
+// parseTime parses time from ISO 8601 or Unix milliseconds
+func parseTime(timeStr string) (time.Time, error) {
+	// Try Unix milliseconds first
+	if unixMs, err := strconv.ParseInt(timeStr, 10, 64); err == nil {
+		return time.Unix(0, unixMs*int64(time.Millisecond)).UTC(), nil
+	}
+
+	// Try RFC3339 formats
+	formats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04:05",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, timeStr); err == nil {
+			return t.UTC(), nil
+		}
+	}
+
+	return time.Time{}, errors.New("unable to parse time format")
 }
 
 // Helper functions
