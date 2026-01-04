@@ -115,7 +115,6 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 		// Evaluate all neighbors and find the best one
 		bestNeighbor := neighbors[0]
 		bestNeighborScore := math.MaxFloat64
-		improved := false
 
 		for _, neighbor := range neighbors {
 			score, err := evaluateFunc(neighbor)
@@ -135,7 +134,6 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 			// Move to the better neighbor
 			currentConfig = bestNeighbor
 			currentScore = bestNeighborScore
-			improved = true
 
 			// Update best if this is the best so far
 			o.mu.Lock()

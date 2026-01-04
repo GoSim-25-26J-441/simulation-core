@@ -15,11 +15,11 @@ func TestNoImprovementStrategy(t *testing.T) {
 
 	// Test with no improvement for 3 iterations
 	history := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 2, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 3, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 4, Score: 100.0, Config: &config.Scenario{}},
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 2, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 3, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 4, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
 	}
 
 	converged, reason := strategy.CheckConvergence(history)
@@ -32,10 +32,10 @@ func TestNoImprovementStrategy(t *testing.T) {
 
 	// Test with recent improvement
 	history2 := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 90.0, Config: &config.Scenario{}},
-		{Iteration: 2, Score: 90.0, Config: &config.Scenario{}},
-		{Iteration: 3, Score: 90.0, Config: &config.Scenario{}},
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 90.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 2, Score: 90.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 3, Score: 90.0, Config: &config.Scenario{Services: []config.Service{}}},
 	}
 
 	converged, _ = strategy.CheckConvergence(history2)
@@ -92,10 +92,10 @@ func TestImprovementThresholdStrategy(t *testing.T) {
 
 	// Test with improvements below threshold
 	history := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 99.5, Config: &config.Scenario{}}, // 0.5% improvement
-		{Iteration: 2, Score: 99.3, Config: &config.Scenario{}}, // 0.2% improvement
-		{Iteration: 3, Score: 99.2, Config: &config.Scenario{}}, // 0.1% improvement
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 99.5, Config: &config.Scenario{Services: []config.Service{}}}, // 0.5% improvement
+		{Iteration: 2, Score: 99.3, Config: &config.Scenario{Services: []config.Service{}}}, // 0.2% improvement
+		{Iteration: 3, Score: 99.2, Config: &config.Scenario{Services: []config.Service{}}}, // 0.1% improvement
 	}
 
 	converged, reason := strategy.CheckConvergence(history)
@@ -108,9 +108,9 @@ func TestImprovementThresholdStrategy(t *testing.T) {
 
 	// Test with significant improvement
 	history2 := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 90.0, Config: &config.Scenario{}}, // 10% improvement
-		{Iteration: 2, Score: 89.5, Config: &config.Scenario{}}, // 0.5% improvement
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 90.0, Config: &config.Scenario{Services: []config.Service{}}}, // 10% improvement
+		{Iteration: 2, Score: 89.5, Config: &config.Scenario{Services: []config.Service{}}}, // 0.5% improvement
 	}
 
 	converged, _ = strategy.CheckConvergence(history2)
@@ -155,10 +155,10 @@ func TestVarianceStrategy(t *testing.T) {
 
 	// Test with low variance
 	history := []OptimizationStep{
-		{Iteration: 0, Score: 100.0, Config: &config.Scenario{}},
-		{Iteration: 1, Score: 100.1, Config: &config.Scenario{}},
-		{Iteration: 2, Score: 100.05, Config: &config.Scenario{}},
-		{Iteration: 3, Score: 100.02, Config: &config.Scenario{}},
+		{Iteration: 0, Score: 100.0, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 1, Score: 100.1, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 2, Score: 100.05, Config: &config.Scenario{Services: []config.Service{}}},
+		{Iteration: 3, Score: 100.02, Config: &config.Scenario{Services: []config.Service{}}},
 	}
 
 	converged, reason := strategy.CheckConvergence(history)
