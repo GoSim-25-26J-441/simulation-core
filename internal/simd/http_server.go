@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		runID := strings.TrimSuffix(path, ":stop")
 		if r.Method == http.MethodPost {
 			s.handleStopRun(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
+	// Check for /metrics/stream suffix (SSE)
+	if strings.HasSuffix(path, "/metrics/stream") {
+		runID := strings.TrimSuffix(path, "/metrics/stream")
+		if r.Method == http.MethodGet {
+			s.handleMetricsStream(w, r, runID)
 		} else {
 			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -336,6 +348,186 @@ func parseTime(timeStr string) (time.Time, error) {
 	}
 
 	return time.Time{}, errors.New("unable to parse time format")
+}
+
+// handleMetricsStream handles GET /v1/runs/{id}/metrics/stream (SSE)
+func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request, runID string) {
+	// Check if run exists
+	rec, ok := s.store.Get(runID)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
+
+	// Get collector (may be nil if simulation hasn't started)
+	collector, hasCollector := s.store.GetCollector(runID)
+
+	// Send initial status event
+	previousStatus := rec.Run.Status
+	s.sendSSEEvent(w, "status_change", map[string]any{
+		"status": rec.Run.Status.String(),
+	})
+
+	// Parse interval from query parameter (default: 1s)
+	interval := 1 * time.Second
+	if intervalStr := r.URL.Query().Get("interval_ms"); intervalStr != "" {
+		if intervalMs, err := strconv.ParseInt(intervalStr, 10, 64); err == nil && intervalMs > 0 {
+			interval = time.Duration(intervalMs) * time.Millisecond
+		}
+	}
+
+	// Flush headers
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	// Track last sent metrics to avoid duplicates (by timestamp)
+	lastSentTimestamps := make(map[string]map[string]time.Time) // metric -> labelKey -> timestamp
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Create a context that cancels when client disconnects
+	ctx := r.Context()
+
+	for {
+		select {
+		case <-ctx.Done():
+			// Client disconnected
+			return
+		case <-ticker.C:
+			// Get current run state
+			rec, ok := s.store.Get(runID)
+			if !ok {
+				s.sendSSEEvent(w, "error", map[string]any{
+					"error": "run not found",
+				})
+				return
+			}
+
+			// Check for status changes
+			if rec.Run.Status != previousStatus {
+				s.sendSSEEvent(w, "status_change", map[string]any{
+					"status": rec.Run.Status.String(),
+				})
+				previousStatus = rec.Run.Status
+
+				// Exit if terminal status
+				if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
+					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
+					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+					s.sendSSEEvent(w, "complete", map[string]any{
+						"status": rec.Run.Status.String(),
+					})
+					return
+				}
+			}
+
+			// Send aggregated metrics snapshot if available
+			if rec.Metrics != nil {
+				metricsJSON := convertMetricsToJSON(rec.Metrics)
+				s.sendSSEEvent(w, "metrics_snapshot", map[string]any{
+					"metrics": metricsJSON,
+				})
+			}
+
+			// Send time-series metric updates if collector is available
+			if hasCollector && collector != nil {
+				// Get all metrics and send new/updated points
+				metricNames := collector.GetMetricNames()
+				for _, metricName := range metricNames {
+					labelCombos := collector.GetLabelsForMetric(metricName)
+					if len(labelCombos) == 0 {
+						// Try with empty labels
+						points := collector.GetTimeSeries(metricName, nil)
+						if len(points) > 0 {
+							// Send latest point
+							latest := points[len(points)-1]
+							labelKey := ""
+							if lastSentTimestamps[metricName] == nil {
+								lastSentTimestamps[metricName] = make(map[string]time.Time)
+							}
+							if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
+								s.sendSSEEvent(w, "metric_update", map[string]any{
+									"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
+									"metric":    latest.Name,
+									"value":     latest.Value,
+									"labels":    latest.Labels,
+								})
+								lastSentTimestamps[metricName][labelKey] = latest.Timestamp
+							}
+						}
+					} else {
+						// Check each label combination
+						for _, labels := range labelCombos {
+							points := collector.GetTimeSeries(metricName, labels)
+							if len(points) > 0 {
+								latest := points[len(points)-1]
+								// Create label key for tracking
+								labelKey := createLabelKey(labels)
+								if lastSentTimestamps[metricName] == nil {
+									lastSentTimestamps[metricName] = make(map[string]time.Time)
+								}
+								if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
+									s.sendSSEEvent(w, "metric_update", map[string]any{
+										"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
+										"metric":    latest.Name,
+										"value":     latest.Value,
+										"labels":    latest.Labels,
+									})
+									lastSentTimestamps[metricName][labelKey] = latest.Timestamp
+								}
+							}
+						}
+					}
+				}
+			}
+
+			// Flush to send data immediately
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+// sendSSEEvent sends a Server-Sent Event
+func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data map[string]any) {
+	// Format: event: <type>\ndata: <json>\n\n
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		logger.Error("failed to marshal SSE event data", "error", err)
+		return
+	}
+
+	// Write event in SSE format
+	_, _ = w.Write([]byte("event: " + eventType + "\n"))
+	_, _ = w.Write([]byte("data: " + string(jsonData) + "\n\n"))
+}
+
+// createLabelKey creates a key from labels for tracking
+func createLabelKey(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	key := ""
+	for _, k := range keys {
+		key += k + "=" + labels[k] + ","
+	}
+	return key
 }
 
 // Helper functions

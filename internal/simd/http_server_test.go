@@ -1,6 +1,7 @@
 package simd
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -541,5 +542,118 @@ func TestHTTPServerTimeSeriesWithTimeRange(t *testing.T) {
 	// Should have 1 point in the range (the one at baseTime + 2s)
 	if len(points) != 1 {
 		t.Fatalf("expected 1 point in time range, got %d", len(points))
+	}
+}
+
+func TestHTTPServerMetricsStream(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
+
+	// Create a run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Create and store a collector with test data
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	now := time.Now()
+	labels := map[string]string{"service": "svc1", "instance": "svc1-1"}
+	collector.Record("cpu_utilization", 0.65, now, labels)
+
+	collector.Stop()
+
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	// Test SSE endpoint with timeout
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics/stream", nil)
+	req.Header.Set("Accept", "text/event-stream")
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(req.Context(), 200*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	// Start streaming (will timeout after 200ms)
+	srv.Handler().ServeHTTP(rr, req)
+
+	// Check response headers
+	if rr.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream, got %s", rr.Header().Get("Content-Type"))
+	}
+
+	if rr.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("expected Cache-Control no-cache, got %s", rr.Header().Get("Cache-Control"))
+	}
+
+	// Check that we received SSE events
+	body := rr.Body.String()
+	if !strings.Contains(body, "event:") {
+		t.Fatalf("expected SSE event format, got: %s", body)
+	}
+}
+
+func TestHTTPServerMetricsStreamNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/nonexistent/metrics/stream", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", rr.Code)
+	}
+}
+
+func TestHTTPServerMetricsStreamWithInterval(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
+
+	// Create a run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Create and store a collector
+	collector := metrics.NewCollector()
+	collector.Start()
+	collector.Stop()
+
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	// Test with custom interval
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics/stream?interval_ms=500", nil)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(req.Context(), 200*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	// Start streaming (will timeout)
+	srv.Handler().ServeHTTP(rr, req)
+
+	// Check headers
+	if rr.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream")
 	}
 }
