@@ -159,11 +159,12 @@ func TestIntegration_HTTPEndpoints_TimeSeries(t *testing.T) {
 	collector := metrics.NewCollector()
 	store.SetCollector(rec.Run.Id, collector)
 
-	// Add some time-series data using helper functions
+	// Add some time-series data
 	labels := map[string]string{"service": "svc1", "instance": "svc1-0"}
-	metrics.RecordLatency(collector, "request_latency_ms", 10.5, labels)
-	metrics.RecordLatency(collector, "request_latency_ms", 12.3, labels)
-	metrics.RecordMetric(collector, "cpu_utilization", 0.75, labels)
+	now := time.Now()
+	collector.Record("request_latency_ms", 10.5, now, labels)
+	collector.Record("request_latency_ms", 12.3, now.Add(10*time.Millisecond), labels)
+	collector.Record("cpu_utilization", 0.75, now, labels)
 
 	// Test GET /v1/runs/{id}/metrics/timeseries
 	rr := httptest.NewRecorder()
@@ -336,8 +337,8 @@ func TestIntegration_HTTPEndpoints_FullLifecycle(t *testing.T) {
 	}
 
 	// 4. Test List Runs
-	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
