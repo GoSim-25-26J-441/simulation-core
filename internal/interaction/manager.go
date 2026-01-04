@@ -17,8 +17,13 @@ type Manager struct {
 	rng               *rand.Rand
 }
 
-// NewManager creates a new interaction manager
+// NewManager creates a new interaction manager with a deterministic seed
 func NewManager(scenario *config.Scenario) (*Manager, error) {
+	return NewManagerWithSeed(scenario, 0)
+}
+
+// NewManagerWithSeed creates a new interaction manager with a custom seed
+func NewManagerWithSeed(scenario *config.Scenario, seed int64) (*Manager, error) {
 	graph, err := NewGraph(scenario)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create service graph: %w", err)
@@ -27,7 +32,7 @@ func NewManager(scenario *config.Scenario) (*Manager, error) {
 	return &Manager{
 		graph:             graph,
 		branchingStrategy: &DefaultBranchingStrategy{},
-		rng:               rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:               rand.New(rand.NewSource(seed)),
 	}, nil
 }
 
@@ -80,7 +85,7 @@ func (m *Manager) CreateDownstreamRequest(parentRequest *models.Request, downstr
 		ServiceName: downstreamCall.ServiceID,
 		Endpoint:    downstreamCall.Path,
 		Status:      models.RequestStatusPending,
-		ArrivalTime: time.Now(), // Will be set to simulation time by caller
+		ArrivalTime: time.Time{}, // Will be set to simulation time by caller
 		Metadata:    make(map[string]interface{}),
 	}
 

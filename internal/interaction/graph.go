@@ -95,7 +95,8 @@ func (g *Graph) validateAcyclic() error {
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)
 
-	for key := range g.edges {
+	// Iterate over all endpoints to ensure complete graph traversal
+	for key := range g.endpoints {
 		if !visited[key] {
 			if err := g.dfs(key, visited, recStack); err != nil {
 				return err
