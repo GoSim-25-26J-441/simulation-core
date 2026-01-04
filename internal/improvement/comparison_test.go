@@ -75,7 +75,7 @@ func TestCompareMetrics(t *testing.T) {
 	}
 
 	// Check resource differences
-	if comparison.ResourceDiff.CPUUtilDiff != -0.1 { // 0.4 - 0.5 = -0.1
+	if math.Abs(comparison.ResourceDiff.CPUUtilDiff-(-0.1)) > 0.0001 { // 0.4 - 0.5 = -0.1
 		t.Fatalf("expected CPU util diff -0.1, got %f", comparison.ResourceDiff.CPUUtilDiff)
 	}
 	if comparison.ResourceDiff.ReplicaDiff != 1 { // 3 - 2 = 1
