@@ -5,14 +5,17 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
 func TestNewScenarioState(t *testing.T) {
 	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID: "svc1",
+				ID:       "svc1",
+				Replicas: 1,
 				Endpoints: []config.Endpoint{
 					{Path: "/test"},
 				},
@@ -20,7 +23,11 @@ func TestNewScenarioState(t *testing.T) {
 		},
 	}
 
-	state := newScenarioState(scenario)
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	state := newScenarioState(scenario, rm)
 	if state == nil {
 		t.Fatalf("expected non-nil state")
 	}
@@ -100,7 +107,11 @@ func TestRegisterHandlers(t *testing.T) {
 		},
 	}
 
-	state := newScenarioState(scenario)
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	state := newScenarioState(scenario, rm)
 	RegisterHandlers(eng, state)
 
 	// Verify handlers are registered by checking if they exist

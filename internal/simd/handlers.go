@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/workload"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
@@ -18,15 +19,17 @@ type scenarioState struct {
 	services  map[string]*config.Service  // service ID -> service
 	endpoints map[string]*config.Endpoint // "serviceID:path" -> endpoint
 	rng       *utils.RandSource
+	rm        *resource.Manager // Resource manager for tracking CPU/memory/queueing
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
-func newScenarioState(scenario *config.Scenario) *scenarioState {
+func newScenarioState(scenario *config.Scenario, rm *resource.Manager) *scenarioState {
 	state := &scenarioState{
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
 		endpoints: make(map[string]*config.Endpoint),
 		rng:       utils.NewRandSource(time.Now().UnixNano()),
+		rm:        rm,
 	}
 
 	// Build service and endpoint maps
@@ -102,9 +105,32 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
 
-		// Schedule request start immediately (no queue delay for MVP)
+		// Select an instance for this service
+		instance, err := state.rm.SelectInstanceForService(serviceID)
+		if err != nil {
+			// No instances available, mark request as failed
+			request.Status = models.RequestStatusFailed
+			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
+		}
+
+		// Check if instance has capacity
+		if !instance.HasCapacity() {
+			// Instance is at capacity, enqueue the request
+			if err := state.rm.EnqueueRequest(instance.ID(), requestID); err != nil {
+				return fmt.Errorf("failed to enqueue request: %w", err)
+			}
+			// Request will be processed when capacity becomes available
+			// Store instance ID in request metadata for later processing
+			request.Metadata["instance_id"] = instance.ID()
+			return nil
+		}
+
+		// Instance has capacity, schedule request start immediately
+		// Store instance ID in request metadata
+		request.Metadata["instance_id"] = instance.ID()
 		eng.ScheduleAt(engine.EventTypeRequestStart, simTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
+			"instance_id":   instance.ID(),
 		})
 
 		return nil
@@ -131,6 +157,23 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			return fmt.Errorf("endpoint not found: %s", endpointKey)
 		}
 
+		// Get instance ID from event data or request metadata
+		instanceID, ok := evt.Data["instance_id"].(string)
+		if !ok {
+			// Fallback to metadata
+			if id, ok := request.Metadata["instance_id"].(string); ok {
+				instanceID = id
+			} else {
+				// Select instance if not already assigned
+				instance, err := state.rm.SelectInstanceForService(serviceID)
+				if err != nil {
+					return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
+				}
+				instanceID = instance.ID()
+				request.Metadata["instance_id"] = instanceID
+			}
+		}
+
 		// Update request status
 		request.Status = models.RequestStatusProcessing
 		request.StartTime = simTime
@@ -149,13 +192,45 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		}
 		request.NetworkLatencyMs = netLatencyMs
 
+		// Estimate memory usage (simplified: assume 10MB per request)
+		memoryMB := 10.0
+		if mem, ok := request.Metadata["memory_mb"].(float64); ok {
+			memoryMB = mem
+		}
+
+		// Allocate resources
+		if err := state.rm.AllocateCPU(instanceID, cpuTimeMs, simTime); err != nil {
+			return fmt.Errorf("failed to allocate CPU: %w", err)
+		}
+		if err := state.rm.AllocateMemory(instanceID, memoryMB); err != nil {
+			// If memory allocation fails, release CPU and fail request
+			state.rm.ReleaseCPU(instanceID, cpuTimeMs, simTime)
+			return fmt.Errorf("failed to allocate memory: %w", err)
+		}
+
+		// Store resource allocation in metadata for cleanup
+		request.Metadata["allocated_cpu_ms"] = cpuTimeMs
+		request.Metadata["allocated_memory_mb"] = memoryMB
+
 		// Total processing time = CPU time + network latency
-		processingTime := time.Duration(cpuTimeMs+netLatencyMs) * time.Millisecond
+		// Add queueing delay if instance is heavily loaded
+		var processingTime time.Duration
+		instance, ok := state.rm.GetServiceInstance(instanceID)
+		if ok {
+			queueLength := instance.QueueLength()
+			// Model queueing delay: each queued request adds 1ms delay
+			queueDelayMs := float64(queueLength) * 1.0
+			processingTime = time.Duration(cpuTimeMs+netLatencyMs+queueDelayMs) * time.Millisecond
+			request.Metadata["queue_delay_ms"] = queueDelayMs
+		} else {
+			processingTime = time.Duration(cpuTimeMs+netLatencyMs) * time.Millisecond
+		}
 
 		// Schedule completion
 		completionTime := simTime.Add(processingTime)
 		eng.ScheduleAt(engine.EventTypeRequestComplete, completionTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
+			"instance_id":   instanceID,
 		})
 
 		return nil
@@ -175,6 +250,32 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		request := evt.Request
 		serviceID := request.ServiceName
 		endpointPath := request.Endpoint
+
+		// Get instance ID from metadata
+		instanceID, ok := request.Metadata["instance_id"].(string)
+		if ok {
+			// Release resources
+			if cpuMs, ok := request.Metadata["allocated_cpu_ms"].(float64); ok {
+				state.rm.ReleaseCPU(instanceID, cpuMs, simTime)
+			}
+			if memoryMB, ok := request.Metadata["allocated_memory_mb"].(float64); ok {
+				state.rm.ReleaseMemory(instanceID, memoryMB)
+			}
+
+			// Process next queued request if available
+			nextRequestID, hasNext := state.rm.DequeueRequest(instanceID)
+			if hasNext {
+				// Find the request in the run manager
+				// Note: This is a simplified approach - in a real system, we'd maintain a request store
+				// For now, we'll schedule a new arrival event for the queued request
+				// This will be handled by the arrival handler which will check capacity again
+				eng.ScheduleAt(engine.EventTypeRequestArrival, simTime, nil, serviceID, map[string]interface{}{
+					"service_id":    serviceID,
+					"endpoint_path": endpointPath,
+					"queued_id":     nextRequestID,
+				})
+			}
+		}
 
 		// Mark request as completed
 		request.Status = models.RequestStatusCompleted

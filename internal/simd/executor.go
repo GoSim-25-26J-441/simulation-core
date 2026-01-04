@@ -10,6 +10,7 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
@@ -145,8 +146,18 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		eng.Stop()
 	}()
 
+	// Initialize resource manager from scenario
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		logger.Error("failed to initialize resource manager", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err)); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
 	// Create scenario state and register handlers
-	state := newScenarioState(scenario)
+	state := newScenarioState(scenario, rm)
 	RegisterHandlers(eng, state)
 
 	// Schedule workload
@@ -174,8 +185,8 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	}
 
 	// Extract metrics from engine
-	rm := eng.GetRunManager()
-	engineMetrics := rm.GetRun().Metrics
+	runMgr := eng.GetRunManager()
+	engineMetrics := runMgr.GetRun().Metrics
 	if engineMetrics == nil {
 		// Engine didn't calculate metrics, create empty ones
 		engineMetrics = &models.RunMetrics{}
