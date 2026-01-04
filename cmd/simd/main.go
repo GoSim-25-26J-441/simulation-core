@@ -31,11 +31,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	store := simd.NewRunStore()
+	executor := simd.NewRunExecutor(store)
 
 	// TODO: Configure gRPC server security (e.g., TLS, authentication, rate limiting)
 	// before using this service in a production environment.
 	grpcServer := grpc.NewServer()
-	simulationv1.RegisterSimulationServiceServer(grpcServer, simd.NewSimulationGRPCServer(store))
+	simulationv1.RegisterSimulationServiceServer(grpcServer, simd.NewSimulationGRPCServer(store, executor))
 
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
@@ -46,7 +47,7 @@ func main() {
 
 	httpSrv := &http.Server{
 		Addr:              httpAddr,
-		Handler:           simd.NewHTTPServer().Handler(),
+		Handler:           simd.NewHTTPServer(store, executor).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      10 * time.Second,
 		IdleTimeout:       120 * time.Second,

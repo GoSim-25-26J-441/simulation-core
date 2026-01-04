@@ -1,6 +1,7 @@
 package simd
 
 import (
+	"strings"
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -111,5 +112,29 @@ func TestRunStoreListLimit(t *testing.T) {
 	recs := store.List(3)
 	if len(recs) != 3 {
 		t.Fatalf("expected 3 records, got %d", len(recs))
+	}
+}
+
+func TestRunStoreCreateInvalidRunID(t *testing.T) {
+	store := NewRunStore()
+	tests := []struct {
+		name  string
+		runID string
+	}{
+		{"with colon", "test:stop"},
+		{"with slash", "test/metrics"},
+		{"with both", "test:stop/metrics"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := store.Create(tt.runID, &simulationv1.RunInput{ScenarioYaml: "x"})
+			if err == nil {
+				t.Fatalf("expected error for run ID %q", tt.runID)
+			}
+			if !strings.Contains(err.Error(), "cannot contain") {
+				t.Fatalf("expected validation error, got: %v", err)
+			}
+		})
 	}
 }
