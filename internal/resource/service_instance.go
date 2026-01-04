@@ -205,7 +205,14 @@ func (s *ServiceInstance) DequeueRequest() (string, bool) {
 		return "", false
 	}
 	requestID := s.requestQueue[0]
-	s.requestQueue = s.requestQueue[1:]
+	// Clear the reference to the dequeued element to avoid retaining it in the backing array.
+	s.requestQueue[0] = ""
+	if len(s.requestQueue) == 1 {
+		// When the queue becomes empty, release the backing array.
+		s.requestQueue = nil
+	} else {
+		s.requestQueue = s.requestQueue[1:]
+	}
 	return requestID, true
 }
 
