@@ -252,7 +252,7 @@ func TestIntegration_HTTPEndpoints_ExportRun(t *testing.T) {
 	collector := metrics.NewCollector()
 	store.SetCollector(rec.Run.Id, collector)
 	labels := map[string]string{"service": "svc1"}
-	collector.AddMetricPoint("request_latency_ms", 10.5, labels, time.Now())
+	collector.Record("request_latency_ms", 10.5, time.Now(), labels)
 
 	// Test GET /v1/runs/{id}/export
 	rr := httptest.NewRecorder()
@@ -307,21 +307,7 @@ func TestIntegration_HTTPEndpoints_FullLifecycle(t *testing.T) {
 	executor := simd.NewRunExecutor(store)
 	srv := simd.NewHTTPServer(store, executor)
 
-	// 1. Create a run via HTTP
-	createBody := map[string]any{
-		"input": map[string]any{
-			"scenario_yaml": testScenarioYAML,
-			"duration_ms":   100,
-		},
-	}
-	bodyBytes, _ := json.Marshal(createBody)
-	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/runs", httptest.NewRequest(http.MethodPost, "", nil).Body)
-	req.Body = httptest.NewRecorder().Body
-	req.Body = &jsonBodyReader{data: bodyBytes}
-	req.Header.Set("Content-Type", "application/json")
-
-	// Use direct store.Create for simplicity in integration test
+	// 1. Create a run (using direct store.Create for simplicity in integration test)
 	rec, err := store.Create("", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
