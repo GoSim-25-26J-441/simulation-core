@@ -30,7 +30,7 @@ func NewGraph(scenario *config.Scenario) (*Graph, error) {
 		edges:     make(map[string][]Edge),
 	}
 
-	// Build service and endpoint maps
+	// First pass: Build service and endpoint maps
 	for i := range scenario.Services {
 		svc := &scenario.Services[i]
 		g.services[svc.ID] = svc
@@ -39,6 +39,15 @@ func NewGraph(scenario *config.Scenario) (*Graph, error) {
 			ep := &svc.Endpoints[j]
 			key := endpointKey(svc.ID, ep.Path)
 			g.endpoints[key] = ep
+		}
+	}
+
+	// Second pass: Build edges for downstream calls (now services are in the map)
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
+		for j := range svc.Endpoints {
+			ep := &svc.Endpoints[j]
+			key := endpointKey(svc.ID, ep.Path)
 
 			// Build edges for downstream calls
 			for k := range ep.Downstream {
