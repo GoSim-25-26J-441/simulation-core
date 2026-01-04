@@ -250,3 +250,84 @@ workload:
 		}
 	}
 }
+
+func TestGRPCServerListRuns(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	// Create multiple runs
+	for i := 0; i < 5; i++ {
+		_, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+			Input: &simulationv1.RunInput{ScenarioYaml: "hosts: []"},
+		})
+		if err != nil {
+			t.Fatalf("CreateRun error: %v", err)
+		}
+	}
+
+	// List with limit
+	resp, err := srv.ListRuns(ctx, &simulationv1.ListRunsRequest{Limit: 3})
+	if err != nil {
+		t.Fatalf("ListRuns error: %v", err)
+	}
+	if len(resp.Runs) != 3 {
+		t.Fatalf("expected 3 runs, got %d", len(resp.Runs))
+	}
+
+	// List without limit (should default to 50)
+	resp, err = srv.ListRuns(ctx, &simulationv1.ListRunsRequest{})
+	if err != nil {
+		t.Fatalf("ListRuns error: %v", err)
+	}
+	if len(resp.Runs) == 0 {
+		t.Fatalf("expected at least one run")
+	}
+	if len(resp.Runs) > 50 {
+		t.Fatalf("expected max 50 runs, got %d", len(resp.Runs))
+	}
+}
+
+func TestGRPCServerCreateRunWithNilInput(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{Input: nil})
+	if err == nil {
+		t.Fatalf("expected error for nil input")
+	}
+}
+
+func TestGRPCServerGetRunOnNonExistent(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: "nope"})
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerStartRunOnNonExistent(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: "nope"})
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerStopRunOnNonExistent(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: "nope"})
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}

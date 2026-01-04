@@ -138,3 +138,101 @@ func TestRunStoreCreateInvalidRunID(t *testing.T) {
 		})
 	}
 }
+
+func TestRunStoreSetStatusWithErrorMessage(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	rec, err := store.SetStatus("run-1", simulationv1.RunStatus_RUN_STATUS_FAILED, "test error")
+	if err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+	if rec.Run.Error != "test error" {
+		t.Fatalf("expected error message, got %q", rec.Run.Error)
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_FAILED {
+		t.Fatalf("expected failed status")
+	}
+}
+
+func TestRunStoreSetStatusOnNonExistentRun(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.SetStatus("nope", simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}
+
+func TestRunStoreSetMetricsOnNonExistentRun(t *testing.T) {
+	store := NewRunStore()
+	metrics := &simulationv1.RunMetrics{TotalRequests: 123}
+	err := store.SetMetrics("nope", metrics)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}
+
+func TestRunStoreGetNonExistentRun(t *testing.T) {
+	store := NewRunStore()
+	_, ok := store.Get("nope")
+	if ok {
+		t.Fatalf("expected false for non-existent run")
+	}
+}
+
+func TestRunStoreListWithZeroLimit(t *testing.T) {
+	store := NewRunStore()
+	for i := 0; i < 5; i++ {
+		_, err := store.Create("", &simulationv1.RunInput{ScenarioYaml: "x"})
+		if err != nil {
+			t.Fatalf("Create error: %v", err)
+		}
+	}
+
+	recs := store.List(0)
+	if len(recs) == 0 {
+		t.Fatalf("expected default limit to be applied")
+	}
+	if len(recs) > 50 {
+		t.Fatalf("expected max 50 records, got %d", len(recs))
+	}
+}
+
+func TestRunStoreSetStatusFailedAndCancelled(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Test FAILED status
+	rec, err := store.SetStatus("run-1", simulationv1.RunStatus_RUN_STATUS_FAILED, "failed")
+	if err != nil {
+		t.Fatalf("SetStatus failed error: %v", err)
+	}
+	if rec.Run.EndedAtUnixMs == 0 {
+		t.Fatalf("expected ended_at_unix_ms set for failed")
+	}
+
+	// Test CANCELLED status
+	_, err = store.Create("run-2", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	rec, err = store.SetStatus("run-2", simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	if err != nil {
+		t.Fatalf("SetStatus cancelled error: %v", err)
+	}
+	if rec.Run.EndedAtUnixMs == 0 {
+		t.Fatalf("expected ended_at_unix_ms set for cancelled")
+	}
+}
