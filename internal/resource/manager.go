@@ -2,6 +2,7 @@ package resource
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -17,16 +18,22 @@ const (
 
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
-	mu        sync.RWMutex
-	hosts     map[string]*Host
-	instances map[string]*ServiceInstance
+	mu                   sync.RWMutex
+	hosts                map[string]*Host
+	instances            map[string]*ServiceInstance
+	hostToInstances      map[string][]string           // host ID -> instance IDs
+	roundRobinIdx        map[string]int                // service name -> last selected instance index
+	sortedServiceInstMap map[string][]*ServiceInstance // service name -> sorted instances (cached)
 }
 
 // NewManager creates a new resource manager
 func NewManager() *Manager {
 	return &Manager{
-		hosts:     make(map[string]*Host),
-		instances: make(map[string]*ServiceInstance),
+		hosts:                make(map[string]*Host),
+		instances:            make(map[string]*ServiceInstance),
+		hostToInstances:      make(map[string][]string),
+		roundRobinIdx:        make(map[string]int),
+		sortedServiceInstMap: make(map[string][]*ServiceInstance),
 	}
 }
 
@@ -75,6 +82,9 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 		}
 	}
 
+	// Build the sorted instance cache for each service
+	m.rebuildSortedInstanceCache()
+
 	return nil
 }
 
@@ -98,7 +108,11 @@ func (m *Manager) GetHost(hostID string) (*Host, bool) {
 func (m *Manager) GetInstancesForService(serviceName string) []*ServiceInstance {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.getInstancesForServiceLocked(serviceName)
+}
 
+// getInstancesForServiceLocked returns instances for a service (assumes lock is held)
+func (m *Manager) getInstancesForServiceLocked(serviceName string) []*ServiceInstance {
 	instances := make([]*ServiceInstance, 0)
 	for _, instance := range m.instances {
 		if instance.ServiceName() == serviceName {
@@ -108,16 +122,46 @@ func (m *Manager) GetInstancesForService(serviceName string) []*ServiceInstance 
 	return instances
 }
 
-// SelectInstanceForService selects an instance for a service (round-robin or least loaded)
+// SelectInstanceForService selects an instance for a service using round-robin selection
 func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance, error) {
-	instances := m.GetInstancesForService(serviceName)
-	if len(instances) == 0 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Use cached sorted instances if available
+	instances, ok := m.sortedServiceInstMap[serviceName]
+	if !ok || len(instances) == 0 {
 		return nil, fmt.Errorf("no instances available for service %s", serviceName)
 	}
 
-	// Simple round-robin selection (can be enhanced with least-loaded selection)
-	// For now, use the first instance (in a real implementation, we'd track last selected)
-	return instances[0], nil
+	// Get the current index for this service (defaults to 0)
+	idx := m.roundRobinIdx[serviceName]
+
+	// Select the instance at the current index
+	selectedInstance := instances[idx]
+
+	// Update the index for next time (wrap around to 0 if we reach the end)
+	m.roundRobinIdx[serviceName] = (idx + 1) % len(instances)
+
+	return selectedInstance, nil
+}
+
+// rebuildSortedInstanceCache rebuilds the cache of sorted instances per service
+// Assumes lock is already held by caller
+func (m *Manager) rebuildSortedInstanceCache() {
+	// Group instances by service
+	serviceInstances := make(map[string][]*ServiceInstance)
+	for _, instance := range m.instances {
+		serviceName := instance.ServiceName()
+		serviceInstances[serviceName] = append(serviceInstances[serviceName], instance)
+	}
+
+	// Sort and cache each service's instances
+	for serviceName, instances := range serviceInstances {
+		sort.Slice(instances, func(i, j int) bool {
+			return instances[i].ID() < instances[j].ID()
+		})
+		m.sortedServiceInstMap[serviceName] = instances
+	}
 }
 
 // AllocateCPU allocates CPU resources for a request
