@@ -271,7 +271,7 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 	var allPoints []*models.MetricPoint
 
 	// Determine which metrics to query
-	metricNames := []string{}
+	var metricNames []string
 	if metricName != "" {
 		metricNames = []string{metricName}
 	} else {
@@ -610,8 +610,15 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 	}
 
 	// Write event in SSE format
-	_, _ = w.Write([]byte("event: " + eventType + "\n"))
-	_, _ = w.Write([]byte("data: " + string(jsonData) + "\n\n"))
+	// Note: Errors are logged but not returned as SSE streams are best-effort
+	if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
+		logger.Error("failed to write SSE event header", "error", err)
+		return
+	}
+	if _, err := w.Write([]byte("data: " + string(jsonData) + "\n\n")); err != nil {
+		logger.Error("failed to write SSE event data", "error", err)
+		return
+	}
 }
 
 // createLabelKey creates a key from labels for tracking
