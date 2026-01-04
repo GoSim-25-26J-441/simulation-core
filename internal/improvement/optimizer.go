@@ -12,7 +12,8 @@ import (
 type Optimizer struct {
 	objective     ObjectiveFunction
 	maxIterations int
-	stepSize      float64 // Step size for parameter adjustments
+	stepSize      float64           // Step size for parameter adjustments
+	explorer      ParameterExplorer // Parameter space exploration strategy
 	mu            sync.RWMutex
 	bestScore     float64
 	bestConfig    *config.Scenario
@@ -46,9 +47,16 @@ func NewOptimizer(objective ObjectiveFunction, maxIterations int, stepSize float
 		objective:     objective,
 		maxIterations: maxIterations,
 		stepSize:      stepSize,
-		bestScore:     math.MaxFloat64, // Start with worst possible score
+		explorer:      NewDefaultExplorer(), // Use default exploration strategy
+		bestScore:     math.MaxFloat64,      // Start with worst possible score
 		history:       make([]OptimizationStep, 0),
 	}
+}
+
+// WithExplorer sets a custom parameter exploration strategy
+func (o *Optimizer) WithExplorer(explorer ParameterExplorer) *Optimizer {
+	o.explorer = explorer
+	return o
 }
 
 // Optimize runs the hill-climbing optimization algorithm
@@ -166,45 +174,13 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 	return o.buildResult(false, "max iterations reached"), nil
 }
 
-// generateNeighbors generates neighboring configurations by making small adjustments
+// generateNeighbors generates neighboring configurations using the configured explorer
 func (o *Optimizer) generateNeighbors(scenario *config.Scenario) []*config.Scenario {
-	neighbors := make([]*config.Scenario, 0)
-
-	// Generate neighbors by adjusting service replicas
-	for i := range scenario.Services {
-		// Try increasing replicas
-		if scenario.Services[i].Replicas < 10 { // Reasonable upper bound
-			neighbor := cloneScenario(scenario)
-			neighbor.Services[i].Replicas++
-			neighbors = append(neighbors, neighbor)
-		}
-
-		// Try decreasing replicas (but keep at least 1)
-		if scenario.Services[i].Replicas > 1 {
-			neighbor := cloneScenario(scenario)
-			neighbor.Services[i].Replicas--
-			neighbors = append(neighbors, neighbor)
-		}
+	if o.explorer == nil {
+		// Fallback to default explorer if none configured
+		o.explorer = NewDefaultExplorer()
 	}
-
-	// Generate neighbors by adjusting policy parameters if policies exist
-	if scenario.Policies != nil {
-		if scenario.Policies.Autoscaling != nil && scenario.Policies.Autoscaling.Enabled {
-			// Adjust autoscaling target CPU utilization
-			neighbor := cloneScenario(scenario)
-			if neighbor.Policies.Autoscaling.TargetCPUUtil > 0.1 {
-				neighbor.Policies.Autoscaling.TargetCPUUtil -= 0.05
-				neighbors = append(neighbors, neighbor)
-			}
-			neighbor2 := cloneScenario(scenario)
-			if neighbor2.Policies.Autoscaling.TargetCPUUtil < 0.9 {
-				neighbor2.Policies.Autoscaling.TargetCPUUtil += 0.05
-				neighbors = append(neighbors, neighbor2)
-			}
-		}
-	}
-
-	return neighbors
+	return o.explorer.GenerateNeighbors(scenario, o.stepSize)
 }
 
 // buildResult constructs the optimization result
