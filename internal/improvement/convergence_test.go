@@ -7,11 +7,11 @@ import (
 )
 
 func TestNoImprovementStrategy(t *testing.T) {
-	config := &ConvergenceConfig{
+	cfg := &ConvergenceConfig{
 		NoImprovementIterations: 3,
 		MinIterations:           2,
 	}
-	strategy := NewNoImprovementStrategy(config)
+	strategy := NewNoImprovementStrategy(cfg)
 
 	// Test with no improvement for 3 iterations
 	history := []OptimizationStep{
@@ -45,12 +45,12 @@ func TestNoImprovementStrategy(t *testing.T) {
 }
 
 func TestPlateauStrategy(t *testing.T) {
-	config := &ConvergenceConfig{
+	cfg := &ConvergenceConfig{
 		PlateauIterations: 3,
 		ScoreTolerance:    0.01,
 		MinIterations:     2,
 	}
-	strategy := NewPlateauStrategy(config)
+	strategy := NewPlateauStrategy(cfg)
 
 	// Test with plateau (similar scores)
 	history := []OptimizationStep{
@@ -83,12 +83,12 @@ func TestPlateauStrategy(t *testing.T) {
 }
 
 func TestImprovementThresholdStrategy(t *testing.T) {
-	config := &ConvergenceConfig{
+	cfg := &ConvergenceConfig{
 		NoImprovementIterations: 3,
 		ImprovementThreshold:    0.01, // 1%
 		MinIterations:           2,
 	}
-	strategy := NewImprovementThresholdStrategy(config)
+	strategy := NewImprovementThresholdStrategy(cfg)
 
 	// Test with improvements below threshold
 	history := []OptimizationStep{
@@ -120,13 +120,13 @@ func TestImprovementThresholdStrategy(t *testing.T) {
 }
 
 func TestCombinedStrategy(t *testing.T) {
-	config := &ConvergenceConfig{
+	cfg := &ConvergenceConfig{
 		NoImprovementIterations: 3,
 		PlateauIterations:       3,
 		ScoreTolerance:          0.01,
 		MinIterations:           2,
 	}
-	strategy := NewCombinedStrategy(config)
+	strategy := NewCombinedStrategy(cfg)
 
 	// Test with plateau (should trigger convergence)
 	history := []OptimizationStep{
@@ -146,12 +146,12 @@ func TestCombinedStrategy(t *testing.T) {
 }
 
 func TestVarianceStrategy(t *testing.T) {
-	config := &ConvergenceConfig{
+	cfg := &ConvergenceConfig{
 		PlateauIterations:    3,
 		ImprovementThreshold: 0.01, // 1% relative variance
 		MinIterations:        2,
 	}
-	strategy := NewVarianceStrategy(config)
+	strategy := NewVarianceStrategy(cfg)
 
 	// Test with low variance
 	history := []OptimizationStep{
@@ -184,38 +184,38 @@ func TestVarianceStrategy(t *testing.T) {
 }
 
 func TestConvergenceStrategiesName(t *testing.T) {
-	config := DefaultConvergenceConfig()
+	cfg := DefaultConvergenceConfig()
 
-	if NewNoImprovementStrategy(config).Name() != "no_improvement" {
+	if NewNoImprovementStrategy(cfg).Name() != "no_improvement" {
 		t.Fatalf("unexpected name for NoImprovementStrategy")
 	}
-	if NewPlateauStrategy(config).Name() != "plateau" {
+	if NewPlateauStrategy(cfg).Name() != "plateau" {
 		t.Fatalf("unexpected name for PlateauStrategy")
 	}
-	if NewImprovementThresholdStrategy(config).Name() != "improvement_threshold" {
+	if NewImprovementThresholdStrategy(cfg).Name() != "improvement_threshold" {
 		t.Fatalf("unexpected name for ImprovementThresholdStrategy")
 	}
-	if NewCombinedStrategy(config).Name() != "combined" {
+	if NewCombinedStrategy(cfg).Name() != "combined" {
 		t.Fatalf("unexpected name for CombinedStrategy")
 	}
-	if NewVarianceStrategy(config).Name() != "variance" {
+	if NewVarianceStrategy(cfg).Name() != "variance" {
 		t.Fatalf("unexpected name for VarianceStrategy")
 	}
 }
 
 func TestDefaultConvergenceConfig(t *testing.T) {
-	config := DefaultConvergenceConfig()
+	cfg := DefaultConvergenceConfig()
 
-	if config.NoImprovementIterations <= 0 {
+	if cfg.NoImprovementIterations <= 0 {
 		t.Fatalf("expected positive NoImprovementIterations")
 	}
-	if config.ImprovementThreshold <= 0 {
+	if cfg.ImprovementThreshold <= 0 {
 		t.Fatalf("expected positive ImprovementThreshold")
 	}
-	if config.ScoreTolerance <= 0 {
+	if cfg.ScoreTolerance <= 0 {
 		t.Fatalf("expected positive ScoreTolerance")
 	}
-	if config.MinIterations <= 0 {
+	if cfg.MinIterations <= 0 {
 		t.Fatalf("expected positive MinIterations")
 	}
 }
