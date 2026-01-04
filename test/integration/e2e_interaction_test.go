@@ -321,7 +321,7 @@ func TestE2E_InteractionWithEngine(t *testing.T) {
 
 	// Create a simple engine to verify basic functionality
 	eng := engine.NewEngine("interaction-test")
-	
+
 	// Verify engine was created
 	if eng == nil {
 		t.Fatalf("expected non-nil engine")
@@ -335,7 +335,7 @@ func TestE2E_InteractionWithEngine(t *testing.T) {
 
 	// Verify we can schedule events
 	eng.ScheduleAt(engine.EventTypeSimulationEnd, simTime.Add(100*time.Millisecond), nil, "", nil)
-	
+
 	// Run a very short simulation to verify it works
 	if err := eng.Run(50 * time.Millisecond); err != nil {
 		t.Fatalf("engine run failed: %v", err)
