@@ -89,7 +89,7 @@ func (p *rateLimitingPolicy) AllowRequest(serviceID, endpointPath string, reques
 	return false
 }
 
-func (p *rateLimitingPolicy) GetRemainingQuota(serviceID, endpointPath string) int {
+func (p *rateLimitingPolicy) GetRemainingQuota(serviceID, endpointPath string, currentTime time.Time) int {
 	if !p.enabled {
 		return -1 // Unlimited
 	}
@@ -106,16 +106,15 @@ func (p *rateLimitingPolicy) GetRemainingQuota(serviceID, endpointPath string) i
 	bucket.mu.Lock()
 	defer bucket.mu.Unlock()
 
-	// Refill tokens
-	now := time.Now()
-	elapsed := now.Sub(bucket.lastRefill)
+	// Refill tokens based on time elapsed since last refill
+	elapsed := currentTime.Sub(bucket.lastRefill)
 	tokensToAdd := int(elapsed.Seconds() * float64(bucket.refillRate))
 	if tokensToAdd > 0 {
 		bucket.tokens += tokensToAdd
 		if bucket.tokens > bucket.capacity {
 			bucket.tokens = bucket.capacity
 		}
-		bucket.lastRefill = now
+		bucket.lastRefill = currentTime
 	}
 
 	return bucket.tokens

@@ -67,7 +67,7 @@ func TestRateLimitingPolicyGetRemainingQuota(t *testing.T) {
 	now := time.Now()
 
 	// Initially should have full quota
-	quota := policy.GetRemainingQuota("svc1", "/endpoint1")
+	quota := policy.GetRemainingQuota("svc1", "/endpoint1", now)
 	if quota != 5 {
 		t.Fatalf("expected remaining quota 5, got %d", quota)
 	}
@@ -75,7 +75,7 @@ func TestRateLimitingPolicyGetRemainingQuota(t *testing.T) {
 	// After consuming 2 requests
 	policy.AllowRequest("svc1", "/endpoint1", now)
 	policy.AllowRequest("svc1", "/endpoint1", now)
-	quota = policy.GetRemainingQuota("svc1", "/endpoint1")
+	quota = policy.GetRemainingQuota("svc1", "/endpoint1", now)
 	if quota != 3 {
 		t.Fatalf("expected remaining quota 3, got %d", quota)
 	}
@@ -84,7 +84,7 @@ func TestRateLimitingPolicyGetRemainingQuota(t *testing.T) {
 	policy.AllowRequest("svc1", "/endpoint1", now)
 	policy.AllowRequest("svc1", "/endpoint1", now)
 	policy.AllowRequest("svc1", "/endpoint1", now)
-	quota = policy.GetRemainingQuota("svc1", "/endpoint1")
+	quota = policy.GetRemainingQuota("svc1", "/endpoint1", now)
 	if quota != 0 {
 		t.Fatalf("expected remaining quota 0, got %d", quota)
 	}
@@ -98,18 +98,15 @@ func TestRateLimitingPolicyTokenRefill(t *testing.T) {
 	policy.AllowRequest("svc1", "/endpoint1", now)
 	policy.AllowRequest("svc1", "/endpoint1", now)
 
-	// After 0.5 seconds, should have some tokens refilled
-	// Note: GetRemainingQuota uses time.Now() internally, so we can't precisely control timing
-	// This test verifies the refill mechanism works
-	quota := policy.GetRemainingQuota("svc1", "/endpoint1")
-	// Initially should be 0, but may have refilled slightly
-	if quota < 0 || quota > 2 {
-		t.Fatalf("expected quota between 0 and 2, got %d", quota)
+	// Check quota immediately after consuming tokens
+	quota := policy.GetRemainingQuota("svc1", "/endpoint1", now)
+	if quota != 0 {
+		t.Fatalf("expected quota 0 after consuming all tokens, got %d", quota)
 	}
 
-	// After 1 second, should have full quota
-	time.Sleep(1100 * time.Millisecond) // Wait for refill
-	quota = policy.GetRemainingQuota("svc1", "/endpoint1")
+	// After 1 second, should have full quota refilled
+	futureTime := now.Add(1 * time.Second)
+	quota = policy.GetRemainingQuota("svc1", "/endpoint1", futureTime)
 	if quota != 2 {
 		t.Fatalf("expected remaining quota 2 after 1 second, got %d", quota)
 	}
@@ -127,7 +124,7 @@ func TestRateLimitingPolicyWhenDisabled(t *testing.T) {
 	}
 
 	// Quota should return -1 (unlimited)
-	quota := policy.GetRemainingQuota("svc1", "/endpoint1")
+	quota := policy.GetRemainingQuota("svc1", "/endpoint1", now)
 	if quota != -1 {
 		t.Fatalf("expected quota -1 (unlimited) when disabled, got %d", quota)
 	}

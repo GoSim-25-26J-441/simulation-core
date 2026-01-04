@@ -124,7 +124,7 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 
 			// Check circuit breaker policy
 			circuitBreaker := state.policies.GetCircuitBreaker()
-			if circuitBreaker != nil && !circuitBreaker.AllowRequest(serviceID, endpointPath) {
+			if circuitBreaker != nil && !circuitBreaker.AllowRequest(serviceID, endpointPath, simTime) {
 				// Circuit is open, reject request
 				request.Status = models.RequestStatusFailed
 				labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
@@ -246,7 +246,7 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			if state.policies != nil {
 				circuitBreaker := state.policies.GetCircuitBreaker()
 				if circuitBreaker != nil {
-					circuitBreaker.RecordFailure(serviceID, endpointPath)
+					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
 				}
 			}
 			return fmt.Errorf("failed to allocate CPU: %w", err)
@@ -261,7 +261,7 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			if state.policies != nil {
 				circuitBreaker := state.policies.GetCircuitBreaker()
 				if circuitBreaker != nil {
-					circuitBreaker.RecordFailure(serviceID, endpointPath)
+					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
 				}
 			}
 			return fmt.Errorf("failed to allocate memory: %w", err)

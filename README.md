@@ -254,20 +254,20 @@ The simulation engine supports several policies for controlling request behavior
 
 Rate limiting uses a token bucket algorithm to control request rates per service/endpoint. Currently integrated into the simulation handlers to reject requests that exceed the configured rate limit.
 
-**Status**: ✅ Implemented and integrated
+**Status**: ✅ Implemented (programmatic initialization only)
 
 **How it works**:
 - Token bucket algorithm with configurable rate limit per second
 - Per-service/per-endpoint rate limiting
 - Requests exceeding the rate limit are rejected immediately
 
-**Note**: Rate limiting configuration is currently programmatic. YAML configuration support is planned.
+**Configuration**: Currently programmatic initialization only. YAML configuration support is planned.
 
 #### Circuit Breaker
 
 Circuit breaker pattern prevents cascading failures by opening the circuit when failure thresholds are exceeded.
 
-**Status**: ✅ Implemented and integrated
+**Status**: ✅ Implemented (programmatic initialization only)
 
 **How it works**:
 - **Closed state**: Normal operation, requests are allowed
@@ -276,12 +276,12 @@ Circuit breaker pattern prevents cascading failures by opening the circuit when 
 - Automatically transitions based on failure/success thresholds and timeout
 - Per-service/per-endpoint circuit state tracking
 
-**Configuration** (programmatic, YAML support planned):
+**Configuration** (programmatic initialization only, YAML support planned):
 - `failureThreshold`: Number of failures before opening circuit
 - `successThreshold`: Number of successes needed in half-open to close
 - `timeout`: Duration circuit stays open before transitioning to half-open
 
-**Integration**: Circuit breaker checks occur in `RequestArrival` handler. Success/failure is recorded in `RequestComplete` handler.
+**Integration**: Circuit breaker checks occur in `RequestArrival` handler. Failure events are recorded in `RequestStart` handler when resource allocation fails. Success recording is not yet implemented.
 
 #### Retry Policy
 
@@ -300,7 +300,7 @@ policies:
 ```
 
 **Backoff types**:
-- **exponential**: Delay = `base_ms * 2^attempt`
+- **exponential**: Delay = `base_ms * 2^(attempt-1)`
 - **linear**: Delay = `base_ms * attempt`
 - **constant**: Delay = `base_ms` (same for all attempts)
 
