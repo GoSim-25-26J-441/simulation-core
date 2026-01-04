@@ -45,3 +45,15 @@ func ParseScenarioYAML(data []byte) (*Scenario, error) {
 func ParseScenarioYAMLString(yamlText string) (*Scenario, error) {
 	return ParseScenarioYAML([]byte(yamlText))
 }
+
+// MarshalScenarioYAML marshals a Scenario to YAML bytes.
+func MarshalScenarioYAML(scenario *Scenario) (string, error) {
+	if scenario == nil {
+		return "", fmt.Errorf("scenario is nil")
+	}
+	data, err := yaml.Marshal(scenario)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal scenario yaml: %w", err)
+	}
+	return string(data), nil
+}

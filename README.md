@@ -46,7 +46,7 @@ It predicts latency, throughput, and resource utilization under configurable wor
   - **Circuit breaker**: Failure threshold-based circuit breaking with half-open state recovery
   - **Retry policy**: Configurable retry logic with exponential, linear, or constant backoff
   - **Autoscaling**: CPU-based scaling with scale up/down logic and hysteresis (implementation complete, integration pending)
-- **Optimization loop**: Heuristic hill-climbing for parameter tuning across runs (planned).
+- **Optimization loop**: ✅ Heuristic hill-climbing for parameter tuning across runs with multiple objective functions, convergence detection, and parallel execution.
 - **Multi-cluster support**: Separate latency/capacity models and cross-cluster links (planned).
 - **API surface**: gRPC and HTTP APIs for external clients (CLI, UI, CI).
 
@@ -329,6 +329,208 @@ policies:
 
 **Note**: Autoscaling policy is implemented but requires integration with periodic evaluation and dynamic instance scaling in the resource manager.
 
+## Optimization Loop
+
+The optimization loop enables automatic tuning of service configurations (replicas, resources, policies) to optimize for specific objectives like latency, throughput, or cost.
+
+### Features
+
+- **Hill-climbing optimizer**: Iterative algorithm that explores neighboring configurations to find optimal settings
+- **Multiple objective functions**: Optimize for P95/P99/Mean latency, throughput, error rate, or cost
+- **Convergence detection**: Automatic stopping when optimization converges (no improvement, plateau, low variance)
+- **Parameter exploration**: Adjusts service replicas, CPU/memory resources, workload rates, and policy parameters
+- **Parallel execution**: Evaluate multiple configurations concurrently for faster optimization
+- **Best configuration selection**: Automatically identifies the best configuration from optimization history
+
+### Objective Functions
+
+The optimizer supports several built-in objective functions:
+
+- **P95LatencyObjective**: Minimize 95th percentile latency
+- **P99LatencyObjective**: Minimize 99th percentile latency
+- **MeanLatencyObjective**: Minimize mean latency
+- **ThroughputObjective**: Maximize requests per second
+- **ErrorRateObjective**: Minimize error rate
+- **CostObjective**: Minimize weighted cost (CPU + memory + replicas)
+
+### Usage Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "time"
+    
+    "github.com/GoSim-25-26J-441/simulation-core/internal/improvement"
+    "github.com/GoSim-25-26J-441/simulation-core/internal/simd"
+    "github.com/GoSim-25-26J-441/simulation-core/pkg/config"
+)
+
+func main() {
+    // Initialize components
+    store := simd.NewRunStore()
+    executor := simd.NewRunExecutor(store)
+    
+    // Create optimizer with P95 latency objective
+    objective := &improvement.P95LatencyObjective{}
+    optimizer := improvement.NewOptimizer(objective, 10, 1.0) // max iterations: 10, step size: 1.0
+    
+    // Configure convergence strategy (optional)
+    convergenceConfig := &improvement.ConvergenceConfig{
+        NoImprovementIterations: 3,
+        MinIterations:           5,
+        ImprovementThreshold:   0.01, // 1% improvement threshold
+    }
+    optimizer.WithConvergenceStrategy(
+        improvement.NewNoImprovementStrategy(convergenceConfig),
+    )
+    
+    // Create orchestrator
+    orchestrator := improvement.NewOrchestrator(
+        store, executor, optimizer, objective,
+    ).WithMaxParallelRuns(3) // Enable parallel execution
+    
+    // Define initial scenario
+    initialConfig := &config.Scenario{
+        Hosts: []config.Host{
+            {ID: "host1", Cores: 8},
+        },
+        Services: []config.Service{
+            {
+                ID:       "api",
+                Replicas: 2,
+                Model:    "cpu",
+                CPUCores: 1.0,
+                MemoryMB: 512.0,
+                Endpoints: []config.Endpoint{
+                    {
+                        Path:            "/api/v1/users",
+                        MeanCPUMs:       20,
+                        CPUSigmaMs:      5,
+                        DefaultMemoryMB: 50.0,
+                        NetLatencyMs:    config.LatencySpec{Mean: 2, Sigma: 1},
+                    },
+                },
+            },
+        },
+        Workload: []config.WorkloadPattern{
+            {
+                From: "client",
+                To:   "api:/api/v1/users",
+                Arrival: config.ArrivalSpec{
+                    Type:    "poisson",
+                    RateRPS: 100,
+                },
+            },
+        },
+    }
+    
+    // Run optimization experiment
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+    defer cancel()
+    
+    result, err := orchestrator.RunExperiment(ctx, initialConfig, 5000) // 5 second simulations
+    if err != nil {
+        panic(err)
+    }
+    
+    // Print results
+    fmt.Printf("Optimization completed!\n")
+    fmt.Printf("  Converged: %v (%s)\n", result.Converged, result.ConvergenceReason)
+    fmt.Printf("  Total runs: %d\n", result.TotalRuns)
+    fmt.Printf("  Best score: %.2f\n", result.BestScore)
+    fmt.Printf("  Best replicas: %d\n", result.BestConfig.Services[0].Replicas)
+    fmt.Printf("  Duration: %v\n", result.Duration)
+}
+```
+
+### Custom Exploration Strategy
+
+You can customize how the optimizer explores the parameter space:
+
+```go
+// Use conservative explorer (smaller changes)
+optimizer.WithExplorer(improvement.NewConservativeExplorer())
+
+// Use default explorer (balanced exploration)
+optimizer.WithExplorer(improvement.NewDefaultExplorer())
+```
+
+### Convergence Strategies
+
+Multiple convergence detection strategies are available:
+
+```go
+// No improvement strategy: stops when no improvement for N iterations
+convergenceConfig := &improvement.ConvergenceConfig{
+    NoImprovementIterations: 5,
+    MinIterations:           3,
+}
+optimizer.WithConvergenceStrategy(
+    improvement.NewNoImprovementStrategy(convergenceConfig),
+)
+
+// Plateau strategy: stops when scores plateau (within tolerance)
+plateauConfig := &improvement.ConvergenceConfig{
+    PlateauIterations: 5,
+    ScoreTolerance:    0.01, // 1% tolerance
+    MinIterations:     3,
+}
+optimizer.WithConvergenceStrategy(
+    improvement.NewPlateauStrategy(plateauConfig),
+)
+
+// Combined strategy: uses multiple strategies (default)
+optimizer.WithConvergenceStrategy(
+    improvement.NewCombinedStrategy(improvement.DefaultConvergenceConfig()),
+)
+```
+
+### Parallel Execution
+
+Enable parallel evaluation of configurations for faster optimization:
+
+```go
+orchestrator := improvement.NewOrchestrator(store, executor, optimizer, objective).
+    WithMaxParallelRuns(5) // Evaluate up to 5 configurations in parallel
+```
+
+### Best Configuration Selection
+
+After optimization, select the best configuration using different strategies:
+
+```go
+// Get candidates from optimization history
+candidates := []*improvement.ConfigurationCandidate{
+    // ... populated from optimization runs
+}
+
+// Select best using different strategies
+strategy := &improvement.BestScoreStrategy{}
+best, err := strategy.SelectBest(candidates, objective)
+
+// Or use Pareto optimality for multi-objective optimization
+paretoStrategy := &improvement.ParetoOptimalStrategy{}
+best, err := paretoStrategy.SelectBest(candidates, objective)
+```
+
+### Metrics Comparison
+
+Compare metrics across optimization runs:
+
+```go
+comparison, err := improvement.CompareMetrics(metrics1, metrics2, objective)
+if err != nil {
+    panic(err)
+}
+
+fmt.Printf("Improvement: %v\n", comparison.Improvement)
+fmt.Printf("Objective diff: %.2f\n", comparison.ObjectiveDiff)
+fmt.Printf("P95 latency diff: %.2f ms\n", comparison.LatencyDiff.P95Diff)
+```
+
 ## Development
 
 ```bash
@@ -406,7 +608,7 @@ go test -tags=integration ./...
 - **Metrics collection**: Time-series metrics are collected during simulation with label-based aggregation, enabling detailed analysis of service performance, resource utilization, and request patterns.
 - **Workload patterns**: Multiple arrival distributions allow modeling of realistic traffic patterns, including bursty workloads and user flows.
 - **Policy sandbox**: Integrated policies (rate limiting, circuit breaker) provide runtime control over request behavior. Additional policies (retry, autoscaling) are implemented and ready for integration.
-- **Heuristic optimization**: Hill-climbing tunes scaling/configs across iterations (planned).
+- **Heuristic optimization**: ✅ Hill-climbing optimizer tunes scaling/configs across iterations with configurable exploration strategies and convergence detection.
 - **Bottleneck detection**: Comes from analyzing metrics, not the heuristic.
 - **Deterministic seeds**: Ensure reproducibility of simulation runs.
 - **Each run exports**: Metrics, logs, and summaries for validation and analysis.
