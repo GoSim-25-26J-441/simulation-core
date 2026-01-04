@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Build artifacts
+bin/
+*.exe
+simd
+simd.exe
+
+# Test files
+*_test.go
+test/
+coverage*
+*.out
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.mod.sum.bak
+
+# Temporary files
+*.tmp
+*.log
+*.bak
+
+# Deployment configs (not needed in image)
+deployments/
+scripts/
+
+# Config files (can be mounted as volumes)
+config/*.yaml
+
+# Proto generated files (already in gen/)
+proto/
+
+# API files (not needed in runtime)
+api/
+

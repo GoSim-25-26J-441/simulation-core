@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  # Single simulator instance for development
+  simd:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: simulation-core:latest
+    container_name: simulation-core
+    ports:
+      - "50051:50051"  # gRPC
+      - "8080:8080"    # HTTP
+    command:
+      - "-grpc-addr"
+      - ":50051"
+      - "-http-addr"
+      - ":8080"
+      - "-log-level"
+      - "info"
+    restart: unless-stopped
+    networks:
+      - sim-network
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --spider http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # Multiple simulator instances for testing concurrent runs
+  # Usage: docker-compose up --scale simd-instance=3
+  simd-instance:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: simulation-core:latest
+    command:
+      - "-grpc-addr"
+      - ":50051"
+      - "-http-addr"
+      - ":8080"
+      - "-log-level"
+      - "info"
+    restart: unless-stopped
+    networks:
+      - sim-network
+    # Ports are not exposed for scaled instances (use internal networking)
+    # Backend can access via service name: simd-instance_1, simd-instance_2, etc.
+    healthcheck:
+      test: ["CMD", "sh", "-c", "wget --quiet --tries=1 --spider http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  sim-network:
+    driver: bridge
+    name: simulation-network
+

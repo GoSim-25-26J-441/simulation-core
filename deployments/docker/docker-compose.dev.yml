@@ -1,0 +1,22 @@
+version: '3.8'
+
+# Development override for docker-compose.yml
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  simd:
+    # Override for development: mount source code for hot reload (if using go run)
+    volumes:
+      - ../../:/app:ro
+    # Enable debug logging
+    command:
+      - "-grpc-addr"
+      - ":50051"
+      - "-http-addr"
+      - ":8080"
+      - "-log-level"
+      - "debug"
+    # Remove healthcheck in dev for faster startup
+    healthcheck:
+      disable: true
+

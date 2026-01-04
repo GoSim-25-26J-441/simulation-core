@@ -2,19 +2,22 @@ package simd
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
 	"google.golang.org/protobuf/proto"
 )
 
 type RunRecord struct {
-	Run     *simulationv1.Run
-	Input   *simulationv1.RunInput
-	Metrics *simulationv1.RunMetrics
+	Run       *simulationv1.Run
+	Input     *simulationv1.RunInput
+	Metrics   *simulationv1.RunMetrics
+	Collector *metrics.Collector
 }
 
 type RunStore struct {
@@ -71,20 +74,48 @@ func (s *RunStore) Get(runID string) (*RunRecord, bool) {
 }
 
 func (s *RunStore) List(limit int) []*RunRecord {
+	return s.ListFiltered(limit, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)
+}
+
+// ListFiltered returns runs with pagination and optional status filter
+// limit: maximum number of runs to return (default: 50)
+// offset: number of runs to skip (default: 0)
+// status: filter by status (RUN_STATUS_UNSPECIFIED means no filter)
+func (s *RunStore) ListFiltered(limit, offset int, status simulationv1.RunStatus) []*RunRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	if limit <= 0 {
 		limit = 50
 	}
-	out := make([]*RunRecord, 0, minInt(limit, len(s.runs)))
-	for _, rec := range s.runs {
-		out = append(out, cloneRunRecord(rec))
-		if len(out) >= limit {
-			break
-		}
+	if offset < 0 {
+		offset = 0
 	}
-	return out
+
+	// Collect all matching runs
+	allRuns := make([]*RunRecord, 0, len(s.runs))
+	for _, rec := range s.runs {
+		// Filter by status if specified
+		if status != simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED && rec.Run.Status != status {
+			continue
+		}
+		allRuns = append(allRuns, cloneRunRecord(rec))
+	}
+
+	// Sort by creation time (newest first)
+	sortRunRecords(allRuns)
+
+	// Apply pagination
+	start := offset
+	if start > len(allRuns) {
+		return []*RunRecord{}
+	}
+	end := start + limit
+	if end > len(allRuns) {
+		end = len(allRuns)
+	}
+
+	return allRuns[start:end]
 }
 
 func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg string) (*RunRecord, error) {
@@ -127,21 +158,48 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	return nil
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
+// SetCollector stores a metrics collector reference for a run
+func (s *RunStore) SetCollector(runID string, collector *metrics.Collector) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
 	}
-	return b
+	rec.Collector = collector
+	return nil
+}
+
+// GetCollector retrieves the metrics collector for a run
+func (s *RunStore) GetCollector(runID string) (*metrics.Collector, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.runs[runID]
+	if !ok || rec.Collector == nil {
+		return nil, false
+	}
+	return rec.Collector, true
+}
+
+// sortRunRecords sorts runs by creation time (newest first)
+func sortRunRecords(runs []*RunRecord) {
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].Run.CreatedAtUnixMs > runs[j].Run.CreatedAtUnixMs
+	})
 }
 
 func cloneRunRecord(rec *RunRecord) *RunRecord {
 	if rec == nil {
 		return nil
 	}
+	// Note: Collector is not cloned as it's a reference that should be shared
 	return &RunRecord{
-		Run:     cloneRun(rec.Run),
-		Input:   cloneRunInput(rec.Input),
-		Metrics: cloneRunMetrics(rec.Metrics),
+		Run:       cloneRun(rec.Run),
+		Input:     cloneRunInput(rec.Input),
+		Metrics:   cloneRunMetrics(rec.Metrics),
+		Collector: rec.Collector,
 	}
 }
 

@@ -116,6 +116,8 @@ simulation-engine/
 
 ### Build and run
 
+#### Local build
+
 ```bash
 git clone https://github.com/go-sim/simulation-engine.git
 cd simulation-engine
@@ -124,6 +126,40 @@ go mod tidy
 go build -o bin/simd ./cmd/simd
 ./bin/simd
 ```
+
+#### Docker build
+
+```bash
+# Build the Docker image
+docker build -t simulation-core:latest .
+
+# Run the container
+docker run -p 50051:50051 -p 8080:8080 simulation-core:latest
+
+# Or with custom addresses
+docker run -p 50051:50051 -p 8080:8080 simulation-core:latest \
+  -grpc-addr :50051 \
+  -http-addr :8080 \
+  -log-level info
+```
+
+#### Docker Compose (Local Development)
+
+```bash
+# From project root
+cd deployments/docker
+
+# Start single instance
+docker-compose up --build
+
+# Start multiple instances (for testing concurrent runs)
+docker-compose up --scale simd-instance=3
+
+# Development mode (debug logging, source mounting)
+docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
+
+See `deployments/docker/README.md` for detailed usage instructions.
 
 You should see startup logs indicating the configuration and that the simulation loop is ready.
 

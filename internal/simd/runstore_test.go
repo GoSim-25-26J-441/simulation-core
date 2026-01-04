@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 )
 
 func TestRunStoreCreateAndGet(t *testing.T) {
@@ -234,5 +235,82 @@ func TestRunStoreSetStatusFailedAndCancelled(t *testing.T) {
 	}
 	if rec.Run.EndedAtUnixMs == 0 {
 		t.Fatalf("expected ended_at_unix_ms set for cancelled")
+	}
+}
+
+func TestRunStoreSetCollector(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	if err := store.SetCollector("run-1", collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	got, ok := store.GetCollector("run-1")
+	if !ok {
+		t.Fatalf("expected collector to exist")
+	}
+	if got != collector {
+		t.Fatalf("expected same collector reference")
+	}
+}
+
+func TestRunStoreGetCollectorNonExistent(t *testing.T) {
+	store := NewRunStore()
+	_, ok := store.GetCollector("nope")
+	if ok {
+		t.Fatalf("expected false for non-existent run")
+	}
+}
+
+func TestRunStoreGetCollectorNoCollector(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	_, ok := store.GetCollector("run-1")
+	if ok {
+		t.Fatalf("expected false when collector not set")
+	}
+}
+
+func TestRunStoreSetCollectorOnNonExistentRun(t *testing.T) {
+	store := NewRunStore()
+	collector := metrics.NewCollector()
+	err := store.SetCollector("nope", collector)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}
+
+func TestRunStoreCollectorPersistsAfterClone(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	if err := store.SetCollector("run-1", collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	// Get should return cloned record with same collector reference
+	rec, ok := store.Get("run-1")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Collector != collector {
+		t.Fatalf("expected same collector reference in cloned record")
 	}
 }

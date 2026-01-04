@@ -67,3 +67,11 @@ coverage_improvement
 
 # Generated protobuf code (buf output)
 gen/
+
+# Reference documentation (stored in docs/reference branch, not pushed to remote)
+IMPLEMENTATION_PLAN.md
+PROJECT_ALIGNMENT_CHECKLIST.md
+STORAGE_ARCHITECTURE.md
+STORAGE_IMPLEMENTATION_GUIDE.md
+MISSING_FEATURES.md
+MVP_FUNCTIONAL_REQUIREMENTS.md
