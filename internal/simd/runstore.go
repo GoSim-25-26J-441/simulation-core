@@ -187,13 +187,6 @@ func (s *RunStore) GetCollector(runID string) (*metrics.Collector, bool) {
 	return rec.Collector, true
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // sortRunRecords sorts runs by creation time (newest first)
 func sortRunRecords(runs []*RunRecord) {
 	sort.Slice(runs, func(i, j int) bool {
