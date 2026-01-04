@@ -202,6 +202,76 @@ func TestManagerSelectInstanceForService(t *testing.T) {
 	}
 }
 
+func TestManagerSelectInstanceForServiceRoundRobin(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 3,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2},
+				},
+			},
+		},
+	}
+
+	err := m.InitializeFromScenario(scenario)
+	if err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	// Get all instances for verification
+	allInstances := m.GetInstancesForService("svc1")
+	if len(allInstances) != 3 {
+		t.Fatalf("expected 3 instances, got %d", len(allInstances))
+	}
+
+	// Call SelectInstanceForService multiple times and verify round-robin behavior
+	selectedInstances := make([]string, 0)
+	for i := 0; i < 9; i++ { // 3 full rounds
+		instance, err := m.SelectInstanceForService("svc1")
+		if err != nil {
+			t.Fatalf("SelectInstanceForService error on iteration %d: %v", i, err)
+		}
+		selectedInstances = append(selectedInstances, instance.ID())
+	}
+
+	// Verify that instances are selected in a round-robin fashion
+	// After 3 iterations, we should see the same pattern repeated
+	if selectedInstances[0] != selectedInstances[3] || selectedInstances[0] != selectedInstances[6] {
+		t.Fatalf("expected same instance at positions 0, 3, 6, got %s, %s, %s",
+			selectedInstances[0], selectedInstances[3], selectedInstances[6])
+	}
+	if selectedInstances[1] != selectedInstances[4] || selectedInstances[1] != selectedInstances[7] {
+		t.Fatalf("expected same instance at positions 1, 4, 7, got %s, %s, %s",
+			selectedInstances[1], selectedInstances[4], selectedInstances[7])
+	}
+	if selectedInstances[2] != selectedInstances[5] || selectedInstances[2] != selectedInstances[8] {
+		t.Fatalf("expected same instance at positions 2, 5, 8, got %s, %s, %s",
+			selectedInstances[2], selectedInstances[5], selectedInstances[8])
+	}
+
+	// Verify that all three instances are used
+	uniqueInstances := make(map[string]bool)
+	for i := 0; i < 3; i++ {
+		uniqueInstances[selectedInstances[i]] = true
+	}
+	if len(uniqueInstances) != 3 {
+		t.Fatalf("expected 3 unique instances in first round, got %d", len(uniqueInstances))
+	}
+
+	// Verify that the instances are different in the first 3 selections
+	if selectedInstances[0] == selectedInstances[1] || selectedInstances[1] == selectedInstances[2] || selectedInstances[0] == selectedInstances[2] {
+		t.Fatalf("expected different instances in first 3 selections, got %s, %s, %s",
+			selectedInstances[0], selectedInstances[1], selectedInstances[2])
+	}
+}
+
 func TestManagerAllocateMemory(t *testing.T) {
 	m := NewManager()
 	// Note: Host config doesn't have memory field, so we need to test with a host that has memory

@@ -2,6 +2,7 @@ package resource
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ type Manager struct {
 	hosts           map[string]*Host
 	instances       map[string]*ServiceInstance
 	hostToInstances map[string][]string // host ID -> instance IDs
+	roundRobinIdx   map[string]int      // service name -> last selected instance index
 }
 
 // NewManager creates a new resource manager
@@ -22,6 +24,7 @@ func NewManager() *Manager {
 		hosts:           make(map[string]*Host),
 		instances:       make(map[string]*ServiceInstance),
 		hostToInstances: make(map[string][]string),
+		roundRobinIdx:   make(map[string]int),
 	}
 }
 
@@ -95,16 +98,37 @@ func (m *Manager) GetInstancesForService(serviceName string) []*ServiceInstance 
 	return instances
 }
 
-// SelectInstanceForService selects an instance for a service (round-robin or least loaded)
+// SelectInstanceForService selects an instance for a service using round-robin selection
 func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance, error) {
-	instances := m.GetInstancesForService(serviceName)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	instances := make([]*ServiceInstance, 0)
+	for _, instance := range m.instances {
+		if instance.ServiceName() == serviceName {
+			instances = append(instances, instance)
+		}
+	}
+
 	if len(instances) == 0 {
 		return nil, fmt.Errorf("no instances available for service %s", serviceName)
 	}
 
-	// Simple round-robin selection (can be enhanced with least-loaded selection)
-	// For now, use the first instance (in a real implementation, we'd track last selected)
-	return instances[0], nil
+	// Sort instances by ID for consistent ordering across calls
+	sort.Slice(instances, func(i, j int) bool {
+		return instances[i].ID() < instances[j].ID()
+	})
+
+	// Get the current index for this service (defaults to 0)
+	idx := m.roundRobinIdx[serviceName]
+
+	// Select the instance at the current index
+	selectedInstance := instances[idx]
+
+	// Update the index for next time (wrap around to 0 if we reach the end)
+	m.roundRobinIdx[serviceName] = (idx + 1) % len(instances)
+
+	return selectedInstance, nil
 }
 
 // AllocateCPU allocates CPU resources for a request
