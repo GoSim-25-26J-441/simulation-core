@@ -115,10 +115,6 @@ func (s *RunStore) ListFiltered(limit, offset int, status simulationv1.RunStatus
 		end = len(allRuns)
 	}
 
-	if start >= end {
-		return []*RunRecord{}
-	}
-
 	return allRuns[start:end]
 }
 

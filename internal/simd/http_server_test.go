@@ -504,7 +504,7 @@ func TestHTTPServerTimeSeriesWithTimeRange(t *testing.T) {
 	collector := metrics.NewCollector()
 	collector.Start()
 
-	baseTime := time.Date(2024, 1, 1, 10, 0, 0, 0, time.UTC)
+	baseTime := time.Now().Add(-10 * time.Second)
 	labels := map[string]string{"service": "svc1"}
 
 	collector.Record("cpu_utilization", 0.65, baseTime, labels)
