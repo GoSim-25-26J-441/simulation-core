@@ -17,10 +17,13 @@ type ServiceInstance struct {
 	cpuCores float64 // Allocated CPU cores
 	memoryMB float64 // Allocated memory in MB
 
-	// Current usage
-	activeCPUTimeMs float64 // Total CPU time currently in use (ms)
-	activeMemoryMB  float64 // Memory currently in use (MB)
-	activeRequests  int     // Number of active requests
+	// Current usage with time-window tracking
+	cpuUsageWindow   time.Duration // Time window for CPU utilization calculation (default 1 second)
+	cpuUsageInWindow float64       // CPU time consumed in the current time window (ms)
+	windowStartTime  time.Time     // Start of the current measurement window
+	
+	activeMemoryMB float64 // Memory currently in use (MB)
+	activeRequests int     // Number of active requests
 
 	// Queue
 	requestQueue []string // Queue of request IDs waiting to be processed
@@ -31,14 +34,18 @@ type ServiceInstance struct {
 
 // NewServiceInstance creates a new service instance
 func NewServiceInstance(id, serviceName, hostID string, cpuCores, memoryMB float64) *ServiceInstance {
+	now := time.Now()
 	return &ServiceInstance{
-		id:           id,
-		serviceName:  serviceName,
-		hostID:       hostID,
-		cpuCores:     cpuCores,
-		memoryMB:     memoryMB,
-		requestQueue: make([]string, 0),
-		lastUpdate:   time.Now(),
+		id:               id,
+		serviceName:      serviceName,
+		hostID:           hostID,
+		cpuCores:         cpuCores,
+		memoryMB:         memoryMB,
+		cpuUsageWindow:   1 * time.Second, // Default 1-second window for utilization calculation
+		cpuUsageInWindow: 0,
+		windowStartTime:  now,
+		requestQueue:     make([]string, 0),
+		lastUpdate:       now,
 	}
 }
 
@@ -77,18 +84,40 @@ func (s *ServiceInstance) MemoryMB() float64 {
 	return s.memoryMB
 }
 
-// CPUUtilization returns CPU utilization (0.0 to 1.0)
+// CPUUtilization returns CPU utilization (0.0 to 1.0) based on a sliding time window
 func (s *ServiceInstance) CPUUtilization() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.cpuUtilizationAt(time.Now())
+}
+
+// cpuUtilizationAt calculates CPU utilization at a specific time (internal, lock must be held)
+func (s *ServiceInstance) cpuUtilizationAt(currentTime time.Time) float64 {
 	if s.cpuCores == 0 {
 		return 0.0
 	}
-	// Utilization = active CPU time per second / allocated cores
-	// activeCPUTimeMs is in milliseconds, convert to cores per second
-	utilization := (s.activeCPUTimeMs / 1000.0) / s.cpuCores
+	
+	// Check if we need to move to a new window
+	windowEnd := s.windowStartTime.Add(s.cpuUsageWindow)
+	if currentTime.After(windowEnd) || currentTime.Equal(windowEnd) {
+		// We've moved past the current window, so CPU usage decays to 0
+		// This implements the time-based decay that the reviewer requested
+		return 0.0
+	}
+	
+	// Calculate utilization based on CPU time consumed in this window
+	// Utilization = (CPU time consumed in window / window duration) / available cores
+	windowDurationMs := float64(s.cpuUsageWindow.Milliseconds())
+	if windowDurationMs == 0 {
+		return 0.0
+	}
+	
+	utilization := (s.cpuUsageInWindow / windowDurationMs) / s.cpuCores
 	if utilization > 1.0 {
 		return 1.0
+	}
+	if utilization < 0.0 {
+		return 0.0
 	}
 	return utilization
 }
@@ -114,7 +143,18 @@ func (s *ServiceInstance) ActiveRequests() int {
 func (s *ServiceInstance) AllocateCPU(cpuTimeMs float64, simTime time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.activeCPUTimeMs += cpuTimeMs
+	
+	// Check if we need to start a new window
+	windowEnd := s.windowStartTime.Add(s.cpuUsageWindow)
+	if simTime.After(windowEnd) || simTime.Equal(windowEnd) {
+		// Start a new window
+		s.windowStartTime = simTime
+		s.cpuUsageInWindow = 0
+	}
+	
+	// Add CPU time to the current window
+	s.cpuUsageInWindow += cpuTimeMs
+	
 	s.activeRequests++
 	s.lastUpdate = simTime
 }
@@ -123,9 +163,11 @@ func (s *ServiceInstance) AllocateCPU(cpuTimeMs float64, simTime time.Time) {
 func (s *ServiceInstance) ReleaseCPU(cpuTimeMs float64, simTime time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.activeCPUTimeMs >= cpuTimeMs {
-		s.activeCPUTimeMs -= cpuTimeMs
-	}
+	
+	// Note: We don't subtract from cpuUsageInWindow because the CPU time was
+	// already consumed during processing. The window automatically resets
+	// when we move past the window end time, implementing time-based decay.
+	
 	if s.activeRequests > 0 {
 		s.activeRequests--
 	}
@@ -163,14 +205,7 @@ func (s *ServiceInstance) DequeueRequest() (string, bool) {
 		return "", false
 	}
 	requestID := s.requestQueue[0]
-	// Clear the reference to the dequeued element to avoid retaining it in the backing array.
-	s.requestQueue[0] = ""
-	if len(s.requestQueue) == 1 {
-		// When the queue becomes empty, release the backing array.
-		s.requestQueue = nil
-	} else {
-		s.requestQueue = s.requestQueue[1:]
-	}
+	s.requestQueue = s.requestQueue[1:]
 	return requestID, true
 }
 
@@ -185,17 +220,15 @@ func (s *ServiceInstance) QueueLength() int {
 func (s *ServiceInstance) HasCapacity() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	// If no CPU cores are allocated, this instance cannot process requests.
+	
+	// If no CPU cores are allocated, this instance cannot process requests
 	if s.cpuCores <= 0 {
 		return false
 	}
-
-	// Simple check: if CPU utilization is below 100%, we have capacity.
-	// We compute utilization directly from the guarded fields to avoid
-	// calling CPUUtilization() (which also acquires a lock) while holding
-	// the read lock.
-	utilization := s.activeCPUTimeMs / s.cpuCores
+	
+	// Check if CPU utilization is below 100%
+	// Use the internal method to avoid re-acquiring the lock
+	utilization := s.cpuUtilizationAt(time.Now())
 	return utilization < 1.0
 }
 
