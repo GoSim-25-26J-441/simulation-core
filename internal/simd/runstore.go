@@ -2,6 +2,7 @@ package simd
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,6 +38,10 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 
 	if runID == "" {
 		runID = utils.GenerateRunID()
+	}
+	// Validate run ID to avoid route parsing ambiguity
+	if strings.ContainsAny(runID, ":/") {
+		return nil, fmt.Errorf("run ID cannot contain ':' or '/' characters: %s", runID)
 	}
 	if _, exists := s.runs[runID]; exists {
 		return nil, fmt.Errorf("run already exists: %s", runID)
