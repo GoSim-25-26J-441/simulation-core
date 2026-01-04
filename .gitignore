@@ -63,6 +63,7 @@ coverage_policy_optimization
 coverage_policy_bottleneck
 coverage_policy_deterministic
 coverage_policy_heuristic
+coverage_improvement
 
 # Generated protobuf code (buf output)
 gen/
