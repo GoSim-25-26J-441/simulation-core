@@ -73,17 +73,17 @@ func (p *autoscalingPolicy) GetTargetReplicas(serviceID string, currentReplicas 
 	}
 
 	var targetReplicas int
+	shouldScaleUp := p.ShouldScaleUp(serviceID, currentReplicas, avgCPUUtil)
+	shouldScaleDown := p.ShouldScaleDown(serviceID, currentReplicas, avgCPUUtil)
 
-	if p.ShouldScaleUp(serviceID, currentReplicas, avgCPUUtil) {
-		// Calculate target based on CPU utilization
-		// target = current * (current_util / target_util)
-		targetReplicas = int(float64(currentReplicas) * (avgCPUUtil / p.targetCPUUtil))
-		// Round up and add scale step
+	switch {
+	case shouldScaleUp:
+		// Scale up by scale step
 		targetReplicas = currentReplicas + p.scaleStep
-	} else if p.ShouldScaleDown(serviceID, currentReplicas, avgCPUUtil) {
+	case shouldScaleDown:
 		// Scale down by scale step
 		targetReplicas = currentReplicas - p.scaleStep
-	} else {
+	default:
 		// No change needed
 		return currentReplicas
 	}

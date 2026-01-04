@@ -10,7 +10,7 @@ func TestNewPolicyManager(t *testing.T) {
 	// Test with nil policies
 	pm := NewPolicyManager(nil)
 	if pm == nil {
-		t.Fatalf("expected PolicyManager to be created")
+		t.Fatalf("expected Manager to be created")
 	}
 	if pm.GetAutoscaling() != nil {
 		t.Fatalf("expected no autoscaling policy when nil")
@@ -22,7 +22,7 @@ func TestNewPolicyManager(t *testing.T) {
 	// Test with empty policies
 	pm = NewPolicyManager(&config.Policies{})
 	if pm == nil {
-		t.Fatalf("expected PolicyManager to be created")
+		t.Fatalf("expected Manager to be created")
 	}
 
 	// Test with autoscaling enabled

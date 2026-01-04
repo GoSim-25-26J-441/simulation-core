@@ -67,8 +67,8 @@ const (
 	CircuitStateHalfOpen CircuitState = "halfopen" // Testing if service recovered
 )
 
-// PolicyManager manages all active policies
-type PolicyManager struct {
+// Manager manages all active policies
+type Manager struct {
 	autoscaling    AutoscalingPolicy
 	rateLimiting   RateLimitingPolicy
 	retry          RetryPolicy
@@ -76,8 +76,8 @@ type PolicyManager struct {
 }
 
 // NewPolicyManager creates a new policy manager from configuration
-func NewPolicyManager(policies *config.Policies) *PolicyManager {
-	pm := &PolicyManager{}
+func NewPolicyManager(policies *config.Policies) *Manager {
+	pm := &Manager{}
 
 	if policies != nil {
 		if policies.Autoscaling != nil && policies.Autoscaling.Enabled {
@@ -93,21 +93,21 @@ func NewPolicyManager(policies *config.Policies) *PolicyManager {
 }
 
 // GetAutoscaling returns the autoscaling policy if enabled
-func (pm *PolicyManager) GetAutoscaling() AutoscalingPolicy {
+func (pm *Manager) GetAutoscaling() AutoscalingPolicy {
 	return pm.autoscaling
 }
 
 // GetRateLimiting returns the rate limiting policy if enabled
-func (pm *PolicyManager) GetRateLimiting() RateLimitingPolicy {
+func (pm *Manager) GetRateLimiting() RateLimitingPolicy {
 	return pm.rateLimiting
 }
 
 // GetRetry returns the retry policy if enabled
-func (pm *PolicyManager) GetRetry() RetryPolicy {
+func (pm *Manager) GetRetry() RetryPolicy {
 	return pm.retry
 }
 
 // GetCircuitBreaker returns the circuit breaker policy if enabled
-func (pm *PolicyManager) GetCircuitBreaker() CircuitBreakerPolicy {
+func (pm *Manager) GetCircuitBreaker() CircuitBreakerPolicy {
 	return pm.circuitBreaker
 }
