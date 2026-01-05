@@ -29,6 +29,9 @@ service SimulationService {
 
   // StreamRunEvents streams lifecycle events for a run (status/metrics snapshots).
   rpc StreamRunEvents(StreamRunEventsRequest) returns (stream StreamRunEventsResponse);
+
+  // UpdateWorkloadRate updates the request rate for a specific workload pattern in a running simulation.
+  rpc UpdateWorkloadRate(UpdateWorkloadRateRequest) returns (UpdateWorkloadRateResponse);
 }
 
 // ---- Requests / responses
@@ -94,6 +97,16 @@ message StreamRunEventsRequest {
 
 message StreamRunEventsResponse {
   RunEvent event = 1;
+}
+
+message UpdateWorkloadRateRequest {
+  string run_id = 1;
+  string pattern_key = 2;  // e.g., "client:svc1:/test"
+  double rate_rps = 3;     // New rate in requests per second
+}
+
+message UpdateWorkloadRateResponse {
+  Run run = 1;
 }
 
 // ---- Core models
