@@ -208,27 +208,16 @@ func TestWorkloadStateUpdateRateInvalidValues(t *testing.T) {
 
 	patternKey := patternKey("client", "svc1:/test")
 
-	// Test with negative rate - should still work but will be clamped to default in event generation
+	// Test with negative rate - executor rejects rates <= 0, so this should return an error
 	err = ws.UpdateRate(patternKey, -10.0)
-	if err != nil {
-		t.Errorf("UpdateRate() with negative value should not error: %v", err)
+	if err == nil {
+		t.Errorf("UpdateRate() with negative value should return an error")
 	}
 
-	// Test with zero rate - should still work but will be clamped to default in event generation
+	// Test with zero rate - executor rejects rates <= 0, so this should also return an error
 	err = ws.UpdateRate(patternKey, 0.0)
-	if err != nil {
-		t.Errorf("UpdateRate() with zero value should not error: %v", err)
-	}
-
-	// Verify that rate was actually set (even if invalid)
-	patternState, ok := ws.GetPattern(patternKey)
-	if !ok {
-		t.Fatal("Pattern not found")
-	}
-
-	// The rate should be set to 0.0 as requested, but the event generation will clamp it
-	if patternState.Pattern.Arrival.RateRPS != 0.0 {
-		t.Errorf("Expected rate 0.0 (as set), got %f", patternState.Pattern.Arrival.RateRPS)
+	if err == nil {
+		t.Errorf("UpdateRate() with zero value should return an error")
 	}
 
 	// Cleanup
