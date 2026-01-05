@@ -137,9 +137,11 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Otherwise it's GET /v1/runs/{id}
+	// Otherwise it's GET /v1/runs/{id} or POST /v1/runs/{id} (start run)
 	if r.Method == http.MethodGet {
 		s.handleGetRun(w, r, path)
+	} else if r.Method == http.MethodPost {
+		s.handleStartRun(w, r, path)
 	} else {
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -258,6 +260,29 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID 
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"run": convertRunToJSON(rec.Run),
+	})
+}
+
+// handleStartRun handles POST /v1/runs/{id}
+func (s *HTTPServer) handleStartRun(w http.ResponseWriter, _ *http.Request, runID string) {
+	updated, err := s.Executor.Start(runID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
+			s.writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrRunTerminal):
+			s.writeError(w, http.StatusConflict, err.Error())
+		case errors.Is(err, ErrRunIDMissing):
+			s.writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	logger.Info("run started (HTTP)", "run_id", runID)
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"run": convertRunToJSON(updated.Run),
 	})
 }
 
