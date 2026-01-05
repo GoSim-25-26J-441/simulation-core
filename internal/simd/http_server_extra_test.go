@@ -35,9 +35,9 @@ func TestHTTPServerHandleRunByIDMethodNotAllowed(t *testing.T) {
 		t.Fatalf("Create error: %v", err)
 	}
 
-	// Test POST /v1/runs/{id} (should be method not allowed)
+	// Test PUT /v1/runs/{id} (should be method not allowed)
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id, nil)
+	req := httptest.NewRequest(http.MethodPut, "/v1/runs/"+rec.Run.Id, nil)
 	srv.Handler().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusMethodNotAllowed {
