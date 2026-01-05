@@ -508,4 +508,3 @@ workload:
 		t.Fatalf("expected error when updating rate on non-running run")
 	}
 }
-
