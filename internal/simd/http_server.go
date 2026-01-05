@@ -288,8 +288,8 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 	// 1. Rate update: {"pattern_key": "client:svc1:/test", "rate_rps": 50.0}
 	// 2. Pattern update: {"pattern_key": "client:svc1:/test", "pattern": {...}}
 	var req struct {
-		PatternKey string                 `json:"pattern_key"`
-		RateRPS    *float64               `json:"rate_rps,omitempty"`
+		PatternKey string                  `json:"pattern_key"`
+		RateRPS    *float64                `json:"rate_rps,omitempty"`
 		Pattern    *config.WorkloadPattern `json:"pattern,omitempty"`
 	}
 
