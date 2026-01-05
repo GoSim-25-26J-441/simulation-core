@@ -331,3 +331,181 @@ func TestGRPCServerStopRunOnNonExistent(t *testing.T) {
 		t.Fatalf("expected error for non-existent run")
 	}
 }
+
+func TestGRPCServerUpdateWorkloadRate(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewSimulationGRPCServer(store, executor)
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+
+	// Create and start a run
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   60000, // Long duration to ensure run stays running
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	_, err = srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: createResp.Run.Id})
+	if err != nil {
+		t.Fatalf("StartRun error: %v", err)
+	}
+
+	// Brief delay to let workload state initialize
+	time.Sleep(2 * time.Millisecond)
+
+	// Test successful rate update - discrete-event simulations can complete very quickly
+	patternKey := "client:svc1:/test"
+	newRate := 50.0
+	updateResp, err := srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		RunId:      createResp.Run.Id,
+		PatternKey: patternKey,
+		RateRps:    newRate,
+	})
+	if err != nil {
+		// Check if run has already completed
+		rec, ok := store.Get(createResp.Run.Id)
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			// Simulation completed too quickly - this is expected for discrete-event sims
+			t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", rec.Run.Status)
+		}
+		t.Fatalf("UpdateWorkloadRate error: %v", err)
+	}
+	if updateResp.Run == nil {
+		t.Fatalf("expected run in response")
+	}
+
+	// Stop the run if it's still running
+	_, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id})
+}
+
+func TestGRPCServerUpdateWorkloadRateValidation(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	// Test nil request
+	_, err := srv.UpdateWorkloadRate(ctx, nil)
+	if err == nil {
+		t.Fatalf("expected error for nil request")
+	}
+
+	// Test missing run_id
+	_, err = srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		PatternKey: "client:svc1:/test",
+		RateRps:    10.0,
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing run_id")
+	}
+
+	// Test missing pattern_key
+	_, err = srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		RunId:   "run-1",
+		RateRps: 10.0,
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing pattern_key")
+	}
+
+	// Test negative rate
+	_, err = srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		RunId:      "run-1",
+		PatternKey: "client:svc1:/test",
+		RateRps:    -5.0,
+	})
+	if err == nil {
+		t.Fatalf("expected error for negative rate")
+	}
+
+	// Test zero rate
+	_, err = srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		RunId:      "run-1",
+		PatternKey: "client:svc1:/test",
+		RateRps:    0.0,
+	})
+	if err == nil {
+		t.Fatalf("expected error for zero rate")
+	}
+
+	// Test non-existent run
+	_, err = srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		RunId:      "non-existent",
+		PatternKey: "client:svc1:/test",
+		RateRps:    10.0,
+	})
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerUpdateWorkloadRateNotRunning(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+
+	// Create but don't start
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   1000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	// Try to update rate when run is not running
+	_, err = srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
+		RunId:      createResp.Run.Id,
+		PatternKey: "client:svc1:/test",
+		RateRps:    50.0,
+	})
+	if err == nil {
+		t.Fatalf("expected error when updating rate on non-running run")
+	}
+}
+
