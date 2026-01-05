@@ -11,6 +11,7 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
@@ -119,6 +120,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		runID := strings.TrimSuffix(path, "/metrics")
 		if r.Method == http.MethodGet {
 			s.handleGetRunMetrics(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
+	// Check for /workload suffix
+	if strings.HasSuffix(path, "/workload") {
+		runID := strings.TrimSuffix(path, "/workload")
+		if r.Method == http.MethodPatch {
+			s.handleUpdateWorkload(w, r, runID)
 		} else {
 			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -267,6 +279,80 @@ func (s *HTTPServer) handleStopRun(w http.ResponseWriter, _ *http.Request, runID
 	logger.Info("run cancelled (HTTP)", "run_id", runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"run": convertRunToJSON(updated.Run),
+	})
+}
+
+// handleUpdateWorkload handles PATCH /v1/runs/{id}/workload
+func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request, runID string) {
+	// Parse request body - supports two modes:
+	// 1. Rate update: {"pattern_key": "client:svc1:/test", "rate_rps": 50.0}
+	// 2. Pattern update: {"pattern_key": "client:svc1:/test", "pattern": {...}}
+	var req struct {
+		PatternKey string                 `json:"pattern_key"`
+		RateRPS    *float64               `json:"rate_rps,omitempty"`
+		Pattern    *config.WorkloadPattern `json:"pattern,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if req.PatternKey == "" {
+		s.writeError(w, http.StatusBadRequest, "pattern_key is required")
+		return
+	}
+
+	// Check if run exists and is running
+	rec, ok := s.store.Get(runID)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		s.writeError(w, http.StatusBadRequest, "run is not running (status: "+rec.Run.Status.String()+")")
+		return
+	}
+
+	// Update rate or pattern
+	var err error
+	if req.RateRPS != nil {
+		// Rate update
+		if *req.RateRPS < 0 {
+			s.writeError(w, http.StatusBadRequest, "rate_rps must be non-negative")
+			return
+		}
+		err = s.Executor.UpdateWorkloadRate(runID, req.PatternKey, *req.RateRPS)
+	} else if req.Pattern != nil {
+		// Pattern update
+		err = s.Executor.UpdateWorkloadPattern(runID, req.PatternKey, *req.Pattern)
+	} else {
+		s.writeError(w, http.StatusBadRequest, "either rate_rps or pattern must be provided")
+		return
+	}
+
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
+			s.writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrRunIDMissing):
+			s.writeError(w, http.StatusBadRequest, err.Error())
+		case strings.Contains(err.Error(), "workload pattern not found"):
+			s.writeError(w, http.StatusNotFound, err.Error())
+		case strings.Contains(err.Error(), "invalid workload target"):
+			s.writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			s.writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+
+	logger.Info("workload updated (HTTP)", "run_id", runID, "pattern_key", req.PatternKey)
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message":     "workload updated successfully",
+		"run_id":      runID,
+		"pattern_key": req.PatternKey,
 	})
 }
 
