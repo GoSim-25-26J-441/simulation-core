@@ -35,6 +35,7 @@ The `simulation-core` provides a containerized microservices simulation engine w
 - ✅ Run export for complete data retrieval
 - ✅ Docker containerization for isolated execution
 - ✅ Concurrent run support (in-memory storage)
+- ✅ Dynamic workload rate updates during simulation execution
 
 ---
 
@@ -252,6 +253,59 @@ Cancel a running simulation run.
 - `200 OK`: Run stopped successfully
 - `404 Not Found`: Run not found
 - `409 Conflict`: Run is already in terminal state
+
+---
+
+### Update Workload Rate
+
+**PATCH** `/v1/runs/{run_id}/workload`
+
+Update the request rate or pattern for a specific workload pattern in a running simulation.
+
+**Request Body (Rate Update):**
+```json
+{
+  "pattern_key": "client:svc1:/test",
+  "rate_rps": 50.0
+}
+```
+
+**Request Body (Pattern Update):**
+```json
+{
+  "pattern_key": "client:svc1:/test",
+  "pattern": {
+    "from": "client",
+    "to": "svc1:/test",
+    "arrival": {
+      "type": "poisson",
+      "rate_rps": 100.0
+    }
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "message": "workload updated successfully",
+  "run_id": "run-20240115-103000-abc123",
+  "pattern_key": "client:svc1:/test"
+}
+```
+
+**Status Codes:**
+- `200 OK`: Workload updated successfully
+- `400 Bad Request`: Invalid request (missing pattern_key, negative rate, run not running, or invalid pattern)
+- `404 Not Found`: Run not found or workload pattern not found
+- `500 Internal Server Error`: Server error
+
+**Notes:**
+- The run must be in `RUNNING` status to update workload
+- `pattern_key` format: `"{from}:{to}"` (e.g., `"client:svc1:/test"`)
+- Either `rate_rps` or `pattern` must be provided (not both)
+- Rate changes take effect immediately and affect future event generation
+- This endpoint enables dynamic configuration during simulation execution
 
 ---
 
@@ -1192,12 +1246,41 @@ print(f"Run completed with status: {run['status']}")
 
 ---
 
+## gRPC API Reference
+
+The simulator also exposes a gRPC API (port 50051) with similar functionality to the HTTP API. Key methods include:
+
+- `CreateRun`: Create a new simulation run
+- `StartRun`: Start a simulation run
+- `StopRun`: Stop a running simulation
+- `GetRun`: Get run information
+- `ListRuns`: List simulation runs
+- `GetRunMetrics`: Get aggregated metrics
+- `StreamRunEvents`: Stream lifecycle events
+- **`UpdateWorkloadRate`**: Update workload rate for a running simulation ⭐
+
+**Example (UpdateWorkloadRate):**
+```go
+client := simulationv1.NewSimulationServiceClient(conn)
+req := &simulationv1.UpdateWorkloadRateRequest{
+    RunId:      "run-20240115-103000-abc123",
+    PatternKey: "client:svc1:/test",
+    RateRps:    50.0,
+}
+resp, err := client.UpdateWorkloadRate(ctx, req)
+```
+
+For complete gRPC API definitions, see `proto/simulation/v1/simulation.proto`.
+
+---
+
 ## Additional Resources
 
 - **README.md**: General project documentation
 - **deployments/docker/README.md**: Docker deployment details
 - **proto/simulation/v1/simulation.proto**: gRPC API definition
 - **test/integration/**: Integration test examples
+- **docs/DYNAMIC_CONFIGURATION.md**: Dynamic configuration guide
 
 ---
 
@@ -1211,18 +1294,21 @@ For issues or questions:
 
 ---
 
-## Important Limitations
+## Dynamic Configuration
 
-### Dynamic Configuration and Request Rates
+### Workload Rate Updates
 
-⚠️ **The simulator does NOT currently support:**
-- Dynamic configuration changes during simulation execution
-- Real-time request rate adjustments (e.g., via frontend slider)
-- Modifying workload patterns after a run starts
+✅ **The simulator now supports:**
+- Dynamic request rate adjustments during simulation execution
+- Real-time workload pattern modifications via HTTP API
+- Updating workload patterns for running simulations
 
-**Why**: All arrival events are pre-scheduled at the beginning of the simulation based on the scenario YAML. The event queue is fixed once execution starts.
+**Endpoints:**
+- **HTTP**: `PATCH /v1/runs/{run_id}/workload` - Update workload rate or pattern
+- **gRPC**: `UpdateWorkloadRate` - Update workload rate (see proto definition)
 
-**Workaround**: Create multiple runs with different configurations/rates and compare results.
+**Example Use Case:**
+Use a frontend slider to adjust request rates in real-time and observe how the system reacts to changing load patterns.
 
 **For details**: See [Dynamic Configuration Guide](./DYNAMIC_CONFIGURATION.md)
 
