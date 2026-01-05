@@ -215,8 +215,8 @@ func (s *SimulationGRPCServer) UpdateWorkloadRate(ctx context.Context, req *simu
 		return nil, status.Error(codes.InvalidArgument, "pattern_key is required")
 	}
 
-	if req.RateRps < 0 {
-		return nil, status.Error(codes.InvalidArgument, "rate_rps must be non-negative")
+	if req.RateRps <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "rate_rps must be positive")
 	}
 
 	// Check if run exists and is running

@@ -320,8 +320,8 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 	switch {
 	case req.RateRPS != nil:
 		// Rate update
-		if *req.RateRPS < 0 {
-			s.writeError(w, http.StatusBadRequest, "rate_rps must be non-negative")
+		if *req.RateRPS <= 0 {
+			s.writeError(w, http.StatusBadRequest, "rate_rps must be positive")
 			return
 		}
 		err = s.Executor.UpdateWorkloadRate(runID, req.PatternKey, *req.RateRPS)

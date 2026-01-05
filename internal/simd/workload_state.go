@@ -13,6 +13,19 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
 )
 
+const (
+	// DefaultFallbackRateRPS is the default rate used when an invalid rate is specified
+	DefaultFallbackRateRPS = 1.0
+	// DefaultStdDevPercentage is the default standard deviation as a percentage of mean rate for normal distribution
+	DefaultStdDevPercentage = 0.1
+	// MinInterArrivalTimeSeconds is the minimum inter-arrival time to prevent extremely rapid event generation
+	MinInterArrivalTimeSeconds = 0.001
+	// EventGenerationLookaheadWindow is how far ahead events are pre-generated
+	EventGenerationLookaheadWindow = 1 * time.Second
+	// EventGenerationTickerInterval is the interval at which the event generation loop checks for new events to generate
+	EventGenerationTickerInterval = 500 * time.Millisecond
+)
+
 // WorkloadPatternState tracks the state of a workload pattern during simulation
 type WorkloadPatternState struct {
 	Pattern       config.WorkloadPattern
@@ -89,6 +102,10 @@ func (ws *WorkloadState) Stop() {
 
 // UpdateRate updates the rate for a specific workload pattern
 func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error {
+	if newRateRPS <= 0 {
+		return fmt.Errorf("rate must be positive, got: %f", newRateRPS)
+	}
+
 	ws.mu.RLock()
 	patternState, ok := ws.patterns[patternKey]
 	ws.mu.RUnlock()
@@ -146,23 +163,50 @@ func (ws *WorkloadState) UpdatePattern(patternKey string, pattern config.Workloa
 	return nil
 }
 
-// GetPattern returns a workload pattern by key
+// GetPattern returns a deep copy of a workload pattern by key to prevent concurrent access issues
 func (ws *WorkloadState) GetPattern(patternKey string) (*WorkloadPatternState, bool) {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
 
 	pattern, ok := ws.patterns[patternKey]
-	return pattern, ok
+	if !ok {
+		return nil, false
+	}
+
+	// Return a deep copy to prevent concurrent access issues
+	pattern.mu.RLock()
+	defer pattern.mu.RUnlock()
+
+	copy := &WorkloadPatternState{
+		Pattern:       pattern.Pattern,
+		ServiceID:     pattern.ServiceID,
+		EndpointPath:  pattern.EndpointPath,
+		LastEventTime: pattern.LastEventTime,
+		NextEventTime: pattern.NextEventTime,
+		Active:        pattern.Active,
+	}
+	return copy, true
 }
 
-// GetAllPatterns returns all workload patterns
+// GetAllPatterns returns deep copies of all workload patterns to prevent concurrent access issues
 func (ws *WorkloadState) GetAllPatterns() map[string]*WorkloadPatternState {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
 
 	result := make(map[string]*WorkloadPatternState)
 	for k, v := range ws.patterns {
-		result[k] = v
+		// Create a deep copy of each pattern state
+		v.mu.RLock()
+		copy := &WorkloadPatternState{
+			Pattern:       v.Pattern,
+			ServiceID:     v.ServiceID,
+			EndpointPath:  v.EndpointPath,
+			LastEventTime: v.LastEventTime,
+			NextEventTime: v.NextEventTime,
+			Active:        v.Active,
+		}
+		v.mu.RUnlock()
+		result[k] = copy
 	}
 	return result
 }
@@ -177,7 +221,7 @@ func (ws *WorkloadState) generateEventsLoop() {
 	// Generate initial batch of events immediately
 	ws.generateNextEvents()
 
-	ticker := time.NewTicker(100 * time.Millisecond) // Check every 100ms
+	ticker := time.NewTicker(EventGenerationTickerInterval)
 	defer ticker.Stop()
 
 	for {
@@ -195,8 +239,8 @@ func (ws *WorkloadState) generateNextEvents() {
 	ws.mu.RLock()
 	currentSimTime := ws.engine.GetSimTime()
 
-	// Generate events up to 1 second ahead
-	lookaheadTime := currentSimTime.Add(1 * time.Second)
+	// Generate events up to EventGenerationLookaheadWindow ahead
+	lookaheadTime := currentSimTime.Add(EventGenerationLookaheadWindow)
 	if lookaheadTime.After(ws.endTime) {
 		lookaheadTime = ws.endTime
 	}
@@ -248,7 +292,7 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		// Exponential inter-arrival time
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
-			rateRPS = 1.0 // Default to 1 RPS
+			rateRPS = DefaultFallbackRateRPS
 		}
 		interArrivalSeconds := ws.generator.ExpFloat64(rateRPS)
 		if interArrivalSeconds < 0 {
@@ -261,7 +305,7 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		// Both types produce the same behavior: fixed interval = 1/rate
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
-			rateRPS = 1.0
+			rateRPS = DefaultFallbackRateRPS
 		}
 		interArrivalSeconds := 1.0 / rateRPS
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
@@ -270,17 +314,17 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		// Normal distribution
 		meanRateRPS := arrival.RateRPS
 		if meanRateRPS <= 0 {
-			meanRateRPS = 1.0
+			meanRateRPS = DefaultFallbackRateRPS
 		}
 		stddevRPS := arrival.StdDevRPS
 		if stddevRPS <= 0 {
-			stddevRPS = meanRateRPS * 0.1 // Default 10% stddev
+			stddevRPS = meanRateRPS * DefaultStdDevPercentage
 		}
 		meanInterArrivalSeconds := 1.0 / meanRateRPS
 		stddevInterArrivalSeconds := stddevRPS / (meanRateRPS * meanRateRPS)
 		interArrivalSeconds := ws.generator.NormFloat64(meanInterArrivalSeconds, stddevInterArrivalSeconds)
-		if interArrivalSeconds < 0.001 { // Minimum 1ms
-			interArrivalSeconds = 0.001
+		if interArrivalSeconds < MinInterArrivalTimeSeconds {
+			interArrivalSeconds = MinInterArrivalTimeSeconds
 		}
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 
@@ -290,7 +334,7 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		// For now, this is an alias for Poisson distribution
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
-			rateRPS = 1.0
+			rateRPS = DefaultFallbackRateRPS
 		}
 		interArrivalSeconds := ws.generator.ExpFloat64(rateRPS)
 		if interArrivalSeconds < 0 {
@@ -302,7 +346,7 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		// Default to poisson
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
-			rateRPS = 1.0
+			rateRPS = DefaultFallbackRateRPS
 		}
 		interArrivalSeconds := ws.generator.ExpFloat64(rateRPS)
 		if interArrivalSeconds < 0 {
