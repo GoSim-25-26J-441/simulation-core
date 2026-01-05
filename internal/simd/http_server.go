@@ -317,17 +317,18 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 
 	// Update rate or pattern
 	var err error
-	if req.RateRPS != nil {
+	switch {
+	case req.RateRPS != nil:
 		// Rate update
 		if *req.RateRPS < 0 {
 			s.writeError(w, http.StatusBadRequest, "rate_rps must be non-negative")
 			return
 		}
 		err = s.Executor.UpdateWorkloadRate(runID, req.PatternKey, *req.RateRPS)
-	} else if req.Pattern != nil {
+	case req.Pattern != nil:
 		// Pattern update
 		err = s.Executor.UpdateWorkloadPattern(runID, req.PatternKey, *req.Pattern)
-	} else {
+	default:
 		s.writeError(w, http.StatusBadRequest, "either rate_rps or pattern must be provided")
 		return
 	}
