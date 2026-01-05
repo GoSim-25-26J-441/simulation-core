@@ -163,7 +163,8 @@ func (ws *WorkloadState) UpdatePattern(patternKey string, pattern config.Workloa
 	return nil
 }
 
-// GetPattern returns a deep copy of a workload pattern by key to prevent concurrent access issues
+// GetPattern returns a deep copy of a workload pattern by key to prevent concurrent access issues.
+// The returned copy is a snapshot and should be treated as read-only.
 func (ws *WorkloadState) GetPattern(patternKey string) (*WorkloadPatternState, bool) {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
@@ -173,7 +174,9 @@ func (ws *WorkloadState) GetPattern(patternKey string) (*WorkloadPatternState, b
 		return nil, false
 	}
 
-	// Return a deep copy to prevent concurrent access issues
+	// Return a deep copy to prevent concurrent access issues.
+	// Note: The mutex is not initialized in the copy as the returned state is intended
+	// to be a read-only snapshot and callers should not perform locking operations on it.
 	pattern.mu.RLock()
 	defer pattern.mu.RUnlock()
 
@@ -188,14 +191,17 @@ func (ws *WorkloadState) GetPattern(patternKey string) (*WorkloadPatternState, b
 	return copy, true
 }
 
-// GetAllPatterns returns deep copies of all workload patterns to prevent concurrent access issues
+// GetAllPatterns returns deep copies of all workload patterns to prevent concurrent access issues.
+// The returned copies are snapshots and should be treated as read-only.
 func (ws *WorkloadState) GetAllPatterns() map[string]*WorkloadPatternState {
 	ws.mu.RLock()
 	defer ws.mu.RUnlock()
 
 	result := make(map[string]*WorkloadPatternState)
 	for k, v := range ws.patterns {
-		// Create a deep copy of each pattern state
+		// Create a deep copy of each pattern state.
+		// Note: The mutex is not initialized in the copy as the returned state is intended
+		// to be a read-only snapshot and callers should not perform locking operations on it.
 		v.mu.RLock()
 		copy := &WorkloadPatternState{
 			Pattern:       v.Pattern,
