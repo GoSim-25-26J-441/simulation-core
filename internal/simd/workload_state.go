@@ -77,7 +77,7 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time) e
 	}
 
 	// Start continuous event generation
-	go ws.generateEventsLoop(startTime)
+	go ws.generateEventsLoop()
 
 	return nil
 }
@@ -173,7 +173,7 @@ func patternKey(from, to string) string {
 }
 
 // generateEventsLoop continuously generates arrival events based on current patterns
-func (ws *WorkloadState) generateEventsLoop(startTime time.Time) {
+func (ws *WorkloadState) generateEventsLoop() {
 	// Generate initial batch of events immediately
 	ws.generateNextEvents()
 
