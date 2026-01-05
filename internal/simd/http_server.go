@@ -138,11 +138,12 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Otherwise it's GET /v1/runs/{id} or POST /v1/runs/{id} (start run)
-	if r.Method == http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
 		s.handleGetRun(w, r, path)
-	} else if r.Method == http.MethodPost {
+	case http.MethodPost:
 		s.handleStartRun(w, r, path)
-	} else {
+	default:
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
