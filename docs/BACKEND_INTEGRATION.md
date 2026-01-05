@@ -303,7 +303,7 @@ Update the request rate or pattern for a specific workload pattern in a running 
 **Notes:**
 - The run must be in `RUNNING` status to update workload
 - `pattern_key` format: `"{from}:{to}"` (e.g., `"client:svc1:/test"`)
-- Either `rate_rps` or `pattern` must be provided (not both)
+- At least one of `rate_rps` or `pattern` must be provided; if both are provided, `rate_rps` is applied and `pattern` is ignored
 - Rate changes take effect immediately and affect future event generation
 - This endpoint enables dynamic configuration during simulation execution
 
