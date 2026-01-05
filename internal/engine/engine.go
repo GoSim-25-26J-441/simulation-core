@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -46,9 +47,9 @@ func (e *Engine) RegisterHandler(eventType EventType, handler EventHandler) {
 
 // ScheduleEvent schedules an event
 func (e *Engine) ScheduleEvent(event *Event) {
-	e.eventCounter++
+	counter := atomic.AddInt64(&e.eventCounter, 1)
 	if event.ID == "" {
-		event.ID = fmt.Sprintf("evt-%d", e.eventCounter)
+		event.ID = fmt.Sprintf("evt-%d", counter)
 	}
 	e.eventQueue.Schedule(event)
 
@@ -127,7 +128,7 @@ func (e *Engine) Run(duration time.Duration) error {
 		if event.Type == EventTypeSimulationEnd {
 			e.logger.Info("Simulation ended",
 				"sim_time", event.Time,
-				"events_processed", e.eventCounter)
+				"events_processed", atomic.LoadInt64(&e.eventCounter))
 			break
 		}
 
@@ -153,7 +154,7 @@ func (e *Engine) Run(duration time.Duration) error {
 	e.logger.Info("Simulation completed",
 		"run_id", e.runManager.run.ID,
 		"duration", e.simTime.Since(startTime),
-		"events_processed", e.eventCounter)
+		"events_processed", atomic.LoadInt64(&e.eventCounter))
 
 	return nil
 }
@@ -185,7 +186,7 @@ func (e *Engine) GetStats() map[string]interface{} {
 	stats := e.runManager.GetStats()
 	stats["sim_time"] = e.simTime.Now().Format(time.RFC3339)
 	stats["events_in_queue"] = e.eventQueue.Size()
-	stats["events_processed"] = e.eventCounter
+	stats["events_processed"] = atomic.LoadInt64(&e.eventCounter)
 	return stats
 }
 

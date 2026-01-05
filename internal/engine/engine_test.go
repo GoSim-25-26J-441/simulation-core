@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,8 +38,8 @@ func TestEngineScheduleEvent(t *testing.T) {
 	if engine.eventQueue.Size() != 1 {
 		t.Errorf("Expected 1 event in queue, got %d", engine.eventQueue.Size())
 	}
-	if engine.eventCounter != 1 {
-		t.Errorf("Expected event counter to be 1, got %d", engine.eventCounter)
+	if atomic.LoadInt64(&engine.eventCounter) != 1 {
+		t.Errorf("Expected event counter to be 1, got %d", atomic.LoadInt64(&engine.eventCounter))
 	}
 
 	// Event ID should be auto-generated
