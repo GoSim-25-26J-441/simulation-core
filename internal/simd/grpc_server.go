@@ -201,3 +201,53 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 		}
 	}
 }
+
+func (s *SimulationGRPCServer) UpdateWorkloadRate(ctx context.Context, req *simulationv1.UpdateWorkloadRateRequest) (*simulationv1.UpdateWorkloadRateResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	if req.RunId == "" {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+
+	if req.PatternKey == "" {
+		return nil, status.Error(codes.InvalidArgument, "pattern_key is required")
+	}
+
+	if req.RateRps < 0 {
+		return nil, status.Error(codes.InvalidArgument, "rate_rps must be non-negative")
+	}
+
+	// Check if run exists and is running
+	rec, ok := s.store.Get(req.RunId)
+	if !ok {
+		return nil, status.Error(codes.NotFound, "run not found")
+	}
+
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		return nil, status.Error(codes.FailedPrecondition, "run is not running (status: "+rec.Run.Status.String()+")")
+	}
+
+	err := s.Executor.UpdateWorkloadRate(req.RunId, req.PatternKey, req.RateRps)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
+			return nil, status.Error(codes.NotFound, err.Error())
+		case errors.Is(err, ErrRunIDMissing):
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		default:
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+	}
+
+	logger.Info("workload rate updated (gRPC)", "run_id", req.RunId, "pattern_key", req.PatternKey, "rate_rps", req.RateRps)
+
+	// Get updated run status
+	updated, ok := s.store.Get(req.RunId)
+	if !ok {
+		return nil, status.Error(codes.Internal, "run not found after update")
+	}
+
+	return &simulationv1.UpdateWorkloadRateResponse{Run: updated.Run}, nil
+}
