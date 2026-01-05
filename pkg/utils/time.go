@@ -1,11 +1,13 @@
 package utils
 
 import (
+	"sync"
 	"time"
 )
 
 // SimTime represents simulation time
 type SimTime struct {
+	mu      sync.RWMutex
 	current time.Time
 }
 
@@ -16,26 +18,36 @@ func NewSimTime(start time.Time) *SimTime {
 
 // Now returns the current simulation time
 func (st *SimTime) Now() time.Time {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
 	return st.current
 }
 
 // Advance advances the simulation time by the given duration
 func (st *SimTime) Advance(d time.Duration) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	st.current = st.current.Add(d)
 }
 
 // Set sets the simulation time to the given time
 func (st *SimTime) Set(t time.Time) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
 	st.current = t
 }
 
 // Since returns the duration since the given time
 func (st *SimTime) Since(t time.Time) time.Duration {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
 	return st.current.Sub(t)
 }
 
 // Until returns the duration until the given time
 func (st *SimTime) Until(t time.Time) time.Duration {
+	st.mu.RLock()
+	defer st.mu.RUnlock()
 	return t.Sub(st.current)
 }
 
