@@ -245,7 +245,6 @@ func (e *Engine) Run(duration time.Duration) error {
 				"end_time", endTime,
 				"sim_duration", event.Time.Sub(startTime),
 				"events_processed", atomic.LoadInt64(&e.eventCounter))
-			simulationEnded = true
 			break
 		}
 
