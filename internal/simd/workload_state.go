@@ -21,7 +21,8 @@ const (
 	// MinInterArrivalTimeSeconds is the minimum inter-arrival time to prevent extremely rapid event generation
 	MinInterArrivalTimeSeconds = 0.001
 	// EventGenerationLookaheadWindow is how far ahead events are pre-generated
-	EventGenerationLookaheadWindow = 1 * time.Second
+	// Increased to ensure events are available throughout the simulation duration
+	EventGenerationLookaheadWindow = 10 * time.Second
 	// EventGenerationTickerInterval is the interval at which the event generation loop checks for new events to generate
 	EventGenerationTickerInterval = 500 * time.Millisecond
 )

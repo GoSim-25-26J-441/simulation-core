@@ -180,7 +180,7 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("run created (HTTP)", "run_id", rec.Run.Id)
 	s.writeJSON(w, http.StatusCreated, map[string]any{
-		"run": convertRunToJSON(rec.Run),
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	})
 }
 
@@ -217,7 +217,7 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	// Convert to JSON format
 	runsJSON := make([]map[string]any, 0, len(runs))
 	for _, rec := range runs {
-		runsJSON = append(runsJSON, convertRunToJSON(rec.Run))
+		runsJSON = append(runsJSON, convertRunToJSON(rec.Run, rec.Input))
 	}
 
 	// Return response with pagination metadata
@@ -260,7 +260,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID 
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(rec.Run),
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	})
 }
 
@@ -282,8 +282,9 @@ func (s *HTTPServer) handleStartRun(w http.ResponseWriter, _ *http.Request, runI
 	}
 
 	logger.Info("run started (HTTP)", "run_id", runID)
+	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(updated.Run),
+		"run": convertRunToJSON(updated.Run, rec.Input),
 	})
 }
 
@@ -303,8 +304,9 @@ func (s *HTTPServer) handleStopRun(w http.ResponseWriter, _ *http.Request, runID
 	}
 
 	logger.Info("run cancelled (HTTP)", "run_id", runID)
+	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(updated.Run),
+		"run": convertRunToJSON(updated.Run, rec.Input),
 	})
 }
 
@@ -530,7 +532,7 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 
 	// Build export data
 	export := map[string]any{
-		"run": convertRunToJSON(rec.Run),
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	}
 
 	// Include input/scenario configuration
@@ -838,8 +840,8 @@ func (s *HTTPServer) writeError(w http.ResponseWriter, status int, message strin
 	})
 }
 
-func convertRunToJSON(run *simulationv1.Run) map[string]any {
-	return map[string]any{
+func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[string]any {
+	result := map[string]any{
 		"id":                 run.Id,
 		"status":             run.Status.String(),
 		"created_at_unix_ms": run.CreatedAtUnixMs,
@@ -847,6 +849,21 @@ func convertRunToJSON(run *simulationv1.Run) map[string]any {
 		"ended_at_unix_ms":   run.EndedAtUnixMs,
 		"error":              run.Error,
 	}
+	
+	// Calculate real-world duration (wall-clock time)
+	if run.StartedAtUnixMs > 0 && run.EndedAtUnixMs > 0 {
+		realDurationMs := run.EndedAtUnixMs - run.StartedAtUnixMs
+		result["real_duration_ms"] = realDurationMs
+		result["real_duration_seconds"] = float64(realDurationMs) / 1000.0
+	}
+	
+	// Include simulation duration from input (this is the actual simulation time)
+	if input != nil && input.DurationMs > 0 {
+		result["simulation_duration_ms"] = input.DurationMs
+		result["simulation_duration_seconds"] = float64(input.DurationMs) / 1000.0
+	}
+	
+	return result
 }
 
 func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {

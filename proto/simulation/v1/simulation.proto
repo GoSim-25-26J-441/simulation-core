@@ -128,6 +128,11 @@ message RunInput {
 
   // Deterministic seed (0 => server-generated).
   int64 seed = 4;
+
+  // Real-time mode: if true, the simulation will throttle to run in real-time,
+  // making it suitable for real-time dashboards and monitoring.
+  // When false (default), the simulation runs as fast as possible.
+  bool real_time_mode = 5;
 }
 
 message Run {

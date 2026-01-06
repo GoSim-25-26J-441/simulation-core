@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // LoadConfig loads and parses a configuration file
@@ -286,14 +287,23 @@ func validateScenario(s *Scenario) error {
 	}
 
 	// Second pass: validate downstream calls now that all service IDs are known
+	// Import interaction package for ParseDownstreamTarget
 	for _, svc := range s.Services {
 		for _, ep := range svc.Endpoints {
 			for _, ds := range ep.Downstream {
 				if ds.To == "" {
 					return fmt.Errorf("service %s, endpoint %s: downstream 'to' cannot be empty", svc.ID, ep.Path)
 				}
-				if !serviceIDs[ds.To] {
-					return fmt.Errorf("service %s, endpoint %s: downstream service %s does not exist", svc.ID, ep.Path, ds.To)
+				// Parse the target to extract service ID (supports both "serviceID" and "serviceID:path" formats)
+				serviceID := ds.To
+				if strings.Contains(ds.To, ":") {
+					parts := strings.SplitN(ds.To, ":", 2)
+					if len(parts) == 2 && parts[0] != "" {
+						serviceID = strings.TrimSpace(parts[0])
+					}
+				}
+				if !serviceIDs[serviceID] {
+					return fmt.Errorf("service %s, endpoint %s: downstream service %s does not exist", svc.ID, ep.Path, serviceID)
 				}
 			}
 		}

@@ -13,12 +13,14 @@ import (
 
 // Engine is the discrete-event simulation engine
 type Engine struct {
-	eventQueue   *EventQueue
-	runManager   *RunManager
-	simTime      *utils.SimTime
-	handlers     map[EventType]EventHandler
-	logger       *slog.Logger
-	eventCounter int64
+	eventQueue      *EventQueue
+	runManager      *RunManager
+	simTime         *utils.SimTime
+	handlers        map[EventType]EventHandler
+	logger          *slog.Logger
+	eventCounter    int64
+	realTimeStart   time.Time // Real-time start for throttling
+	realTimeMode    bool      // If true, throttle simulation to run in real-time
 }
 
 // EventHandler is a function that handles a specific event type
@@ -38,6 +40,13 @@ func NewEngine(runID string) *Engine {
 // SetLogger sets the engine's logger
 func (e *Engine) SetLogger(l *slog.Logger) {
 	e.logger = l
+}
+
+// SetRealTimeMode enables or disables real-time throttling
+// When enabled, the simulation will throttle to run in real-time,
+// making it suitable for real-time dashboards and monitoring
+func (e *Engine) SetRealTimeMode(enabled bool) {
+	e.realTimeMode = enabled
 }
 
 // RegisterHandler registers an event handler
@@ -83,7 +92,8 @@ func (e *Engine) ScheduleAfter(eventType EventType, delay time.Duration, request
 func (e *Engine) Run(duration time.Duration) error {
 	e.logger.Info("Starting simulation",
 		"run_id", e.runManager.run.ID,
-		"duration", duration)
+		"duration", duration,
+		"real_time_mode", e.realTimeMode)
 
 	e.runManager.Start()
 	defer func() {
@@ -94,12 +104,19 @@ func (e *Engine) Run(duration time.Duration) error {
 
 	startTime := e.simTime.Now()
 	endTime := startTime.Add(duration)
+	e.realTimeStart = time.Now() // Track real-time start for throttling
 
 	// Schedule simulation end event
 	e.ScheduleAt(EventTypeSimulationEnd, endTime, nil, "", nil)
+	e.logger.Info("Simulation end event scheduled",
+		"start_time", startTime,
+		"end_time", endTime,
+		"duration", duration)
 
-	// Event loop
-	for !e.eventQueue.IsEmpty() {
+	simulationEnded := false
+
+	// Event loop - continue until simulation end event is processed
+	for !simulationEnded {
 		// Check if context is cancelled
 		select {
 		case <-e.runManager.Context().Done():
@@ -110,25 +127,125 @@ func (e *Engine) Run(duration time.Duration) error {
 
 		// Get next event
 		event := e.eventQueue.Next()
+		
+		// If queue is empty, check if we should end the simulation
 		if event == nil {
-			break
+			currentSimTime := e.simTime.Now()
+			if currentSimTime.Before(endTime) {
+				// Queue is empty but we haven't reached end time yet
+				// Check if simulation end event exists in queue (peek without removing)
+				nextEvent := e.eventQueue.Peek()
+				if nextEvent != nil && nextEvent.Type == EventTypeSimulationEnd {
+					// Simulation end event exists - wait for it to be processed naturally
+					// This shouldn't happen if queue is empty, but check anyway
+					time.Sleep(50 * time.Millisecond)
+					continue
+				}
+				// Wait briefly to allow event generation loop to add more events
+				time.Sleep(100 * time.Millisecond)
+				// Re-check queue
+				if e.eventQueue.IsEmpty() {
+					// Still empty - check if we should advance time or wait more
+					timeUntilEnd := endTime.Sub(currentSimTime)
+					if timeUntilEnd < 200*time.Millisecond {
+						// Very close to end time - advance simulation time to end and exit
+						e.simTime.Set(endTime)
+						e.logger.Info("Simulation ended - advanced to end time (queue empty)",
+							"sim_time", endTime,
+							"events_processed", atomic.LoadInt64(&e.eventCounter))
+						break
+					}
+					// Still far from end time - continue waiting
+					continue
+				}
+				// Queue has events now, continue to process them
+				continue
+			} else {
+				// We've reached or passed end time, simulation should end
+				e.logger.Info("Simulation ended - reached end time",
+					"sim_time", currentSimTime,
+					"end_time", endTime,
+					"events_processed", atomic.LoadInt64(&e.eventCounter))
+				break
+			}
 		}
 
-		// Advance simulation time
+		// Advance simulation time to event time
+		// This is the key: simulation time only advances when processing events
+		previousSimTime := e.simTime.Now()
+		
+		// For simulation end event, ensure we don't process it before we should
+		if event.Type == EventTypeSimulationEnd {
+			// If event time is before endTime, something is wrong - reschedule it
+			if event.Time.Before(endTime) {
+				e.logger.Warn("Simulation end event scheduled at wrong time, rescheduling",
+					"event_time", event.Time,
+					"end_time", endTime)
+				e.ScheduleAt(EventTypeSimulationEnd, endTime, nil, "", nil)
+				continue
+			}
+			// If current simulation time is before event time, we shouldn't process it yet
+			// But in discrete-event simulation, we process events in order, so this should be fine
+			// However, if simulation time hasn't advanced enough, we might need to wait
+			if previousSimTime.Before(event.Time.Add(-100 * time.Millisecond)) {
+				// Simulation time is significantly before event time - this might indicate
+				// that events aren't being generated properly. Log a warning but continue.
+				e.logger.Debug("Processing simulation end event - simulation time will advance",
+					"current_sim_time", previousSimTime,
+					"event_time", event.Time)
+			}
+		}
+		
+		// Advance simulation time to event time
+		simTimeAdvanced := event.Time.Sub(previousSimTime)
 		e.simTime.Set(event.Time)
+		currentSimTime := e.simTime.Now()
+
+		// Real-time throttling: if enabled, wait in real-time to match simulation time advancement
+		if e.realTimeMode && simTimeAdvanced > 0 {
+			elapsedRealTime := time.Since(e.realTimeStart)
+			elapsedSimTime := currentSimTime.Sub(startTime)
+			
+			// If we're ahead of real-time, wait to catch up
+			// We want: elapsedRealTime >= elapsedSimTime (real time should match or exceed sim time)
+			if elapsedRealTime < elapsedSimTime {
+				waitTime := elapsedSimTime - elapsedRealTime
+				// Cap wait time to avoid excessive delays (max 1 second per event)
+				if waitTime > time.Second {
+					waitTime = time.Second
+				}
+				if waitTime > 0 {
+					time.Sleep(waitTime)
+				}
+			}
+		}
 
 		// Log event processing
 		e.logger.Debug("Processing event",
 			"event_id", event.ID,
 			"type", event.Type,
-			"sim_time", event.Time,
+			"previous_sim_time", previousSimTime,
+			"new_sim_time", currentSimTime,
+			"event_time", event.Time,
+			"sim_time_advanced", currentSimTime.Sub(previousSimTime),
 			"queue_size", e.eventQueue.Size())
 
 		// Handle simulation end
 		if event.Type == EventTypeSimulationEnd {
+			// Verify the event time matches endTime (allowing for small floating point differences)
+			timeDiff := event.Time.Sub(endTime)
+			if timeDiff < -time.Millisecond || timeDiff > time.Millisecond {
+				e.logger.Warn("Simulation end event time doesn't match expected end time",
+					"event_time", event.Time,
+					"end_time", endTime,
+					"diff", timeDiff)
+			}
 			e.logger.Info("Simulation ended",
 				"sim_time", event.Time,
+				"end_time", endTime,
+				"sim_duration", event.Time.Sub(startTime),
 				"events_processed", atomic.LoadInt64(&e.eventCounter))
+			simulationEnded = true
 			break
 		}
 

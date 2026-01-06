@@ -149,6 +149,12 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Create engine
 	eng := engine.NewEngine(runID)
 
+	// Enable real-time mode if requested (for real-time dashboards/monitoring)
+	if rec.Input.RealTimeMode {
+		eng.SetRealTimeMode(true)
+		logger.Info("real-time mode enabled", "run_id", runID)
+	}
+
 	// Wire cancellation: when context is cancelled, stop the engine
 	go func() {
 		<-ctx.Done()
@@ -230,6 +236,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		}
 		return
 	}
+
+	// Get final simulation time to calculate actual simulation duration
+	finalSimTime := eng.GetSimTime()
+	simDuration := finalSimTime.Sub(startTime)
+	logger.Info("simulation completed", "run_id", runID,
+		"simulation_duration", simDuration,
+		"expected_duration", duration)
 
 	// Stop metrics collection
 	metricsCollector.Stop()
