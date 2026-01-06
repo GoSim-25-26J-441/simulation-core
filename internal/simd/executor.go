@@ -19,9 +19,6 @@ import (
 )
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
-//
-// Milestone 2 starts by centralizing run lifecycle and cancellation here.
-// The actual simulation logic will be plugged in by later tasks (engine handlers).
 type RunExecutor struct {
 	store *RunStore
 

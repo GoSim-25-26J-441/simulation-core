@@ -849,20 +849,20 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 		"ended_at_unix_ms":   run.EndedAtUnixMs,
 		"error":              run.Error,
 	}
-	
+
 	// Calculate real-world duration (wall-clock time)
 	if run.StartedAtUnixMs > 0 && run.EndedAtUnixMs > 0 {
 		realDurationMs := run.EndedAtUnixMs - run.StartedAtUnixMs
 		result["real_duration_ms"] = realDurationMs
 		result["real_duration_seconds"] = float64(realDurationMs) / 1000.0
 	}
-	
+
 	// Include simulation duration from input (this is the actual simulation time)
 	if input != nil && input.DurationMs > 0 {
 		result["simulation_duration_ms"] = input.DurationMs
 		result["simulation_duration_seconds"] = float64(input.DurationMs) / 1000.0
 	}
-	
+
 	return result
 }
 
