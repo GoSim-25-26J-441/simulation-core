@@ -113,10 +113,8 @@ func (e *Engine) Run(duration time.Duration) error {
 		"end_time", endTime,
 		"duration", duration)
 
-	simulationEnded := false
-
 	// Event loop - continue until simulation end event is processed
-	for !simulationEnded {
+	for {
 		// Check if context is cancelled
 		select {
 		case <-e.runManager.Context().Done():
