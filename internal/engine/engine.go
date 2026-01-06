@@ -13,14 +13,14 @@ import (
 
 // Engine is the discrete-event simulation engine
 type Engine struct {
-	eventQueue      *EventQueue
-	runManager      *RunManager
-	simTime         *utils.SimTime
-	handlers        map[EventType]EventHandler
-	logger          *slog.Logger
-	eventCounter    int64
-	realTimeStart   time.Time // Real-time start for throttling
-	realTimeMode    bool      // If true, throttle simulation to run in real-time
+	eventQueue    *EventQueue
+	runManager    *RunManager
+	simTime       *utils.SimTime
+	handlers      map[EventType]EventHandler
+	logger        *slog.Logger
+	eventCounter  int64
+	realTimeStart time.Time // Real-time start for throttling
+	realTimeMode  bool      // If true, throttle simulation to run in real-time
 }
 
 // EventHandler is a function that handles a specific event type
@@ -127,7 +127,7 @@ func (e *Engine) Run(duration time.Duration) error {
 
 		// Get next event
 		event := e.eventQueue.Next()
-		
+
 		// If queue is empty, check if we should end the simulation
 		if event == nil {
 			currentSimTime := e.simTime.Now()
@@ -173,7 +173,7 @@ func (e *Engine) Run(duration time.Duration) error {
 		// Advance simulation time to event time
 		// This is the key: simulation time only advances when processing events
 		previousSimTime := e.simTime.Now()
-		
+
 		// For simulation end event, ensure we don't process it before we should
 		if event.Type == EventTypeSimulationEnd {
 			// If event time is before endTime, something is wrong - reschedule it
@@ -195,7 +195,7 @@ func (e *Engine) Run(duration time.Duration) error {
 					"event_time", event.Time)
 			}
 		}
-		
+
 		// Advance simulation time to event time
 		simTimeAdvanced := event.Time.Sub(previousSimTime)
 		e.simTime.Set(event.Time)
@@ -205,7 +205,7 @@ func (e *Engine) Run(duration time.Duration) error {
 		if e.realTimeMode && simTimeAdvanced > 0 {
 			elapsedRealTime := time.Since(e.realTimeStart)
 			elapsedSimTime := currentSimTime.Sub(startTime)
-			
+
 			// If we're ahead of real-time, wait to catch up
 			// We want: elapsedRealTime >= elapsedSimTime (real time should match or exceed sim time)
 			if elapsedRealTime < elapsedSimTime {
