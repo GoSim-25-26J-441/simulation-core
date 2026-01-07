@@ -31,7 +31,7 @@ workload:
 `
 	_, err := store.Create("run-1", &simulationv1.RunInput{
 		ScenarioYaml: validScenario,
-		DurationMs:   5000, // 5 seconds
+		DurationMs:   500, // Short duration for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -121,7 +121,7 @@ workload:
 `
 	_, err := store.Create("run-1", &simulationv1.RunInput{
 		ScenarioYaml: validScenario,
-		DurationMs:   5000, // 5 seconds
+		DurationMs:   500, // Short duration for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)

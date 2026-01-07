@@ -58,7 +58,7 @@ workload:
 	}
 
 	// Wait for the simulation to complete.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		getResp, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: createResp.Run.Id})
 		if err != nil {
@@ -362,7 +362,7 @@ workload:
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
 		Input: &simulationv1.RunInput{
 			ScenarioYaml: validScenario,
-			DurationMs:   60000, // Long duration to ensure run stays running
+			DurationMs:   500, // Short duration to ensure run stays running long enough for test
 		},
 	})
 	if err != nil {

@@ -45,8 +45,15 @@ workload:
 		t.Fatalf("expected running, got %v", rec.Run.Status)
 	}
 
-	// Wait for completion
-	time.Sleep(200 * time.Millisecond)
+	// Wait for completion (poll with timeout)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	rec, ok := store.Get("run-1")
 	if !ok {
 		t.Fatalf("expected run to exist")
@@ -116,7 +123,7 @@ workload:
 `
 	_, err := store.Create("run-1", &simulationv1.RunInput{
 		ScenarioYaml: validScenario,
-		DurationMs:   5000, // Long duration to allow cancellation
+		DurationMs:   500, // Short duration for cancellation test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -134,8 +141,8 @@ workload:
 		t.Fatalf("Stop error: %v", err)
 	}
 
-	// Wait a bit
-	time.Sleep(100 * time.Millisecond)
+	// Wait briefly for cancellation to process
+	time.Sleep(20 * time.Millisecond)
 
 	rec, ok := store.Get("run-1")
 	if !ok {
@@ -231,7 +238,15 @@ func TestRunExecutorInvalidScenarioYAML(t *testing.T) {
 	}
 
 	// Wait for failure
-	time.Sleep(200 * time.Millisecond)
+	// Wait for completion (poll with timeout)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	rec, ok := store.Get("run-1")
 	if !ok {
 		t.Fatalf("expected run to exist")
@@ -313,7 +328,7 @@ workload:
 `
 	_, err := store.Create("run-1", &simulationv1.RunInput{
 		ScenarioYaml: validScenario,
-		DurationMs:   5000, // Long duration
+		DurationMs:   500, // Short duration for cancellation test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -331,8 +346,15 @@ workload:
 		t.Fatalf("Stop error: %v", err)
 	}
 
-	// Wait for cancellation
-	time.Sleep(200 * time.Millisecond)
+	// Wait for cancellation (poll with timeout)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	rec, ok := store.Get("run-1")
 	if !ok {
 		t.Fatalf("expected run to exist")
