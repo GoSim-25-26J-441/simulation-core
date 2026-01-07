@@ -140,7 +140,7 @@ func TestHTTPServerStopRun(t *testing.T) {
 	srv := NewHTTPServer(store, executor)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   5000, // Long duration
+		DurationMs:   500, // Short duration for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -997,7 +997,7 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	// Create and start a run
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   60000, // Long duration to ensure run stays running
+		DurationMs:   500, // Short duration to ensure run stays running long enough for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -1054,7 +1054,7 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	// Create and start a run
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   60000, // Long duration to ensure run stays running
+		DurationMs:   500, // Short duration to ensure run stays running long enough for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)

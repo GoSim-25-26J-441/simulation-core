@@ -45,7 +45,7 @@ It predicts latency, throughput, and resource utilization under configurable wor
   - **Rate limiting**: Token bucket algorithm for per-service/per-endpoint request rate limiting
   - **Circuit breaker**: Failure threshold-based circuit breaking with half-open state recovery
   - **Retry policy**: Configurable retry logic with exponential, linear, or constant backoff
-  - **Autoscaling**: CPU-based scaling with scale up/down logic and hysteresis (implementation complete, integration pending)
+  - **Autoscaling**: CPU-based scaling with scale up/down logic and hysteresis (✅ implemented, ⚠️ not yet integrated into simulation flow - requires periodic evaluation and dynamic instance scaling)
 - **Optimization loop**: ✅ Heuristic hill-climbing for parameter tuning across runs with multiple objective functions, convergence detection, and parallel execution.
 - **Multi-cluster support**: Separate latency/capacity models and cross-cluster links (planned).
 - **API surface**: gRPC and HTTP APIs for external clients (CLI, UI, CI).
@@ -346,7 +346,7 @@ policies:
 
 Autoscaling policy enables CPU-based automatic scaling of service instances.
 
-**Status**: ✅ Implemented (integration pending)
+**Status**: ✅ Implemented (⚠️ not yet integrated into simulation flow)
 
 **Configuration**:
 ```yaml
@@ -363,7 +363,10 @@ policies:
 - Scales down when CPU utilization is below target (with hysteresis)
 - Uses scale step to incrementally adjust replica count
 
-**Note**: Autoscaling policy is implemented but requires integration with periodic evaluation and dynamic instance scaling in the resource manager.
+**Note**: Autoscaling policy is implemented but requires integration with periodic evaluation and dynamic instance scaling in the resource manager. The policy manager is initialized but not yet called during simulation execution. Integration would require:
+- Periodic evaluation of CPU utilization (e.g., every N simulation seconds)
+- Dynamic instance creation/destruction via resource manager
+- Event handlers for `EventTypeScaleUp` and `EventTypeScaleDown`
 
 ## Optimization Loop
 

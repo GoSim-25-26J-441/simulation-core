@@ -1,107 +1,87 @@
 # Dynamic Configuration and Request Rate Changes
 
-## Current Status: NOT SUPPORTED ⚠️
+## Current Status: ✅ SUPPORTED
 
-**Important**: The current implementation does **NOT** support dynamic configuration changes or real-time request rate adjustments during simulation execution.
-
----
-
-## Current Limitations
-
-### 1. Configuration Changes
-- ❌ **Cannot modify scenario configuration** after a run is created
-- ❌ **No API endpoint** to update configuration during execution
-- ❌ Configuration is **locked** when the run starts
-
-### 2. Dynamic Request Rates
-- ❌ **Cannot change request rates** during simulation execution
-- ❌ **All arrival events are pre-scheduled** at the beginning of simulation
-- ❌ Workload pattern rates are **fixed** from the scenario YAML
-
-### 3. How It Currently Works
-1. Run is created with scenario YAML containing fixed workload rates
-2. Simulation starts: `ScheduleWorkload()` pre-schedules ALL arrival events
-3. Simulation executes: Events are processed in chronological order
-4. **No mechanism** to inject new events or modify existing ones during execution
+**Important**: The simulator now supports dynamic request rate adjustments during simulation execution through continuous event generation.
 
 ---
 
-## What Would Be Needed
+## Supported Features
 
-To support dynamic configuration and request rate changes, the following features would need to be implemented:
+### 1. Dynamic Request Rates ✅
+- ✅ **Can change request rates** during simulation execution
+- ✅ **Continuous event generation** - events are generated on-demand based on current rates
+- ✅ **Real-time rate updates** via HTTP and gRPC APIs
+- ✅ **Thread-safe updates** - rate changes are applied safely during simulation
 
-### 1. Dynamic Workload Generation
+### 2. API Endpoints ✅
 
-**Current Architecture:**
-```
-Create Run → Parse Scenario → Schedule ALL Events → Execute Events Sequentially
-```
+The following endpoints are available:
 
-**Required Architecture:**
-```
-Create Run → Parse Scenario → Start Event Generation Loop → Execute Events
-                                        ↓
-                              (Ongoing event generation with dynamic rates)
-```
-
-### 2. API Endpoints
-
-New endpoints would be needed:
-
-```
-PATCH /v1/runs/{run_id}/workload
-PUT /v1/runs/{run_id}/configuration
-POST /v1/runs/{run_id}/workload:update-rate
-```
+- **HTTP**: `PATCH /v1/runs/{run_id}/workload` - Update workload rate or pattern
+- **gRPC**: `UpdateWorkloadRate` - Update workload rate (see proto definition)
 
 **Example Request:**
 ```json
 PATCH /v1/runs/abc123/workload
 {
-  "workload_patterns": [
-    {
-      "from": "client",
-      "to": "svc1:/test",
-      "arrival": {
-        "type": "poisson",
-        "rate_rps": 50.0  // Changed from 10 RPS to 50 RPS
-      }
-    }
-  ]
+  "pattern_key": "client:svc1:/test",
+  "rate_rps": 50.0  // Changed from 10 RPS to 50 RPS
 }
 ```
 
-### 3. Engine Modifications
+Or update the entire pattern:
+```json
+PATCH /v1/runs/abc123/workload
+{
+  "pattern_key": "client:svc1:/test",
+  "pattern": {
+    "from": "client",
+    "to": "svc1:/test",
+    "arrival": {
+      "type": "poisson",
+      "rate_rps": 50.0
+    }
+  }
+}
+```
 
-The engine would need:
+### 3. How It Works
 
-1. **Ongoing Event Generation**: Instead of pre-scheduling all events, continuously generate new arrival events based on current rates
-2. **Rate Management**: Track current rates per workload pattern with ability to update
-3. **Thread-Safe Rate Updates**: Allow rate changes while simulation is running
-4. **Event Queue Modification**: Ability to cancel/reschedule pending events if needed
+**Current Architecture:**
+```
+Create Run → Parse Scenario → Start Continuous Event Generation → Execute Events
+                                        ↓
+                              (Ongoing event generation with dynamic rates)
+                                        ↓
+                              (Rate updates via API)
+```
 
-### 4. Workload Generator Changes
+**Implementation Details:**
 
-The `workload.Generator` would need:
-
-1. **Continuous Generation Mode**: Generate events on-demand rather than pre-scheduling
-2. **Rate Update Mechanism**: Update generation rates dynamically
-3. **State Tracking**: Track last generation time per workload pattern
-4. **Thread Safety**: Support concurrent rate updates
+1. **Continuous Event Generation**: A background goroutine (`WorkloadState`) continuously generates arrival events based on current rates
+2. **Rate Management**: Current rates are tracked per workload pattern with thread-safe updates
+3. **Event Scheduling**: Events are scheduled up to 1 second ahead (lookahead window) to ensure smooth execution
+4. **Dynamic Updates**: Rate changes take effect immediately and affect future event generation
 
 ---
 
-## Implementation Approach
+## Implementation Details
 
-### Option 1: Continuous Event Generation (Recommended)
+### Continuous Event Generation
 
-**Concept**: Use a background goroutine that continuously generates arrival events based on current rates.
+The implementation uses a background goroutine that:
+
+1. **Tracks Workload Patterns**: Maintains state for each workload pattern (`WorkloadPatternState`)
+2. **Generates Events Continuously**: Uses a ticker (100ms interval) to check and generate new events
+3. **Maintains Lookahead Window**: Schedules events up to 1 second ahead of current simulation time
+4. **Supports Rate Updates**: Updates rates dynamically via thread-safe mutex-protected operations
 
 **Architecture:**
 ```
 ┌─────────────────────┐
-│  Event Generation   │
-│     Goroutine       │
+│  WorkloadState     │
+│  (Event Generation) │
 │                     │
 │  - Tracks rates     │
 │  - Generates events │
@@ -122,89 +102,17 @@ The `workload.Generator` would need:
 └─────────────────────┘
 ```
 
-**Implementation Steps:**
+### Thread Safety
 
-1. **Modify `RunExecutor`** to store workload state:
-   ```go
-   type WorkloadState struct {
-       mu            sync.RWMutex
-       patterns      map[string]*WorkloadPatternState  // key: "from:to"
-       generator     *workload.Generator
-       engine        *engine.Engine
-       ctx           context.Context
-       cancel        context.CancelFunc
-   }
-   
-   type WorkloadPatternState struct {
-       Pattern       config.WorkloadPattern
-       LastEventTime time.Time
-       Active        bool
-   }
-   ```
+- `WorkloadState` uses `sync.RWMutex` for concurrent access
+- Each `WorkloadPatternState` has its own mutex for pattern-specific updates
+- Rate updates are atomic and don't interfere with event generation
 
-2. **Add Rate Update Method** to `RunExecutor`:
-   ```go
-   func (e *RunExecutor) UpdateWorkloadRate(runID string, patternKey string, newRateRPS float64) error {
-       // Update rate for specific workload pattern
-       // Triggers regeneration of events from current time forward
-   }
-   ```
+### Limitations
 
-3. **Modify Event Generation** to be continuous:
-   ```go
-   func (ws *WorkloadState) generateEventsLoop() {
-       ticker := time.NewTicker(100 * time.Millisecond) // Check every 100ms
-       defer ticker.Stop()
-       
-       for {
-           select {
-           case <-ws.ctx.Done():
-               return
-           case <-ticker.C:
-               ws.mu.RLock()
-               currentSimTime := ws.engine.GetSimTime()
-               for patternKey, state := range ws.patterns {
-                   if !state.Active {
-                       continue
-                   }
-                   // Generate next events based on current rate
-                   nextEventTime := calculateNextArrival(
-                       state.Pattern.Arrival.RateRPS,
-                       state.LastEventTime,
-                   )
-                   if nextEventTime.Before(currentSimTime.Add(1 * time.Second)) {
-                       // Schedule next event
-                       ws.scheduleNextArrival(patternKey, nextEventTime)
-                       state.LastEventTime = nextEventTime
-                   }
-               }
-               ws.mu.RUnlock()
-           }
-       }
-   }
-   ```
-
-4. **Add HTTP Endpoint**:
-   ```go
-   // PATCH /v1/runs/{run_id}/workload
-   func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request, runID string) {
-       var req struct {
-           WorkloadPatterns []config.WorkloadPattern `json:"workload_patterns"`
-       }
-       // Validate request
-       // Update workload rates in executor
-       // Return success
-   }
-   ```
-
-### Option 2: Event Rescheduling (Alternative)
-
-**Concept**: Pre-schedule events with a "rate change" event that triggers rescheduling.
-
-**Approach:**
-- Schedule rate change events at specific times
-- When rate change event is processed, cancel remaining arrivals and reschedule with new rate
-- More complex but preserves discrete-event simulation purity
+1. **Configuration Changes**: Full scenario configuration changes (e.g., service replicas, policies) are not yet supported - only workload rates/patterns
+2. **Bursty Workloads**: Bursty workload pattern is currently an alias for Poisson distribution (full bursty logic with burst/idle periods is TODO)
+3. **Event Cancellation**: Pre-scheduled events are not cancelled when rates change - only future events use the new rate
 
 ---
 
@@ -327,36 +235,115 @@ runs.forEach(run => {
 
 ---
 
-## Recommendation
+## Usage Examples
 
-For **MVP/Production Use**:
-- Use the **multiple runs approach** as a workaround
-- Implement dynamic configuration as a **future enhancement**
-- Focus on getting the core simulation working first
+### HTTP API Example
 
-For **Interactive Exploration**:
-- Dynamic configuration is highly valuable
-- Consider implementing it as a **Phase 2** feature
-- Start with request rate changes (simpler) before full configuration changes
+```bash
+# Update workload rate for a running simulation
+curl -X PATCH http://localhost:8080/v1/runs/run-123/workload \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pattern_key": "client:svc1:/test",
+    "rate_rps": 50.0
+  }'
+```
+
+### gRPC API Example
+
+```go
+client := simulationv1.NewSimulationServiceClient(conn)
+req := &simulationv1.UpdateWorkloadRateRequest{
+    RunId:      "run-123",
+    PatternKey: "client:svc1:/test",
+    RateRps:    50.0,
+}
+resp, err := client.UpdateWorkloadRate(ctx, req)
+```
+
+### Frontend Integration Example
+
+```javascript
+// Frontend slider component
+const RateSlider = ({ runId, patternKey, initialRate }) => {
+    const [rate, setRate] = useState(initialRate);
+    
+    const handleRateChange = async (newRate) => {
+        setRate(newRate);
+        
+        // Update rate on backend
+        await fetch(`http://localhost:8080/v1/runs/${runId}/workload`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                pattern_key: patternKey,
+                rate_rps: newRate
+            })
+        });
+    };
+    
+    return (
+        <input
+            type="range"
+            min="0"
+            max="1000"
+            value={rate}
+            onChange={(e) => handleRateChange(parseFloat(e.target.value))}
+        />
+    );
+};
+```
+
+---
+
+## Future Enhancements
+
+### Configuration Changes
+
+For broader configuration changes (e.g., service replicas, policies), similar approach could be implemented:
+
+1. **Store Configuration State** in `RunExecutor`
+2. **Add Update Endpoint**: `PATCH /v1/runs/{run_id}/configuration`
+3. **Apply Changes**: Update resource manager, policy manager, etc.
+4. **Thread Safety**: Ensure changes are applied safely during simulation
+
+**Example:**
+```json
+PATCH /v1/runs/{run_id}/configuration
+{
+  "services": [
+    {
+      "id": "svc1",
+      "replicas": 5  // Changed from 2 to 5
+    }
+  ],
+  "policies": {
+    "autoscaling": {
+      "target_cpu_util": 0.8  // Changed from 0.7
+    }
+  }
+}
+```
 
 ---
 
 ## Related Documentation
 
-- [Backend Integration Guide](./BACKEND_INTEGRATION.md)
-- [API Reference](./BACKEND_INTEGRATION.md#http-api-reference)
-- [Architecture](./BACKEND_INTEGRATION.md#architecture)
+- [Backend Integration Guide](./BACKEND_INTEGRATION.md) - Complete API reference and integration examples
+- [API Reference](./BACKEND_INTEGRATION.md#http-api-reference) - HTTP endpoint documentation
+- [gRPC API Reference](./BACKEND_INTEGRATION.md#grpc-api-reference) - gRPC method documentation
 
 ---
 
 ## Summary
 
-| Feature | Status | Complexity | Priority |
-|---------|--------|------------|----------|
-| Dynamic Request Rates | ❌ Not Supported | High | Medium |
-| Configuration Changes | ❌ Not Supported | Very High | Low |
-| Real-Time Rate Updates | ❌ Not Supported | High | Medium |
-| Multiple Runs Comparison | ✅ Supported | Low | High (Workaround) |
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Dynamic Request Rates | ✅ Supported | Via HTTP and gRPC APIs |
+| Real-Time Rate Updates | ✅ Supported | Immediate effect on future events |
+| Workload Pattern Updates | ✅ Supported | Can update entire pattern or just rate |
+| Configuration Changes | ❌ Not Supported | Future enhancement |
+| Multiple Runs Comparison | ✅ Supported | Can compare runs with different rates |
 
-**Current Workaround**: Create multiple runs with different configurations and compare results.
+**Current Status**: Dynamic request rate changes are fully supported and ready for use in interactive dashboards and real-time exploration scenarios.
 
