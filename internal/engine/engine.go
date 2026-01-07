@@ -90,14 +90,17 @@ func (e *Engine) ScheduleAfter(eventType EventType, delay time.Duration, request
 
 // Run executes the simulation
 func (e *Engine) Run(duration time.Duration) error {
+	runID := e.runManager.GetRun().ID
 	e.logger.Info("Starting simulation",
-		"run_id", e.runManager.run.ID,
+		"run_id", runID,
 		"duration", duration,
 		"real_time_mode", e.realTimeMode)
 
 	e.runManager.Start()
 	defer func() {
-		if e.runManager.run.Status == models.RunStatusRunning {
+		// Use thread-safe accessor to check status
+		run := e.runManager.GetRun()
+		if run.Status == models.RunStatusRunning {
 			e.runManager.Complete()
 		}
 	}()
@@ -266,7 +269,7 @@ func (e *Engine) Run(duration time.Duration) error {
 	}
 
 	e.logger.Info("Simulation completed",
-		"run_id", e.runManager.run.ID,
+		"run_id", e.runManager.GetRun().ID,
 		"duration", e.simTime.Since(startTime),
 		"events_processed", atomic.LoadInt64(&e.eventCounter))
 
