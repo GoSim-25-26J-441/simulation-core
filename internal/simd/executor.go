@@ -20,8 +20,8 @@ import (
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
-	store     *RunStore
-	notifier  *Notifier
+	store    *RunStore
+	notifier *Notifier
 
 	mu             sync.Mutex
 	cancels        map[string]context.CancelFunc

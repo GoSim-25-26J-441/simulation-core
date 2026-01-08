@@ -15,15 +15,15 @@ import (
 
 // NotificationPayload represents the JSON payload sent to the callback URL
 type NotificationPayload struct {
-	RunID           string                    `json:"run_id"`
-	Status          simulationv1.RunStatus    `json:"status"`
-	StatusString    string                    `json:"status_string"`
-	CreatedAtUnixMs int64                     `json:"created_at_unix_ms"`
-	StartedAtUnixMs int64                     `json:"started_at_unix_ms,omitempty"`
-	EndedAtUnixMs   int64                     `json:"ended_at_unix_ms,omitempty"`
-	Error           string                    `json:"error,omitempty"`
-	Metrics         *simulationv1.RunMetrics  `json:"metrics,omitempty"`
-	Timestamp       int64                     `json:"timestamp"` // When notification was sent
+	RunID           string                   `json:"run_id"`
+	Status          simulationv1.RunStatus   `json:"status"`
+	StatusString    string                   `json:"status_string"`
+	CreatedAtUnixMs int64                    `json:"created_at_unix_ms"`
+	StartedAtUnixMs int64                    `json:"started_at_unix_ms,omitempty"`
+	EndedAtUnixMs   int64                    `json:"ended_at_unix_ms,omitempty"`
+	Error           string                   `json:"error,omitempty"`
+	Metrics         *simulationv1.RunMetrics `json:"metrics,omitempty"`
+	Timestamp       int64                    `json:"timestamp"` // When notification was sent
 }
 
 // Notifier handles backend notifications for simulation completion
@@ -74,7 +74,6 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 		Timestamp:       time.Now().UTC().UnixMilli(),
 	}
 
-
 	// Send notification asynchronously
 	go n.sendNotification(finalURL, callbackSecret, payload)
 }
@@ -111,7 +110,7 @@ func (n *Notifier) sendNotification(callbackURL string, callbackSecret string, p
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "simulation-core/1.0")
-		
+
 		// Add callback secret header if provided
 		if callbackSecret != "" {
 			req.Header.Set("X-Simulation-Callback-Secret", callbackSecret)
@@ -162,4 +161,3 @@ func (n *Notifier) sendNotification(callbackURL string, callbackSecret string, p
 		"max_retries", n.maxRetries,
 		"last_error", lastErr)
 }
-
