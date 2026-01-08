@@ -120,17 +120,21 @@ func (e *RunExecutor) cleanup(runID string) {
 	e.mu.Unlock()
 }
 
+// getCallbackSecret extracts the callback secret from a run record, returning empty string if not set
+func getCallbackSecret(rec *RunRecord) string {
+	if rec == nil || rec.Input == nil {
+		return ""
+	}
+	return rec.Input.CallbackSecret
+}
+
 // sendNotificationIfConfigured sends a notification to the callback URL if configured in the run record
 func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
 		return
 	}
 
-	secret := ""
-	if rec.Input.CallbackSecret != "" {
-		secret = rec.Input.CallbackSecret
-	}
-	e.notifier.Notify(rec.Input.CallbackUrl, secret, rec)
+	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec)
 }
 
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
