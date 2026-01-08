@@ -133,6 +133,18 @@ message RunInput {
   // making it suitable for real-time dashboards and monitoring.
   // When false (default), the simulation runs as fast as possible.
   bool real_time_mode = 5;
+
+  // Optional callback URL for backend notification when simulation completes.
+  // If provided, the server will send an HTTP POST request to this URL when
+  // the simulation reaches a terminal state (COMPLETED, FAILED, or CANCELLED).
+  // The request body will be a JSON object containing run status and metadata.
+  string callback_url = 6;
+
+  // Optional secret for callback URL authentication.
+  // If provided, this value will be sent as the "X-Simulation-Callback-Secret" header
+  // in the callback HTTP POST request. This allows the backend to verify that
+  // the callback is coming from an authorized source.
+  string callback_secret = 7;
 }
 
 message Run {

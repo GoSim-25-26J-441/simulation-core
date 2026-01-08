@@ -295,7 +295,7 @@ func (e *Engine) GetEventQueue() *EventQueue {
 func (e *Engine) Stop() {
 	e.runManager.Cancel()
 	e.eventQueue.Clear()
-	e.logger.Info("Simulation stopped")
+	e.logger.Debug("Engine stopped (cleanup)")
 }
 
 // GetStats returns current simulation statistics

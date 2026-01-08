@@ -20,7 +20,8 @@ import (
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
-	store *RunStore
+	store    *RunStore
+	notifier *Notifier
 
 	mu             sync.Mutex
 	cancels        map[string]context.CancelFunc
@@ -36,6 +37,7 @@ var (
 func NewRunExecutor(store *RunStore) *RunExecutor {
 	return &RunExecutor{
 		store:          store,
+		notifier:       NewNotifier(),
 		cancels:        make(map[string]context.CancelFunc),
 		workloadStates: make(map[string]*WorkloadState),
 	}
@@ -98,6 +100,8 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	e.sendNotificationIfConfigured(updated)
 	return updated, nil
 }
 
@@ -116,6 +120,23 @@ func (e *RunExecutor) cleanup(runID string) {
 	e.mu.Unlock()
 }
 
+// getCallbackSecret extracts the callback secret from a run record, returning empty string if not set
+func getCallbackSecret(rec *RunRecord) string {
+	if rec == nil || rec.Input == nil {
+		return ""
+	}
+	return rec.Input.CallbackSecret
+}
+
+// sendNotificationIfConfigured sends a notification to the callback URL if configured in the run record
+func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
+	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
+		return
+	}
+
+	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec)
+}
+
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	defer e.cleanup(runID)
 
@@ -130,8 +151,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
 	if err != nil {
 		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
+		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err))
+		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -162,8 +186,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	rm := resource.NewManager()
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		logger.Error("failed to initialize resource manager", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err)); setErr != nil {
+		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err))
+		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -195,8 +222,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	state, err := newScenarioState(scenario, rm, metricsCollector, policies)
 	if err != nil {
 		logger.Error("failed to create scenario state", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
+		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err))
+		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -208,8 +238,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	workloadState := NewWorkloadState(runID, eng, endTime)
 	if err := workloadState.Start(scenario, startTime); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
+		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err))
+		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -225,11 +258,16 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		// Check if it was cancelled
 		if ctx.Err() != nil {
 			logger.Info("simulation cancelled", "run_id", runID)
+			rec, _ := e.store.Get(runID)
+			e.sendNotificationIfConfigured(rec)
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
 		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			rec, _ := e.store.Get(runID)
+			e.sendNotificationIfConfigured(rec)
 		}
 		return
 	}
@@ -270,6 +308,9 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 			logger.Info("run completed", "run_id", runID,
 				"total_requests", pbMetrics.TotalRequests,
 				"throughput_rps", pbMetrics.ThroughputRps)
+
+			rec, _ = e.store.Get(runID)
+			e.sendNotificationIfConfigured(rec)
 		}
 	}
 }
