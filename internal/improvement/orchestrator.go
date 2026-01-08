@@ -197,16 +197,29 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 
 	// Wait for completion (with timeout)
 	timeout := time.Duration(durationMs) * time.Millisecond
-	if timeout < 30*time.Second {
-		timeout = 30 * time.Second // Minimum timeout
+	// For very short durations (likely tests), use a more reasonable minimum
+	if durationMs < 5000 {
+		// For test durations (< 5s), allow up to 10 seconds
+		if timeout < 10*time.Second {
+			timeout = 10 * time.Second
+		}
+	} else {
+		// For production durations, use longer timeout
+		if timeout < 30*time.Second {
+			timeout = 30 * time.Second // Minimum timeout
+		}
+		timeout *= 2 // Allow some buffer for longer runs
 	}
-	timeout *= 2 // Allow some buffer
 
 	completionCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Poll for completion
-	ticker := time.NewTicker(500 * time.Millisecond)
+	// Poll for completion - use faster polling for short durations (tests)
+	pollInterval := 500 * time.Millisecond
+	if durationMs < 5000 {
+		pollInterval = 100 * time.Millisecond // Faster polling for tests
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
