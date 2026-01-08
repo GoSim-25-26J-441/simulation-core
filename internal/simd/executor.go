@@ -101,15 +101,7 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 		return nil, err
 	}
 
-	// Send notification if callback URL is configured
-	if updated != nil && updated.Input != nil && updated.Input.CallbackUrl != "" {
-		secret := ""
-		if updated.Input.CallbackSecret != "" {
-			secret = updated.Input.CallbackSecret
-		}
-		e.notifier.Notify(updated.Input.CallbackUrl, secret, updated)
-	}
-
+	e.sendNotificationIfConfigured(updated)
 	return updated, nil
 }
 
@@ -126,6 +118,19 @@ func (e *RunExecutor) cleanup(runID string) {
 		delete(e.workloadStates, runID)
 	}
 	e.mu.Unlock()
+}
+
+// sendNotificationIfConfigured sends a notification to the callback URL if configured in the run record
+func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
+	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
+		return
+	}
+
+	secret := ""
+	if rec.Input.CallbackSecret != "" {
+		secret = rec.Input.CallbackSecret
+	}
+	e.notifier.Notify(rec.Input.CallbackUrl, secret, rec)
 }
 
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
@@ -146,14 +151,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			// Send failure notification
-			if updated != nil && updated.Input != nil && updated.Input.CallbackUrl != "" {
-				secret := ""
-				if updated.Input.CallbackSecret != "" {
-					secret = updated.Input.CallbackSecret
-				}
-				e.notifier.Notify(updated.Input.CallbackUrl, secret, updated)
-			}
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -188,14 +186,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			// Send failure notification
-			if updated != nil && updated.Input != nil && updated.Input.CallbackUrl != "" {
-				secret := ""
-				if updated.Input.CallbackSecret != "" {
-					secret = updated.Input.CallbackSecret
-				}
-				e.notifier.Notify(updated.Input.CallbackUrl, secret, updated)
-			}
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -231,14 +222,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			// Send failure notification
-			if updated != nil && updated.Input != nil && updated.Input.CallbackUrl != "" {
-				secret := ""
-				if updated.Input.CallbackSecret != "" {
-					secret = updated.Input.CallbackSecret
-				}
-				e.notifier.Notify(updated.Input.CallbackUrl, secret, updated)
-			}
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -254,14 +238,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			// Send failure notification
-			if updated != nil && updated.Input != nil && updated.Input.CallbackUrl != "" {
-				secret := ""
-				if updated.Input.CallbackSecret != "" {
-					secret = updated.Input.CallbackSecret
-				}
-				e.notifier.Notify(updated.Input.CallbackUrl, secret, updated)
-			}
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -277,30 +254,16 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		// Check if it was cancelled
 		if ctx.Err() != nil {
 			logger.Info("simulation cancelled", "run_id", runID)
-			// Send cancellation notification
 			rec, _ := e.store.Get(runID)
-			if rec != nil && rec.Input != nil && rec.Input.CallbackUrl != "" {
-				secret := ""
-				if rec.Input.CallbackSecret != "" {
-					secret = rec.Input.CallbackSecret
-				}
-				e.notifier.Notify(rec.Input.CallbackUrl, secret, rec)
-			}
+			e.sendNotificationIfConfigured(rec)
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
 		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			// Send failure notification
 			rec, _ := e.store.Get(runID)
-			if rec != nil && rec.Input != nil && rec.Input.CallbackUrl != "" {
-				secret := ""
-				if rec.Input.CallbackSecret != "" {
-					secret = rec.Input.CallbackSecret
-				}
-				e.notifier.Notify(rec.Input.CallbackUrl, secret, rec)
-			}
+			e.sendNotificationIfConfigured(rec)
 		}
 		return
 	}
@@ -342,15 +305,8 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 				"total_requests", pbMetrics.TotalRequests,
 				"throughput_rps", pbMetrics.ThroughputRps)
 
-			// Send completion notification
 			rec, _ = e.store.Get(runID)
-			if rec != nil && rec.Input != nil && rec.Input.CallbackUrl != "" {
-				secret := ""
-				if rec.Input.CallbackSecret != "" {
-					secret = rec.Input.CallbackSecret
-				}
-				e.notifier.Notify(rec.Input.CallbackUrl, secret, rec)
-			}
+			e.sendNotificationIfConfigured(rec)
 		}
 	}
 }
