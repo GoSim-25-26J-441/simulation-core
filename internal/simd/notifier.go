@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -60,6 +62,15 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 
 	// Replace {run_id} template in callback URL if present
 	finalURL := strings.ReplaceAll(callbackURL, "{run_id}", rec.Run.Id)
+
+	// Validate callback URL to prevent SSRF attacks
+	if err := validateCallbackURL(finalURL); err != nil {
+		logger.Error("invalid callback URL, blocking request",
+			"run_id", rec.Run.Id,
+			"callback_url", finalURL,
+			"error", err)
+		return
+	}
 
 	// Build notification payload
 	payload := NotificationPayload{
@@ -160,4 +171,102 @@ func (n *Notifier) sendNotification(callbackURL string, callbackSecret string, p
 		"status", payload.StatusString,
 		"max_retries", n.maxRetries,
 		"last_error", lastErr)
+}
+
+var (
+	// ErrInvalidURL is returned when the callback URL format is invalid
+	ErrInvalidURL = fmt.Errorf("invalid URL format")
+	// ErrInternalHost is returned when the callback URL points to an internal/private host
+	ErrInternalHost = fmt.Errorf("callback URL cannot target internal/private networks")
+	// ErrMetadataEndpoint is returned when the callback URL targets metadata endpoints
+	ErrMetadataEndpoint = fmt.Errorf("callback URL cannot target metadata endpoints")
+)
+
+// validateCallbackURL validates the callback URL to prevent SSRF attacks
+func validateCallbackURL(callbackURL string) error {
+	// Parse URL
+	parsedURL, err := url.Parse(callbackURL)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidURL, err)
+	}
+
+	// Only allow http and https schemes
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return fmt.Errorf("%w: only http and https schemes are allowed, got %s", ErrInvalidURL, parsedURL.Scheme)
+	}
+
+	host := parsedURL.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: missing hostname", ErrInvalidURL)
+	}
+
+	// Block metadata endpoints (AWS, GCP, Azure, etc.)
+	metadataHosts := []string{
+		"169.254.169.254", // AWS, GCP, Azure metadata
+		"metadata.google.internal",
+		"metadata", // Common metadata hostname
+	}
+	hostLower := strings.ToLower(host)
+	for _, blocked := range metadataHosts {
+		if hostLower == blocked || strings.HasPrefix(hostLower, blocked+".") {
+			return fmt.Errorf("%w: metadata endpoint blocked", ErrMetadataEndpoint)
+		}
+	}
+
+	// Block wildcard addresses
+	if hostLower == "0.0.0.0" || hostLower == "::" {
+		return fmt.Errorf("%w: wildcard addresses are not allowed", ErrInternalHost)
+	}
+
+	// Block direct IP access to loopback (127.0.0.1, ::1)
+	// Allow localhost hostname as it may be valid in containerized environments
+	if hostLower == "127.0.0.1" || hostLower == "::1" {
+		return fmt.Errorf("%w: direct loopback IP addresses are not allowed (use localhost hostname for development)", ErrInternalHost)
+	}
+
+	// Resolve hostname to check if it's a private IP
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		// If DNS resolution fails, we can't verify - be conservative and block
+		// In production, you might want to allow configured domains
+		return fmt.Errorf("%w: failed to resolve hostname: %v", ErrInternalHost, err)
+	}
+
+	// Check all resolved IPs for private/internal ranges
+	// Allow loopback IPs (for localhost in development/containerized environments)
+	// Block all other private IP ranges (RFC 1918, link-local, etc.)
+	for _, ip := range ips {
+		if isPrivateIP(ip) && !ip.IsLoopback() {
+			return fmt.Errorf("%w: hostname resolves to private IP: %s", ErrInternalHost, ip.String())
+		}
+	}
+
+	return nil
+}
+
+// isPrivateIP checks if an IP address is in a private/internal range
+func isPrivateIP(ip net.IP) bool {
+	// Handle IPv4 and IPv6
+	if ip4 := ip.To4(); ip4 != nil {
+		// Check RFC 1918 private ranges
+		return ip4[0] == 10 ||
+			(ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31) ||
+			(ip4[0] == 192 && ip4[1] == 168) ||
+			// Check link-local
+			(ip4[0] == 169 && ip4[1] == 254) ||
+			// Check loopback
+			ip4[0] == 127
+	}
+
+	// Check IPv6 private ranges
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	// Check IPv6 unique local addresses (fc00::/7)
+	if len(ip) == net.IPv6len {
+		return ip[0] == 0xfc || ip[0] == 0xfd
+	}
+
+	return false
 }
