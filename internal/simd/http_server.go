@@ -652,8 +652,22 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
+	// Disable write timeout for SSE streams (long-lived connections)
+	// Use ResponseController to continuously reset write deadline
+	rc := http.NewResponseController(w)
+	if rc != nil {
+		// Set write deadline to zero (no timeout) - needs to be reset periodically
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+
+	// Flush headers immediately
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
 	// Get collector (may be nil if simulation hasn't started)
 	collector, hasCollector := s.store.GetCollector(runID)
+	logger.Debug("SSE stream started", "run_id", runID, "has_collector", hasCollector, "collector_nil", collector == nil)
 
 	// Send initial status event
 	previousStatus := rec.Run.Status
@@ -698,6 +712,16 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				return
 			}
 
+			// Refresh collector check (it might become available after simulation starts)
+			// The collector is created asynchronously in runSimulation(), so it might not be
+			// available immediately when SSE stream connects
+			if !hasCollector || collector == nil {
+				collector, hasCollector = s.store.GetCollector(runID)
+				if hasCollector && collector != nil {
+					logger.Debug("collector now available for SSE", "run_id", runID)
+				}
+			}
+
 			// Check for status changes
 			if rec.Run.Status != previousStatus {
 				s.sendSSEEvent(w, "status_change", map[string]any{
@@ -728,6 +752,9 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			if hasCollector && collector != nil {
 				// Get all metrics and send new/updated points
 				metricNames := collector.GetMetricNames()
+				if len(metricNames) == 0 {
+					logger.Debug("no metrics available yet", "run_id", runID)
+				}
 				for _, metricName := range metricNames {
 					labelCombos := collector.GetLabelsForMetric(metricName)
 					if len(labelCombos) == 0 {
@@ -776,6 +803,11 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				}
 			}
 
+			// Reset write deadline before each flush to prevent timeouts
+			// This is critical for SSE streams with many events
+			if rc != nil {
+				_ = rc.SetWriteDeadline(time.Time{}) // Zero time means no deadline
+			}
 			// Flush to send data immediately
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
@@ -793,14 +825,36 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 		return
 	}
 
+	// Reset write deadline before EVERY write to prevent timeouts
+	// This is critical when sending many events rapidly
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{}) // Zero time means no deadline
+	}
+
 	// Write event in SSE format
 	// Note: Errors are logged but not returned as SSE streams are best-effort
 	if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
-		logger.Error("failed to write SSE event header", "error", err)
+		// Check if it's a timeout error - downgrade to warning if so
+		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
+			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
+		} else {
+			logger.Error("failed to write SSE event header", "error", err)
+		}
 		return
 	}
+
+	// Reset deadline again before writing data
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}
+
 	if _, err := w.Write([]byte("data: " + string(jsonData) + "\n\n")); err != nil {
-		logger.Error("failed to write SSE event data", "error", err)
+		// Check if it's a timeout error - downgrade to warning if so
+		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
+			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
+		} else {
+			logger.Error("failed to write SSE event data", "error", err)
+		}
 		return
 	}
 }
