@@ -211,9 +211,16 @@ func (e *Engine) Run(duration time.Duration) error {
 			// We want: elapsedRealTime >= elapsedSimTime (real time should match or exceed sim time)
 			if elapsedRealTime < elapsedSimTime {
 				waitTime := elapsedSimTime - elapsedRealTime
-				// Cap wait time to avoid excessive delays (max 1 second per event)
-				if waitTime > time.Second {
-					waitTime = time.Second
+				// Cap wait time to avoid blocking too long on a single event (max 10 seconds per event)
+				// This prevents issues if a single event advances simulation time significantly
+				maxWaitPerEvent := 10 * time.Second
+				if waitTime > maxWaitPerEvent {
+					waitTime = maxWaitPerEvent
+					e.logger.Debug("Real-time throttling: capping wait time",
+						"requested_wait", elapsedSimTime-elapsedRealTime,
+						"capped_wait", waitTime,
+						"elapsed_sim_time", elapsedSimTime,
+						"elapsed_real_time", elapsedRealTime)
 				}
 				if waitTime > 0 {
 					time.Sleep(waitTime)
@@ -233,6 +240,20 @@ func (e *Engine) Run(duration time.Duration) error {
 
 		// Handle simulation end
 		if event.Type == EventTypeSimulationEnd {
+			// In real-time mode, ensure real time has caught up before ending
+			if e.realTimeMode {
+				elapsedRealTime := time.Since(e.realTimeStart)
+				elapsedSimTime := event.Time.Sub(startTime)
+				if elapsedRealTime < elapsedSimTime {
+					waitTime := elapsedSimTime - elapsedRealTime
+					e.logger.Info("Real-time mode: waiting for real time to catch up before ending simulation",
+						"elapsed_sim_time", elapsedSimTime,
+						"elapsed_real_time", elapsedRealTime,
+						"wait_time", waitTime)
+					time.Sleep(waitTime)
+				}
+			}
+
 			// Verify the event time matches endTime (allowing for small floating point differences)
 			timeDiff := event.Time.Sub(endTime)
 			if timeDiff < -time.Millisecond || timeDiff > time.Millisecond {
