@@ -863,6 +863,13 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 		result["simulation_duration_seconds"] = float64(input.DurationMs) / 1000.0
 	}
 
+	// Optimization run results
+	if run.BestRunId != "" {
+		result["best_run_id"] = run.BestRunId
+		result["best_score"] = run.BestScore
+		result["iterations"] = run.Iterations
+	}
+
 	return result
 }
 

@@ -22,9 +22,19 @@ import (
 type RunExecutor struct {
 	store *RunStore
 
+	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
+
 	mu             sync.Mutex
 	cancels        map[string]context.CancelFunc
 	workloadStates map[string]*WorkloadState // key: runID
+}
+
+// SetOptimizationRunner sets the optimization runner for multi-run experiments.
+// Must be called before starting optimization runs.
+func (e *RunExecutor) SetOptimizationRunner(r OptimizationRunner) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.optimizationRunner = r
 }
 
 var (
@@ -76,7 +86,12 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	e.cancels[runID] = cancel
 	e.mu.Unlock()
 
-	go e.runSimulation(ctx, runID)
+	// Optimization runs use the orchestrator instead of a single simulation
+	if rec.Input.Optimization != nil {
+		go e.runOptimization(ctx, runID)
+	} else {
+		go e.runSimulation(ctx, runID)
+	}
 	return updated, nil
 }
 
@@ -114,6 +129,86 @@ func (e *RunExecutor) cleanup(runID string) {
 		delete(e.workloadStates, runID)
 	}
 	e.mu.Unlock()
+}
+
+func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
+	defer e.cleanup(runID)
+
+	rec, ok := e.store.Get(runID)
+	if !ok {
+		logger.Error("run not found", "run_id", runID)
+		return
+	}
+
+	e.mu.Lock()
+	runner := e.optimizationRunner
+	e.mu.Unlock()
+
+	if runner == nil {
+		logger.Error("optimization runner not configured", "run_id", runID)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, "optimization not enabled"); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
+	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
+	if err != nil {
+		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
+	durationMs := rec.Input.DurationMs
+	if durationMs <= 0 {
+		durationMs = 10000 // 10 seconds default
+	}
+
+	opt := rec.Input.Optimization
+	params := &OptimizationParams{
+		Objective:     "p95_latency_ms",
+		MaxIterations: 10,
+		StepSize:      1.0,
+	}
+	if opt != nil {
+		if opt.Objective != "" {
+			params.Objective = opt.Objective
+		}
+		if opt.MaxIterations > 0 {
+			params.MaxIterations = opt.MaxIterations
+		}
+		if opt.StepSize > 0 {
+			params.StepSize = opt.StepSize
+		}
+	}
+
+	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective, "max_iterations", params.MaxIterations)
+
+	bestRunID, bestScore, iterations, err := runner.RunExperiment(ctx, scenario, durationMs, params)
+	if err != nil {
+		if ctx.Err() != nil {
+			logger.Info("optimization cancelled", "run_id", runID)
+			return
+		}
+		logger.Error("optimization failed", "run_id", runID, "error", err)
+		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		}
+		return
+	}
+
+	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations); err != nil {
+		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
+	}
+
+	if _, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		logger.Error("failed to set completed status", "run_id", runID, "error", err)
+	} else {
+		logger.Info("optimization completed", "run_id", runID,
+			"best_run_id", bestRunID, "best_score", bestScore, "iterations", iterations)
+	}
 }
 
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {

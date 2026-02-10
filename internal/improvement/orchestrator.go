@@ -52,6 +52,7 @@ type ExperimentResult struct {
 	BestConfig        *config.Scenario
 	BestScore         float64
 	BestRunID         string
+	Iterations        int
 	TotalRuns         int
 	CompletedRuns     int
 	FailedRuns        int
@@ -108,6 +109,7 @@ func (o *Orchestrator) RunExperiment(ctx context.Context, initialConfig *config.
 	// Build experiment result from optimization result
 	result.BestConfig = optResult.BestConfig
 	result.BestScore = optResult.BestScore
+	result.Iterations = optResult.Iterations
 	result.Converged = optResult.Converged
 	result.ConvergenceReason = optResult.ConvergenceReason
 	result.Duration = time.Since(startTime)

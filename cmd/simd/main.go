@@ -11,10 +11,45 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/improvement"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/simd"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 	"google.golang.org/grpc"
 )
+
+// optimizationRunnerAdapter adapts improvement.Orchestrator to simd.OptimizationRunner.
+// It creates a fresh orchestrator per run with the requested params.
+type optimizationRunnerAdapter struct {
+	store    *simd.RunStore
+	executor *simd.RunExecutor
+}
+
+func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, error) {
+	objective, err := improvement.NewObjectiveFunction(params.Objective)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	maxIter := int(params.MaxIterations)
+	if maxIter <= 0 {
+		maxIter = 10
+	}
+	stepSize := params.StepSize
+	if stepSize <= 0 {
+		stepSize = 1.0
+	}
+
+	optimizer := improvement.NewOptimizer(objective, maxIter, stepSize)
+	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
+
+	result, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
+	if err != nil {
+		return "", 0, 0, err
+	}
+
+	return result.BestRunID, result.BestScore, int32(result.Iterations), nil
+}
 
 func main() {
 	var grpcAddr string
@@ -32,6 +67,7 @@ func main() {
 
 	store := simd.NewRunStore()
 	executor := simd.NewRunExecutor(store)
+	executor.SetOptimizationRunner(&optimizationRunnerAdapter{store: store, executor: executor})
 
 	// TODO: Configure gRPC server security (e.g., TLS, authentication, rate limiting)
 	// before using this service in a production environment.

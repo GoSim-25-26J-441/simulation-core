@@ -162,6 +162,21 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	return nil
 }
 
+// SetOptimizationResult stores optimization result fields for a run (best_run_id, best_score, iterations).
+func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestScore float64, iterations int32) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	rec.Run.BestRunId = bestRunID
+	rec.Run.BestScore = bestScore
+	rec.Run.Iterations = iterations
+	return nil
+}
+
 // SetCollector stores a metrics collector reference for a run
 func (s *RunStore) SetCollector(runID string, collector *metrics.Collector) error {
 	s.mu.Lock()
