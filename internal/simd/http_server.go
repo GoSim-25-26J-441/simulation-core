@@ -726,8 +726,8 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					lastOptIteration = rec.Run.Iterations
 					lastOptBestScore = rec.Run.BestScore
 					s.sendSSEEvent(w, "optimization_progress", map[string]any{
-						"iteration":  rec.Run.Iterations,
-						"best_score": rec.Run.BestScore,
+						"iteration":   rec.Run.Iterations,
+						"best_score":  rec.Run.BestScore,
 						"best_run_id": rec.Run.BestRunId,
 					})
 				}

@@ -71,9 +71,9 @@ func notifyCallback(callbackURL, callbackSecret string, run *simulationv1.Run) {
 	}
 
 	payload := map[string]any{
-		"run_id":    run.Id,
-		"status":    run.Status.String(),
-		"error":     run.Error,
+		"run_id":      run.Id,
+		"status":      run.Status.String(),
+		"error":       run.Error,
 		"best_run_id": run.BestRunId,
 		"best_score":  run.BestScore,
 		"iterations":  run.Iterations,
@@ -123,4 +123,3 @@ func isPrivateIP(ip net.IP) bool {
 	}
 	return false
 }
-

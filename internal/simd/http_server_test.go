@@ -667,9 +667,9 @@ func TestHTTPServerMetricsStreamOptimizationProgress(t *testing.T) {
 		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
 		Optimization: &simulationv1.OptimizationConfig{
-			Objective:      "p95_latency_ms",
-			MaxIterations:  5,
-			StepSize:       1.0,
+			Objective:     "p95_latency_ms",
+			MaxIterations: 5,
+			StepSize:      1.0,
 		},
 	}
 	rec, err := store.Create("opt-run", input)
