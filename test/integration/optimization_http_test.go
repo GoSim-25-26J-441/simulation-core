@@ -23,7 +23,7 @@ type testOptimizationAdapter struct {
 	executor *simd.RunExecutor
 }
 
-func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, error) {
+func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, error) {
 	objective, err := improvement.NewObjectiveFunction(params.Objective)
 	if err != nil {
 		return "", 0, 0, err
@@ -36,7 +36,10 @@ func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, scenario *c
 	if stepSize <= 0 {
 		stepSize = 1.0
 	}
-	optimizer := improvement.NewOptimizer(objective, maxIter, stepSize)
+	optimizer := improvement.NewOptimizer(objective, maxIter, stepSize).
+		WithProgressReporter(func(iter int, score float64) {
+			a.store.SetOptimizationProgress(runID, int32(iter), score)
+		})
 	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
 
 	done := make(chan struct {

@@ -198,7 +198,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 
 	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective, "max_iterations", params.MaxIterations)
 
-	bestRunID, bestScore, iterations, err := runner.RunExperiment(ctx, scenario, durationMs, params)
+	bestRunID, bestScore, iterations, err := runner.RunExperiment(ctx, runID, scenario, durationMs, params)
 	if err != nil {
 		if ctx.Err() != nil {
 			logger.Info("optimization cancelled", "run_id", runID)

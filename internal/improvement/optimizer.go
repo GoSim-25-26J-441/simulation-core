@@ -10,6 +10,9 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
+// ProgressReporter is called with optimization progress (iteration, bestScore).
+type ProgressReporter func(iteration int, bestScore float64)
+
 // Optimizer implements a hill-climbing optimization algorithm
 type Optimizer struct {
 	objective           ObjectiveFunction
@@ -17,6 +20,7 @@ type Optimizer struct {
 	stepSize            float64             // Step size for parameter adjustments
 	explorer            ParameterExplorer   // Parameter space exploration strategy
 	convergenceStrategy ConvergenceStrategy // Convergence detection strategy
+	progressReporter    ProgressReporter    // Optional: called each iteration
 	mu                  sync.RWMutex
 	bestScore           float64
 	bestConfig          *config.Scenario
@@ -69,6 +73,12 @@ func (o *Optimizer) WithConvergenceStrategy(strategy ConvergenceStrategy) *Optim
 	return o
 }
 
+// WithProgressReporter sets an optional callback for per-iteration progress
+func (o *Optimizer) WithProgressReporter(reporter ProgressReporter) *Optimizer {
+	o.progressReporter = reporter
+	return o
+}
+
 // Optimize runs the hill-climbing optimization algorithm
 func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*config.Scenario) (float64, error)) (*OptimizationResult, error) {
 	if initialConfig == nil {
@@ -102,7 +112,12 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 	})
 	currentConfig := cloneScenario(initialConfig)
 	currentScore := initialScore
+	rep := o.progressReporter
 	o.mu.Unlock()
+
+	if rep != nil {
+		rep(0, initialScore)
+	}
 
 	// Hill-climbing iterations
 	for iteration := 1; iteration <= o.maxIterations; iteration++ {
@@ -154,7 +169,11 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 				Score:     currentScore,
 				Config:    cloneScenario(currentConfig),
 			})
+			rep := o.progressReporter
 			o.mu.Unlock()
+			if rep != nil {
+				rep(iteration, currentScore)
+			}
 		} else {
 			// No improvement found, record the iteration
 			o.mu.Lock()
@@ -165,7 +184,12 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 			})
 			historyCopy := make([]OptimizationStep, len(o.history))
 			copy(historyCopy, o.history)
+			rep := o.progressReporter
 			o.mu.Unlock()
+
+			if rep != nil {
+				rep(iteration, currentScore)
+			}
 
 			// Check for convergence using the configured strategy
 			if o.convergenceStrategy != nil {

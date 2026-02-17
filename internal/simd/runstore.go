@@ -177,6 +177,20 @@ func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestSco
 	return nil
 }
 
+// SetOptimizationProgress updates in-progress optimization state (iteration, best_score).
+// Used for SSE streaming; caller should use SetOptimizationResult for final values.
+func (s *RunStore) SetOptimizationProgress(runID string, iteration int32, bestScore float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return
+	}
+	rec.Run.Iterations = iteration
+	rec.Run.BestScore = bestScore
+}
+
 // SetCollector stores a metrics collector reference for a run
 func (s *RunStore) SetCollector(runID string, collector *metrics.Collector) error {
 	s.mu.Lock()
