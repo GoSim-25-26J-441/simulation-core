@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -25,7 +26,7 @@ type optimizationRunnerAdapter struct {
 	executor *simd.RunExecutor
 }
 
-func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, error) {
+func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (bestRunID string, bestScore float64, iterations int32, err error) {
 	objective, err := improvement.NewObjectiveFunction(params.Objective)
 	if err != nil {
 		return "", 0, 0, err
@@ -42,7 +43,8 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 
 	optimizer := improvement.NewOptimizer(objective, maxIter, stepSize).
 		WithProgressReporter(func(iter int, score float64) {
-			a.store.SetOptimizationProgress(runID, int32(iter), score)
+			iterClamped := int32(math.Max(0, math.Min(float64(iter), float64(math.MaxInt32))))
+			a.store.SetOptimizationProgress(runID, iterClamped, score)
 		})
 	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
 
@@ -60,7 +62,8 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 			done <- result{err: err}
 			return
 		}
-		done <- result{bestRunID: r.BestRunID, bestScore: r.BestScore, iterations: int32(r.Iterations)}
+		iterClamped := int32(math.Max(0, math.Min(float64(r.Iterations), float64(math.MaxInt32))))
+		done <- result{bestRunID: r.BestRunID, bestScore: r.BestScore, iterations: iterClamped}
 	}()
 
 	select {
@@ -70,7 +73,9 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 		}
 		return res.bestRunID, res.bestScore, res.iterations, nil
 	case <-ctx.Done():
-		orchestrator.CancelActiveRuns()
+		if cancelErr := orchestrator.CancelActiveRuns(); cancelErr != nil {
+			logger.Warn("cancel active runs failed during optimization cancellation", "error", cancelErr)
+		}
 		<-done // Wait for RunExperiment to return
 		return "", 0, 0, ctx.Err()
 	}

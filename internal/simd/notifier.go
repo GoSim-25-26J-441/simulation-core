@@ -116,8 +116,11 @@ func isPrivateIP(ip net.IP) bool {
 		"127.0.0.0/8", "::1/128", "fc00::/7",
 	}
 	for _, cidr := range privateRanges {
-		_, block, _ := net.ParseCIDR(cidr)
-		if block != nil && block.Contains(ip) {
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil || block == nil {
+			continue
+		}
+		if block.Contains(ip) {
 			return true
 		}
 	}
