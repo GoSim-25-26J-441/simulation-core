@@ -338,6 +338,33 @@ func TestRunStoreSetOptimizationProgressNonExistent(t *testing.T) {
 	store.SetOptimizationProgress("nope", 1, 10.0) // no-op, should not panic
 }
 
+func TestRunStoreListFiltered(t *testing.T) {
+	store := NewRunStore()
+	_, _ = store.Create("r1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.SetStatus("r1", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	_, _ = store.Create("r2", &simulationv1.RunInput{ScenarioYaml: "x"})
+
+	recs := store.ListFiltered(10, 0, simulationv1.RunStatus_RUN_STATUS_COMPLETED)
+	if len(recs) != 1 || recs[0].Run.Id != "r1" {
+		t.Fatalf("expected 1 completed run, got %d", len(recs))
+	}
+	recs = store.ListFiltered(1, 10, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)
+	if len(recs) != 0 {
+		t.Fatalf("expected 0 runs with offset beyond length, got %d", len(recs))
+	}
+}
+
+func TestRunStoreSetOptimizationResultOnNonExistentRun(t *testing.T) {
+	store := NewRunStore()
+	err := store.SetOptimizationResult("nope", "best", 1.0, 1)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}
+
 func TestRunStoreSetOptimizationResult(t *testing.T) {
 	store := NewRunStore()
 	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})

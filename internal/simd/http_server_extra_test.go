@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
@@ -212,6 +214,37 @@ func TestHTTPServerListRunsStatusFilter(t *testing.T) {
 	}
 }
 
+func TestHTTPServerListRunsWithOffset(t *testing.T) {
+	store := NewRunStore()
+	for i := 0; i < 5; i++ {
+		_, _ = store.Create("", &simulationv1.RunInput{ScenarioYaml: "hosts: []"})
+	}
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs?limit=2&offset=2", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	runs, ok := body["runs"].([]any)
+	if !ok {
+		t.Fatalf("expected runs array")
+	}
+	if len(runs) != 2 {
+		t.Fatalf("expected 2 runs with limit=2 offset=2, got %d", len(runs))
+	}
+	pag := body["pagination"].(map[string]any)
+	if pag["offset"].(float64) != 2 {
+		t.Fatalf("expected offset 2")
+	}
+}
+
 func TestHTTPServerHandleRunByIDExportMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
@@ -301,6 +334,62 @@ func TestHTTPServerTimeSeriesInvalidEndTime(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPServerGetRunMetricsWithServiceMetrics(t *testing.T) {
+	store := NewRunStore()
+	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
+	metrics := &simulationv1.RunMetrics{
+		TotalRequests:  100,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc1", RequestCount: 50, CpuUtilization: 0.5},
+		},
+	}
+	_ = store.SetMetrics(rec.Run.Id, metrics)
+	_, _ = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+	metricsResp, ok := body["metrics"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected metrics object")
+	}
+	svcMetrics, ok := metricsResp["service_metrics"].([]any)
+	if !ok || len(svcMetrics) == 0 {
+		t.Fatalf("expected service_metrics array")
+	}
+}
+
+func TestHTTPServerTimeSeriesWithValidTimeFormats(t *testing.T) {
+	store := NewRunStore()
+	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	collector.Record("cpu_utilization", 0.5, now, map[string]string{"service": "svc1"})
+	collector.Stop()
+	_ = store.SetCollector(rec.Run.Id, collector)
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Test with Unix milliseconds
+	startMs := now.Add(-time.Minute).UnixMilli()
+	endMs := now.Add(time.Minute).UnixMilli()
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics/timeseries?start_time="+strconv.FormatInt(startMs, 10)+"&end_time="+strconv.FormatInt(endMs, 10), nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200 with Unix ms times, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

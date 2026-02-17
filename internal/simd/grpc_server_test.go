@@ -313,6 +313,50 @@ func TestGRPCServerListRuns(t *testing.T) {
 	}
 }
 
+func TestGRPCServerCreateRunWithNilRequest(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.CreateRun(ctx, nil)
+	if err == nil {
+		t.Fatalf("expected error for nil request")
+	}
+}
+
+func TestGRPCServerStartRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerGetRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerGetRunMetricsWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRunMetrics(ctx, &simulationv1.GetRunMetricsRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
 func TestGRPCServerCreateRunWithNilInput(t *testing.T) {
 	store := NewRunStore()
 	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
@@ -343,6 +387,17 @@ func TestGRPCServerStartRunOnNonExistent(t *testing.T) {
 	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: "nope"})
 	if err == nil {
 		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerStopRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
 	}
 }
 
