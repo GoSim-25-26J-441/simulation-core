@@ -314,3 +314,48 @@ func TestRunStoreCollectorPersistsAfterClone(t *testing.T) {
 		t.Fatalf("expected same collector reference in cloned record")
 	}
 }
+
+func TestRunStoreSetOptimizationProgress(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	store.SetOptimizationProgress("run-1", 3, 42.5)
+
+	rec, ok := store.Get("run-1")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Run.Iterations != 3 || rec.Run.BestScore != 42.5 {
+		t.Fatalf("expected iterations=3, best_score=42.5, got %d, %f", rec.Run.Iterations, rec.Run.BestScore)
+	}
+}
+
+func TestRunStoreSetOptimizationProgressNonExistent(t *testing.T) {
+	store := NewRunStore()
+	store.SetOptimizationProgress("nope", 1, 10.0) // no-op, should not panic
+}
+
+func TestRunStoreSetOptimizationResult(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	err = store.SetOptimizationResult("run-1", "best-run-42", 99.9, 10)
+	if err != nil {
+		t.Fatalf("SetOptimizationResult error: %v", err)
+	}
+
+	rec, ok := store.Get("run-1")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Run.BestRunId != "best-run-42" || rec.Run.BestScore != 99.9 || rec.Run.Iterations != 10 {
+		t.Fatalf("expected best_run_id=best-run-42, best_score=99.9, iterations=10, got %q, %f, %d",
+			rec.Run.BestRunId, rec.Run.BestScore, rec.Run.Iterations)
+	}
+}

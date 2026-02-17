@@ -188,6 +188,37 @@ func TestConfigValidation(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "Empty cluster name",
+			config: &Config{
+				LogLevel: "info",
+				Clusters: []Cluster{
+					{Name: "", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "Duplicate cluster name",
+			config: &Config{
+				LogLevel: "info",
+				Clusters: []Cluster{
+					{Name: "dup", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+					{Name: "dup", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "Zero mem_gb",
+			config: &Config{
+				LogLevel: "info",
+				Clusters: []Cluster{
+					{Name: "test", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 0}},
+				},
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -269,6 +300,13 @@ func TestLoadInvalidFile(t *testing.T) {
 	_, err := LoadConfig("/nonexistent/path/config.yaml")
 	if err == nil {
 		t.Error("Expected error when loading nonexistent file")
+	}
+}
+
+func TestLoadScenarioInvalidFile(t *testing.T) {
+	_, err := LoadScenario("/nonexistent/path/scenario.yaml")
+	if err == nil {
+		t.Error("Expected error when loading nonexistent scenario file")
 	}
 }
 

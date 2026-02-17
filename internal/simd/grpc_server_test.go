@@ -98,6 +98,31 @@ func (s *fakeRunEventsStream) Context() context.Context        { return s.ctx }
 func (s *fakeRunEventsStream) SendMsg(m any) error             { return nil }
 func (s *fakeRunEventsStream) RecvMsg(m any) error             { return nil }
 
+func TestGRPCServerStreamRunEventsEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+	stream := &fakeRunEventsStream{ctx: ctx}
+
+	err := srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{RunId: ""}, stream)
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerStreamRunEventsRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stream := &fakeRunEventsStream{ctx: ctx}
+
+	err := srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{RunId: "nope"}, stream)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
 func TestGRPCServerStreamRunEventsSendsInitialEvent(t *testing.T) {
 	store := NewRunStore()
 	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
