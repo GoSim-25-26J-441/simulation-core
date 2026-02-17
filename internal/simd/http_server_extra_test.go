@@ -341,7 +341,7 @@ func TestHTTPServerGetRunMetricsWithServiceMetrics(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
 	metrics := &simulationv1.RunMetrics{
-		TotalRequests:  100,
+		TotalRequests: 100,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{ServiceName: "svc1", RequestCount: 50, CpuUtilization: 0.5},
 		},

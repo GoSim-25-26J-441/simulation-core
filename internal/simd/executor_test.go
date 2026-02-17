@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
 type mockOptimizationRunner struct{}

@@ -86,8 +86,8 @@ func TestRunExecutorUpdateWorkloadPatternEmptyRunID(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store)
 	pattern := config.WorkloadPattern{
-		From: "client",
-		To:   "svc1:/test",
+		From:    "client",
+		To:      "svc1:/test",
 		Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 20},
 	}
 	err := exec.UpdateWorkloadPattern("", "client:svc1:/test", pattern)

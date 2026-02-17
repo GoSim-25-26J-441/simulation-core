@@ -320,7 +320,7 @@ func TestParseScenarioYAMLMalformed(t *testing.T) {
 
 func TestMarshalScenarioYAML(t *testing.T) {
 	scenario := &Scenario{
-		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Hosts:    []Host{{ID: "h1", Cores: 4}},
 		Services: []Service{{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}}},
 		Workload: []WorkloadPattern{{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
 	}
