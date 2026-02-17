@@ -138,6 +138,14 @@ message RunInput {
   // as the initial configuration; the orchestrator will run multiple simulations
   // to find a better configuration.
   OptimizationConfig optimization = 6;
+
+  // Optional callback URL for completion notifications. When set, the server
+  // POSTs run status to this URL on completion, failure, or cancellation.
+  // Supports {run_id} placeholder (e.g. http://example.com/callback/{run_id}).
+  string callback_url = 7;
+
+  // Optional secret sent as X-Simulation-Callback-Secret header for callback auth.
+  string callback_secret = 8;
 }
 
 // OptimizationConfig configures an optimization run (multi-run experiment).

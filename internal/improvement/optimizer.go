@@ -1,6 +1,8 @@
 package improvement
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -85,6 +87,9 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 	// Evaluate initial configuration
 	initialScore, err := evaluateFunc(initialConfig)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("failed to evaluate initial configuration: %w", err)
 	}
 
@@ -119,6 +124,9 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 		for _, neighbor := range neighbors {
 			score, err := evaluateFunc(neighbor)
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil, err
+				}
 				// Skip invalid configurations
 				continue
 			}

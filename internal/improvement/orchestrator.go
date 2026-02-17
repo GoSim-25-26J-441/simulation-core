@@ -217,9 +217,16 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 			// Timeout or context cancelled
 			o.mu.Lock()
 			runCtx.Status = RunStatusFailed
-			runCtx.Error = fmt.Errorf("run timed out or was cancelled")
+			if ctx.Err() != nil {
+				runCtx.Error = ctx.Err()
+			} else {
+				runCtx.Error = fmt.Errorf("run timed out or was cancelled")
+			}
 			runCtx.CompletedAt = time.Now()
 			o.mu.Unlock()
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
 			return 0, runCtx.Error
 		case <-ticker.C:
 			// Check run status

@@ -113,7 +113,15 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.sendCallbackIfConfigured(updated)
 	return updated, nil
+}
+
+func (e *RunExecutor) sendCallbackIfConfigured(rec *RunRecord) {
+	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
+		return
+	}
+	notifyCallback(rec.Input.CallbackUrl, rec.Input.CallbackSecret, rec.Run)
 }
 
 func (e *RunExecutor) cleanup(runID string) {
@@ -146,8 +154,10 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 
 	if runner == nil {
 		logger.Error("optimization runner not configured", "run_id", runID)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, "optimization not enabled"); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, "optimization not enabled"); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -155,8 +165,10 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
 	if err != nil {
 		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -193,8 +205,10 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 			return
 		}
 		logger.Error("optimization failed", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -203,11 +217,13 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
 	}
 
-	if _, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+	updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	if err != nil {
 		logger.Error("failed to set completed status", "run_id", runID, "error", err)
 	} else {
 		logger.Info("optimization completed", "run_id", runID,
 			"best_run_id", bestRunID, "best_score", bestScore, "iterations", iterations)
+		e.sendCallbackIfConfigured(updated)
 	}
 }
 
@@ -225,8 +241,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
 	if err != nil {
 		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -257,8 +275,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	rm := resource.NewManager()
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		logger.Error("failed to initialize resource manager", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err)); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -290,8 +310,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	state, err := newScenarioState(scenario, rm, metricsCollector, policies)
 	if err != nil {
 		logger.Error("failed to create scenario state", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -303,8 +325,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	workloadState := NewWorkloadState(runID, eng, endTime)
 	if err := workloadState.Start(scenario, startTime); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -323,8 +347,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendCallbackIfConfigured(updated)
 		}
 		return
 	}
@@ -359,12 +385,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Mark as completed if still running
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
-		if _, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 			logger.Error("failed to set completed status", "run_id", runID, "error", err)
 		} else {
 			logger.Info("run completed", "run_id", runID,
 				"total_requests", pbMetrics.TotalRequests,
 				"throughput_rps", pbMetrics.ThroughputRps)
+			e.sendCallbackIfConfigured(updated)
 		}
 	}
 }

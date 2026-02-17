@@ -43,12 +43,34 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, scenario 
 	optimizer := improvement.NewOptimizer(objective, maxIter, stepSize)
 	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
 
-	result, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
-	if err != nil {
-		return "", 0, 0, err
+	// Run in goroutine so we can cancel active sub-runs when ctx is done
+	type result struct {
+		bestRunID  string
+		bestScore  float64
+		iterations int32
+		err        error
 	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		done <- result{bestRunID: r.BestRunID, bestScore: r.BestScore, iterations: int32(r.Iterations)}
+	}()
 
-	return result.BestRunID, result.BestScore, int32(result.Iterations), nil
+	select {
+	case res := <-done:
+		if res.err != nil {
+			return "", 0, 0, res.err
+		}
+		return res.bestRunID, res.bestScore, res.iterations, nil
+	case <-ctx.Done():
+		orchestrator.CancelActiveRuns()
+		<-done // Wait for RunExperiment to return
+		return "", 0, 0, ctx.Err()
+	}
 }
 
 func main() {
