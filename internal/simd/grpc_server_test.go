@@ -290,6 +290,79 @@ workload:
 	}
 }
 
+func TestGRPCServerStreamRunEventsOptimizationProgress(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   100,
+			Optimization: &simulationv1.OptimizationConfig{
+				Objective:     "p95_latency_ms",
+				MaxIterations: 5,
+				StepSize:      1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	streamCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	stream := &fakeRunEventsStream{ctx: streamCtx}
+
+	// Set status to running and optimization progress before streaming
+	_, _ = store.SetStatus(createResp.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	store.SetOptimizationProgress(createResp.Run.Id, 1, 12.5)
+
+	_ = srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{
+		RunId:             createResp.Run.Id,
+		MetricsIntervalMs: 10,
+	}, stream)
+
+	sent := stream.getSent()
+	var optProgress *simulationv1.OptimizationProgress
+	for _, resp := range sent {
+		if resp.Event != nil {
+			if prog, ok := resp.Event.Event.(*simulationv1.RunEvent_OptimizationProgress); ok {
+				optProgress = prog.OptimizationProgress
+				break
+			}
+		}
+	}
+	if optProgress == nil {
+		t.Fatalf("expected OptimizationProgress event in stream, got %d events", len(sent))
+	}
+	if optProgress.Iteration != 1 {
+		t.Errorf("expected iteration 1, got %d", optProgress.Iteration)
+	}
+	if optProgress.BestScore != 12.5 {
+		t.Errorf("expected best_score 12.5, got %f", optProgress.BestScore)
+	}
+}
+
 func TestGRPCServerListRuns(t *testing.T) {
 	store := NewRunStore()
 	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
