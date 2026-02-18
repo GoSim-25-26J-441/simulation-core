@@ -406,11 +406,22 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			return fmt.Errorf("failed to get downstream calls for %s:%s: %w", serviceID, endpointPath, err)
 		}
 
-		// Schedule downstream calls
+		// Schedule downstream calls (with variable call latency when CallLatencyMs is configured)
 		for _, downstreamCall := range downstreamCalls {
-			// Schedule downstream call event
-			// For MVP, we schedule it immediately after current request completes (sync behavior)
-			eng.ScheduleAt(engine.EventTypeDownstreamCall, simTime, request, downstreamCall.ServiceID, map[string]interface{}{
+			// Sample call latency from CallLatencyMs (mean, sigma) - models network/call overhead
+			callLatencyMs := 0.0
+			if downstreamCall.Call.CallLatencyMs.Mean > 0 {
+				sigma := downstreamCall.Call.CallLatencyMs.Sigma
+				if sigma < 0 {
+					sigma = 0
+				}
+				callLatencyMs = state.rng.NormFloat64(downstreamCall.Call.CallLatencyMs.Mean, sigma)
+				if callLatencyMs < 0 {
+					callLatencyMs = 0
+				}
+			}
+			scheduleTime := simTime.Add(time.Duration(callLatencyMs * float64(time.Millisecond)))
+			eng.ScheduleAt(engine.EventTypeDownstreamCall, scheduleTime, request, downstreamCall.ServiceID, map[string]interface{}{
 				"endpoint_path":     downstreamCall.Path,
 				"parent_request_id": request.ID,
 			})
