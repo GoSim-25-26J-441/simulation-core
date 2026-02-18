@@ -657,7 +657,9 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	rc := http.NewResponseController(w)
 	if rc != nil {
 		// Set write deadline to zero (no timeout) - needs to be reset periodically
-		_ = rc.SetWriteDeadline(time.Time{})
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			logger.Debug("SetWriteDeadline failed", "error", err)
+		}
 	}
 
 	// Flush headers immediately
@@ -823,7 +825,9 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Reset write deadline before each flush to prevent timeouts
 			// This is critical for SSE streams with many events
 			if rc != nil {
-				_ = rc.SetWriteDeadline(time.Time{}) // Zero time means no deadline
+				if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+					logger.Debug("SetWriteDeadline failed", "error", err)
+				}
 			}
 			// Flush to send data immediately
 			if flusher, ok := w.(http.Flusher); ok {
@@ -845,7 +849,9 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 	// Reset write deadline before EVERY write to prevent timeouts
 	// This is critical when sending many events rapidly
 	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{}) // Zero time means no deadline
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			logger.Debug("SetWriteDeadline failed", "error", err)
+		}
 	}
 
 	// Write event in SSE format
@@ -862,7 +868,9 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 
 	// Reset deadline again before writing data
 	if rc := http.NewResponseController(w); rc != nil {
-		_ = rc.SetWriteDeadline(time.Time{})
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			logger.Debug("SetWriteDeadline failed", "error", err)
+		}
 	}
 
 	if _, err := w.Write([]byte("data: " + string(jsonData) + "\n\n")); err != nil {

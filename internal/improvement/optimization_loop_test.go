@@ -113,6 +113,9 @@ func TestOptimizerWithConvergence(t *testing.T) {
 				ID:       "svc1",
 				Replicas: 2,
 				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/", MeanCPUMs: 10, CPUSigmaMs: 1, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
+				},
 			},
 		},
 	}
@@ -157,6 +160,9 @@ func TestOptimizerWithExplorer(t *testing.T) {
 				ID:       "svc1",
 				Replicas: 2,
 				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/", MeanCPUMs: 10, CPUSigmaMs: 1, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
+				},
 			},
 		},
 	}

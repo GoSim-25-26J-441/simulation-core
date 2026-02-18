@@ -104,7 +104,11 @@ func (n *Notifier) sendNotification(callbackURL string, callbackSecret string, p
 	for attempt := 0; attempt <= n.maxRetries; attempt++ {
 		if attempt > 0 {
 			// Exponential backoff: delay = baseDelay * 2^(attempt-1)
-			delay := n.baseDelay * time.Duration(1<<uint(attempt-1))
+			multiplier := 1
+			for i := 0; i < attempt-1 && multiplier < 1<<31; i++ {
+				multiplier *= 2
+			}
+			delay := n.baseDelay * time.Duration(multiplier)
 			logger.Debug("retrying notification",
 				"callback_url", callbackURL,
 				"run_id", payload.RunID,
@@ -139,8 +143,17 @@ func (n *Notifier) sendNotification(callbackURL string, callbackSecret string, p
 		}
 
 		// Read response body for error details
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			logger.Warn("notification response read failed",
+				"callback_url", callbackURL,
+				"run_id", payload.RunID,
+				"attempt", attempt+1,
+				"error", err)
+			continue
+		}
 		responseBody := string(bodyBytes)
 		if len(responseBody) > 200 {
 			responseBody = responseBody[:200] + "..."
