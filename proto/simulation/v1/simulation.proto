@@ -225,6 +225,7 @@ message RunEvent {
   oneof event {
     RunStatusChanged status_changed = 3;
     MetricsSnapshot metrics_snapshot = 4;
+    OptimizationProgress optimization_progress = 5;
   }
 }
 
@@ -235,6 +236,13 @@ message RunStatusChanged {
 
 message MetricsSnapshot {
   RunMetrics metrics = 1;
+}
+
+// OptimizationProgress is emitted during optimization runs when iteration or best score changes.
+message OptimizationProgress {
+  int32 iteration = 1;
+  double best_score = 2;
+  string best_run_id = 3;
 }
 
 
