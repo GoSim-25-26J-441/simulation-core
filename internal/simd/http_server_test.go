@@ -1322,10 +1322,11 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	executor := NewRunExecutor(store)
 	srv := NewHTTPServer(store, executor)
 
-	// Create and start a run
+	// Create and start a run - use real-time mode so sim runs ~300ms real time (discrete-event completes in microseconds)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   500, // Short duration to ensure run stays running long enough for test
+		DurationMs:   300,
+		RealTimeMode: true,
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -1337,7 +1338,13 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	}
 
 	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	// Check if run has already completed before attempting update (safety for slow CI)
+	updatedRec, _ := store.Get(rec.Run.Id)
+	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", updatedRec.Run.Status)
+	}
 
 	// Test successful rate update
 	reqBody := map[string]any{
@@ -1350,13 +1357,6 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Handler().ServeHTTP(rr, req)
-
-	// Check if run has already completed
-	updatedRec, _ := store.Get(rec.Run.Id)
-	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-		// Simulation completed too quickly - this is expected for discrete-event sims
-		t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", updatedRec.Run.Status)
-	}
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
@@ -1379,10 +1379,11 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	executor := NewRunExecutor(store)
 	srv := NewHTTPServer(store, executor)
 
-	// Create and start a run
+	// Create and start a run - use real-time mode so sim runs ~300ms real time (discrete-event completes in microseconds)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   500, // Short duration to ensure run stays running long enough for test
+		DurationMs:   300,
+		RealTimeMode: true,
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -1394,7 +1395,13 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	}
 
 	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	// Check if run has already completed before attempting update (safety for slow CI)
+	updatedRec, _ := store.Get(rec.Run.Id)
+	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Skipf("Simulation completed too quickly (status: %v) - skipping pattern update test", updatedRec.Run.Status)
+	}
 
 	// Test successful pattern update
 	reqBody := map[string]any{
@@ -1414,13 +1421,6 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Handler().ServeHTTP(rr, req)
-
-	// Check if run has already completed
-	updatedRec, _ := store.Get(rec.Run.Id)
-	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-		// Simulation completed too quickly - this is expected for discrete-event sims
-		t.Skipf("Simulation completed too quickly (status: %v) - skipping pattern update test", updatedRec.Run.Status)
-	}
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
