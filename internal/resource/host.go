@@ -93,19 +93,66 @@ func (h *Host) RemoveService(instanceID string) {
 	}
 }
 
-// UpdateCPUUtilization recalculates CPU utilization based on service instances
-// This should be called after resource allocations change
-func (h *Host) UpdateCPUUtilization() {
-	// TODO: Implement host-level CPU utilization aggregation based on serviceInstances
-	// For now, utilization is tracked and updated at the Manager level via SetCPUUtilization.
-	// This method is intentionally left as a placeholder for future aggregation logic.
+// InstanceUtilizationSource provides CPU and memory utilization data for aggregation.
+// ServiceInstance implements this interface.
+type InstanceUtilizationSource interface {
+	CPUUtilization() float64
+	CPUCores() float64
+	ActiveMemoryMB() float64
 }
 
-// UpdateMemoryUtilization recalculates memory utilization based on service instances
-func (h *Host) UpdateMemoryUtilization() {
-	// TODO: Implement host-level memory utilization aggregation based on serviceInstances
-	// For now, utilization is tracked and updated at the Manager level via SetMemoryUtilization.
-	// This method is intentionally left as a placeholder for future aggregation logic.
+// UpdateCPUUtilization recalculates CPU utilization by aggregating from service instances.
+// It sums (instance CPU utilization × allocated cores) across all instances on this host,
+// then divides by host CPU cores to get host-level utilization (0.0 to 1.0).
+func (h *Host) UpdateCPUUtilization(instances []InstanceUtilizationSource) {
+	if len(instances) == 0 {
+		h.SetCPUUtilization(0)
+		return
+	}
+	totalCPUUsed := 0.0
+	for _, inst := range instances {
+		totalCPUUsed += inst.CPUUtilization() * inst.CPUCores()
+	}
+	h.mu.RLock()
+	cores := h.cpuCores
+	h.mu.RUnlock()
+	if cores > 0 {
+		util := totalCPUUsed / float64(cores)
+		if util > 1.0 {
+			util = 1.0
+		}
+		if util < 0.0 {
+			util = 0.0
+		}
+		h.SetCPUUtilization(util)
+	}
+}
+
+// UpdateMemoryUtilization recalculates memory utilization by aggregating from service instances.
+// It sums active memory (MB) across all instances, converts to GB, and divides by host
+// memory capacity to get host-level utilization (0.0 to 1.0).
+func (h *Host) UpdateMemoryUtilization(instances []InstanceUtilizationSource) {
+	if len(instances) == 0 {
+		h.SetMemoryUtilization(0)
+		return
+	}
+	totalMemoryUsedMB := 0.0
+	for _, inst := range instances {
+		totalMemoryUsedMB += inst.ActiveMemoryMB()
+	}
+	h.mu.RLock()
+	memoryGB := h.memoryGB
+	h.mu.RUnlock()
+	if memoryGB > 0 {
+		hostUtil := (totalMemoryUsedMB / 1024.0) / float64(memoryGB)
+		if hostUtil > 1.0 {
+			hostUtil = 1.0
+		}
+		if hostUtil < 0.0 {
+			hostUtil = 0.0
+		}
+		h.SetMemoryUtilization(hostUtil)
+	}
 }
 
 // SetCPUUtilization sets the CPU utilization (called by Manager)

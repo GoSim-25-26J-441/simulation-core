@@ -431,6 +431,121 @@ func TestManagerGetHostUtilization(t *testing.T) {
 	}
 }
 
+func TestHostResourceAggregationFromInstances(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				CPUCores: 2.0,
+				MemoryMB: 512.0,
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2},
+				},
+			},
+		},
+	}
+
+	err := m.InitializeFromScenario(scenario)
+	if err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	instances := m.GetInstancesForService("svc1")
+	if len(instances) == 0 {
+		t.Fatalf("expected at least one instance")
+	}
+	instanceID := instances[0].ID()
+
+	// Initially host utilization should be 0 (or very low)
+	cpuUtil0, memUtil0, ok := m.GetHostUtilization("host-1")
+	if !ok {
+		t.Fatalf("expected to get host utilization")
+	}
+	if cpuUtil0 < 0 || cpuUtil0 > 1.0 || memUtil0 < 0 || memUtil0 > 1.0 {
+		t.Fatalf("expected utilizations in [0, 1], got cpu=%f mem=%f", cpuUtil0, memUtil0)
+	}
+
+	// Allocate CPU - host CPU utilization should increase
+	simTime := time.Now()
+	err = m.AllocateCPU(instanceID, 500.0, simTime) // 500ms in 1s window = 0.5 utilization for 2 cores = 1 core used
+	if err != nil {
+		t.Fatalf("AllocateCPU error: %v", err)
+	}
+
+	cpuUtil1, _, ok := m.GetHostUtilization("host-1")
+	if !ok {
+		t.Fatalf("expected to get host utilization after CPU alloc")
+	}
+	if cpuUtil1 <= cpuUtil0 {
+		t.Fatalf("expected host CPU utilization to increase after AllocateCPU, was %f, now %f", cpuUtil0, cpuUtil1)
+	}
+
+	// Allocate memory - host memory utilization should increase
+	err = m.AllocateMemory(instanceID, 256.0) // 256 MB
+	if err != nil {
+		t.Fatalf("AllocateMemory error: %v", err)
+	}
+
+	_, memUtil1, ok := m.GetHostUtilization("host-1")
+	if !ok {
+		t.Fatalf("expected to get host utilization after memory alloc")
+	}
+	if memUtil1 <= memUtil0 {
+		t.Fatalf("expected host memory utilization to increase after AllocateMemory, was %f, now %f", memUtil0, memUtil1)
+	}
+
+	// Release and verify host utilization decreases
+	m.ReleaseCPU(instanceID, 500.0, simTime)
+	m.ReleaseMemory(instanceID, 256.0)
+}
+
+func TestHostUpdateCPUUtilizationDirect(t *testing.T) {
+	host := NewHost("host-1", 4, 16)
+	inst1 := NewServiceInstance("inst-1", "svc1", "host-1", 2.0, 256.0)
+	inst2 := NewServiceInstance("inst-2", "svc1", "host-1", 2.0, 256.0)
+
+	// No allocations - should be 0
+	host.UpdateCPUUtilization([]InstanceUtilizationSource{inst1, inst2})
+	if host.CPUUtilization() != 0 {
+		t.Errorf("expected 0 CPU utilization with no allocations, got %f", host.CPUUtilization())
+	}
+
+	// Allocate CPU on both instances (500ms each in 1s window)
+	now := time.Now()
+	inst1.AllocateCPU(500.0, now) // 0.25 util each (500/1000/2), 2 instances * 2 cores * 0.25 = 1 core used
+	inst2.AllocateCPU(500.0, now)
+	host.UpdateCPUUtilization([]InstanceUtilizationSource{inst1, inst2})
+	util := host.CPUUtilization()
+	if util <= 0 || util > 1.0 {
+		t.Errorf("expected positive CPU utilization, got %f", util)
+	}
+}
+
+func TestHostUpdateMemoryUtilizationDirect(t *testing.T) {
+	host := NewHost("host-1", 4, 16) // 16 GB
+	inst := NewServiceInstance("inst-1", "svc1", "host-1", 2.0, 512.0)
+
+	// No allocations - should be 0
+	host.UpdateMemoryUtilization([]InstanceUtilizationSource{inst})
+	if host.MemoryUtilization() != 0 {
+		t.Errorf("expected 0 memory utilization with no allocations, got %f", host.MemoryUtilization())
+	}
+
+	// Allocate 8 GB (8192 MB) - should be 0.5 utilization
+	inst.AllocateMemory(8192.0)
+	host.UpdateMemoryUtilization([]InstanceUtilizationSource{inst})
+	util := host.MemoryUtilization()
+	if util < 0.49 || util > 0.51 {
+		t.Errorf("expected ~0.5 memory utilization (8GB/16GB), got %f", util)
+	}
+}
+
 func TestManagerGetAllHosts(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{

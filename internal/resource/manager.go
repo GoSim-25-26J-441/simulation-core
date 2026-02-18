@@ -79,6 +79,7 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
 			m.instances[instanceIDStr] = instance
 			m.hosts[hostID].AddService(instanceIDStr)
+			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
 		}
 	}
 
@@ -393,49 +394,20 @@ func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
 	return instances
 }
 
-// updateHostCPUUtilizationWithData updates host CPU utilization using pre-collected data
-// This version can be called without holding the Manager lock
+// updateHostCPUUtilizationWithData updates host CPU utilization by delegating to Host aggregation
 func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*ServiceInstance) {
-	totalCPUUsed := 0.0
-
-	for _, instance := range instances {
-		// Sum up CPU utilization from all instances
-		// CPU utilization is measured as cores used per second
-		// We need to aggregate the active CPU time
-		// For simplicity, we'll use the instance's CPU utilization * its allocated cores
-		instanceUtil := instance.CPUUtilization()
-		instanceCores := instance.CPUCores()
-		totalCPUUsed += instanceUtil * instanceCores
+	sources := make([]InstanceUtilizationSource, len(instances))
+	for i, inst := range instances {
+		sources[i] = inst
 	}
-
-	// Get host CPU cores and calculate utilization
-	hostCPUCores := host.CPUCores()
-	if hostCPUCores > 0 {
-		hostUtil := totalCPUUsed / float64(hostCPUCores)
-		if hostUtil > 1.0 {
-			hostUtil = 1.0
-		}
-		host.SetCPUUtilization(hostUtil)
-	}
+	host.UpdateCPUUtilization(sources)
 }
 
-// updateHostMemoryUtilizationWithData updates host memory utilization using pre-collected data
-// This version can be called without holding the Manager lock
+// updateHostMemoryUtilizationWithData updates host memory utilization by delegating to Host aggregation
 func (m *Manager) updateHostMemoryUtilizationWithData(host *Host, instances []*ServiceInstance) {
-	totalMemoryUsedMB := 0.0
-
-	for _, instance := range instances {
-		// Sum up memory usage from all instances
-		totalMemoryUsedMB += instance.ActiveMemoryMB()
+	sources := make([]InstanceUtilizationSource, len(instances))
+	for i, inst := range instances {
+		sources[i] = inst
 	}
-
-	// Get host memory and calculate utilization
-	hostMemoryGB := host.MemoryGB()
-	if hostMemoryGB > 0 {
-		hostUtil := (totalMemoryUsedMB / 1024.0) / float64(hostMemoryGB)
-		if hostUtil > 1.0 {
-			hostUtil = 1.0
-		}
-		host.SetMemoryUtilization(hostUtil)
-	}
+	host.UpdateMemoryUtilization(sources)
 }
