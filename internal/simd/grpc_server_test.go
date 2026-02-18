@@ -438,11 +438,13 @@ workload:
     arrival: {type: poisson, rate_rps: 10}
 `
 
-	// Create and start a run
+	// Use real-time mode so the simulation actually runs for ~300ms; discrete-event mode
+	// completes in microseconds, making UpdateWorkloadRate impossible to test reliably.
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
 		Input: &simulationv1.RunInput{
 			ScenarioYaml: validScenario,
-			DurationMs:   500, // Short duration to ensure run stays running long enough for test
+			DurationMs:   300,
+			RealTimeMode: true,
 		},
 	})
 	if err != nil {
@@ -454,10 +456,8 @@ workload:
 		t.Fatalf("StartRun error: %v", err)
 	}
 
-	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
-
-	// Test successful rate update - discrete-event simulations can complete very quickly
+	// Brief delay for workload state to initialize, then update rate
+	time.Sleep(50 * time.Millisecond)
 	patternKey := "client:svc1:/test"
 	newRate := 50.0
 	updateResp, err := srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
@@ -466,10 +466,8 @@ workload:
 		RateRps:    newRate,
 	})
 	if err != nil {
-		// Check if run has already completed
 		rec, ok := store.Get(createResp.Run.Id)
 		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-			// Simulation completed too quickly - this is expected for discrete-event sims
 			t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", rec.Run.Status)
 		}
 		t.Fatalf("UpdateWorkloadRate error: %v", err)
@@ -478,7 +476,7 @@ workload:
 		t.Fatalf("expected run in response")
 	}
 
-	// Stop the run if it's still running
+	// Stop the run (real-time sim would otherwise run ~300ms)
 	_, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id})
 }
 
