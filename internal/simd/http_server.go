@@ -691,6 +691,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	// Track last sent metrics to avoid duplicates (by timestamp)
 	lastSentTimestamps := make(map[string]map[string]time.Time) // metric -> labelKey -> timestamp
 
+	// Track last sent optimization progress (for optimization runs)
+	var lastOptIteration int32 = -1
+	var lastOptBestScore float64 = -1
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -737,6 +741,19 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 						"status": rec.Run.Status.String(),
 					})
 					return
+				}
+			}
+
+			// Send optimization progress for optimization runs
+			if rec.Input != nil && rec.Input.Optimization != nil {
+				if rec.Run.Iterations != lastOptIteration || rec.Run.BestScore != lastOptBestScore {
+					lastOptIteration = rec.Run.Iterations
+					lastOptBestScore = rec.Run.BestScore
+					s.sendSSEEvent(w, "optimization_progress", map[string]any{
+						"iteration":   rec.Run.Iterations,
+						"best_score":  rec.Run.BestScore,
+						"best_run_id": rec.Run.BestRunId,
+					})
 				}
 			}
 
@@ -915,6 +932,13 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 	if input != nil && input.DurationMs > 0 {
 		result["simulation_duration_ms"] = input.DurationMs
 		result["simulation_duration_seconds"] = float64(input.DurationMs) / 1000.0
+	}
+
+	// Optimization run results
+	if run.BestRunId != "" {
+		result["best_run_id"] = run.BestRunId
+		result["best_score"] = run.BestScore
+		result["iterations"] = run.Iterations
 	}
 
 	return result

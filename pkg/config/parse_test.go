@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseScenarioYAMLString(t *testing.T) {
 	yamlText := `
@@ -312,6 +315,31 @@ func TestParseScenarioYAMLMalformed(t *testing.T) {
 	_, err := ParseScenarioYAML(yamlBytes)
 	if err == nil {
 		t.Fatalf("expected error when parsing malformed YAML")
+	}
+}
+
+func TestMarshalScenarioYAML(t *testing.T) {
+	scenario := &Scenario{
+		Hosts:    []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}}},
+		Workload: []WorkloadPattern{{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+	}
+	yaml, err := MarshalScenarioYAML(scenario)
+	if err != nil {
+		t.Fatalf("MarshalScenarioYAML failed: %v", err)
+	}
+	if yaml == "" {
+		t.Fatalf("expected non-empty YAML")
+	}
+	if !strings.Contains(yaml, "hosts") || !strings.Contains(yaml, "svc1") {
+		t.Fatalf("expected YAML to contain hosts and svc1")
+	}
+}
+
+func TestMarshalScenarioYAMLNil(t *testing.T) {
+	_, err := MarshalScenarioYAML(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil scenario")
 	}
 }
 

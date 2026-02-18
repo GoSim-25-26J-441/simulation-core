@@ -23,9 +23,19 @@ type RunExecutor struct {
 	store    *RunStore
 	notifier *Notifier
 
+	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
+
 	mu             sync.Mutex
 	cancels        map[string]context.CancelFunc
 	workloadStates map[string]*WorkloadState // key: runID
+}
+
+// SetOptimizationRunner sets the optimization runner for multi-run experiments.
+// Must be called before starting optimization runs.
+func (e *RunExecutor) SetOptimizationRunner(r OptimizationRunner) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.optimizationRunner = r
 }
 
 var (
@@ -78,7 +88,12 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	e.cancels[runID] = cancel
 	e.mu.Unlock()
 
-	go e.runSimulation(ctx, runID)
+	// Optimization runs use the orchestrator instead of a single simulation
+	if rec.Input.Optimization != nil {
+		go e.runOptimization(ctx, runID)
+	} else {
+		go e.runSimulation(ctx, runID)
+	}
 	return updated, nil
 }
 
@@ -100,7 +115,6 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	e.sendNotificationIfConfigured(updated)
 	return updated, nil
 }
@@ -137,6 +151,94 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec)
 }
 
+func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
+	defer e.cleanup(runID)
+
+	rec, ok := e.store.Get(runID)
+	if !ok {
+		logger.Error("run not found", "run_id", runID)
+		return
+	}
+
+	e.mu.Lock()
+	runner := e.optimizationRunner
+	e.mu.Unlock()
+
+	if runner == nil {
+		logger.Error("optimization runner not configured", "run_id", runID)
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, "optimization not enabled"); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
+		}
+		return
+	}
+
+	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
+	if err != nil {
+		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
+		}
+		return
+	}
+
+	durationMs := rec.Input.DurationMs
+	if durationMs <= 0 {
+		durationMs = 10000 // 10 seconds default
+	}
+
+	opt := rec.Input.Optimization
+	params := &OptimizationParams{
+		Objective:     "p95_latency_ms",
+		MaxIterations: 10,
+		StepSize:      1.0,
+	}
+	if opt != nil {
+		if opt.Objective != "" {
+			params.Objective = opt.Objective
+		}
+		if opt.MaxIterations > 0 {
+			params.MaxIterations = opt.MaxIterations
+		}
+		if opt.StepSize > 0 {
+			params.StepSize = opt.StepSize
+		}
+	}
+
+	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective, "max_iterations", params.MaxIterations)
+
+	bestRunID, bestScore, iterations, err := runner.RunExperiment(ctx, runID, scenario, durationMs, params)
+	if err != nil {
+		if ctx.Err() != nil {
+			logger.Info("optimization cancelled", "run_id", runID)
+			return
+		}
+		logger.Error("optimization failed", "run_id", runID, "error", err)
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
+			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
+		} else {
+			e.sendNotificationIfConfigured(updated)
+		}
+		return
+	}
+
+	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations); err != nil {
+		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
+	}
+
+	updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	if err != nil {
+		logger.Error("failed to set completed status", "run_id", runID, "error", err)
+	} else {
+		logger.Info("optimization completed", "run_id", runID,
+			"best_run_id", bestRunID, "best_score", bestScore, "iterations", iterations)
+		e.sendNotificationIfConfigured(updated)
+	}
+}
+
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	defer e.cleanup(runID)
 
@@ -151,8 +253,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
 	if err != nil {
 		logger.Error("failed to parse scenario YAML", "run_id", runID, "error", err)
-		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err))
-		if setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
 			e.sendNotificationIfConfigured(updated)
@@ -186,8 +287,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	rm := resource.NewManager()
 	if err := rm.InitializeFromScenario(scenario); err != nil {
 		logger.Error("failed to initialize resource manager", "run_id", runID, "error", err)
-		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err))
-		if setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
 			e.sendNotificationIfConfigured(updated)
@@ -222,8 +322,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	state, err := newScenarioState(scenario, rm, metricsCollector, policies)
 	if err != nil {
 		logger.Error("failed to create scenario state", "run_id", runID, "error", err)
-		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err))
-		if setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
 			e.sendNotificationIfConfigured(updated)
@@ -238,8 +337,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	workloadState := NewWorkloadState(runID, eng, endTime)
 	if err := workloadState.Start(scenario, startTime); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
-		updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err))
-		if setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
 			e.sendNotificationIfConfigured(updated)
@@ -263,11 +361,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
-		if _, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
+		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			rec, _ := e.store.Get(runID)
-			e.sendNotificationIfConfigured(rec)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -302,15 +399,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Mark as completed if still running
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
-		if _, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 			logger.Error("failed to set completed status", "run_id", runID, "error", err)
 		} else {
 			logger.Info("run completed", "run_id", runID,
 				"total_requests", pbMetrics.TotalRequests,
 				"throughput_rps", pbMetrics.ThroughputRps)
-
-			rec, _ = e.store.Get(runID)
-			e.sendNotificationIfConfigured(rec)
+			e.sendNotificationIfConfigured(updated)
 		}
 	}
 }

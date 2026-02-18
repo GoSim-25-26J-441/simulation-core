@@ -658,6 +658,57 @@ func TestHTTPServerMetricsStreamWithInterval(t *testing.T) {
 	}
 }
 
+func TestHTTPServerMetricsStreamOptimizationProgress(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Create an optimization run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+		Optimization: &simulationv1.OptimizationConfig{
+			Objective:     "p95_latency_ms",
+			MaxIterations: 5,
+			StepSize:      1.0,
+		},
+	}
+	rec, err := store.Create("opt-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Set status to running and simulate progress
+	_, _ = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	store.SetOptimizationProgress(rec.Run.Id, 1, 12.5)
+
+	// Connect to metrics stream - use short interval and longer timeout for reliability
+	// under -race (race detector slows execution significantly)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/opt-run/metrics/stream?interval_ms=10", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), 500*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream")
+	}
+
+	// Parse SSE output and look for optimization_progress event
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: optimization_progress") {
+		t.Fatalf("expected optimization_progress event in stream, got: %s", body)
+	}
+	if !strings.Contains(body, `"iteration":1`) {
+		t.Fatalf("expected iteration 1 in optimization_progress")
+	}
+	// Check best_score flexibly (JSON may format 12.5 as "12.5" or "1.25e+01" on some platforms)
+	if !strings.Contains(body, "12.5") && !strings.Contains(body, "1.25e+01") {
+		t.Fatalf("expected best_score 12.5 in optimization_progress, got: %s", body)
+	}
+}
+
 func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)

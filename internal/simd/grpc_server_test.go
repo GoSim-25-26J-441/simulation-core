@@ -98,6 +98,31 @@ func (s *fakeRunEventsStream) Context() context.Context        { return s.ctx }
 func (s *fakeRunEventsStream) SendMsg(m any) error             { return nil }
 func (s *fakeRunEventsStream) RecvMsg(m any) error             { return nil }
 
+func TestGRPCServerStreamRunEventsEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+	stream := &fakeRunEventsStream{ctx: ctx}
+
+	err := srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{RunId: ""}, stream)
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerStreamRunEventsRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stream := &fakeRunEventsStream{ctx: ctx}
+
+	err := srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{RunId: "nope"}, stream)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
 func TestGRPCServerStreamRunEventsSendsInitialEvent(t *testing.T) {
 	store := NewRunStore()
 	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
@@ -288,6 +313,50 @@ func TestGRPCServerListRuns(t *testing.T) {
 	}
 }
 
+func TestGRPCServerCreateRunWithNilRequest(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.CreateRun(ctx, nil)
+	if err == nil {
+		t.Fatalf("expected error for nil request")
+	}
+}
+
+func TestGRPCServerStartRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerGetRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerGetRunMetricsWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRunMetrics(ctx, &simulationv1.GetRunMetricsRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
 func TestGRPCServerCreateRunWithNilInput(t *testing.T) {
 	store := NewRunStore()
 	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
@@ -318,6 +387,17 @@ func TestGRPCServerStartRunOnNonExistent(t *testing.T) {
 	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: "nope"})
 	if err == nil {
 		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerStopRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
 	}
 }
 
@@ -358,11 +438,13 @@ workload:
     arrival: {type: poisson, rate_rps: 10}
 `
 
-	// Create and start a run
+	// Use real-time mode so the simulation actually runs for ~300ms; discrete-event mode
+	// completes in microseconds, making UpdateWorkloadRate impossible to test reliably.
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
 		Input: &simulationv1.RunInput{
 			ScenarioYaml: validScenario,
-			DurationMs:   500, // Short duration to ensure run stays running long enough for test
+			DurationMs:   300,
+			RealTimeMode: true,
 		},
 	})
 	if err != nil {
@@ -374,10 +456,8 @@ workload:
 		t.Fatalf("StartRun error: %v", err)
 	}
 
-	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
-
-	// Test successful rate update - discrete-event simulations can complete very quickly
+	// Brief delay for workload state to initialize, then update rate
+	time.Sleep(50 * time.Millisecond)
 	patternKey := "client:svc1:/test"
 	newRate := 50.0
 	updateResp, err := srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
@@ -386,10 +466,8 @@ workload:
 		RateRps:    newRate,
 	})
 	if err != nil {
-		// Check if run has already completed
 		rec, ok := store.Get(createResp.Run.Id)
 		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-			// Simulation completed too quickly - this is expected for discrete-event sims
 			t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", rec.Run.Status)
 		}
 		t.Fatalf("UpdateWorkloadRate error: %v", err)
@@ -398,7 +476,7 @@ workload:
 		t.Fatalf("expected run in response")
 	}
 
-	// Stop the run if it's still running
+	// Stop the run (real-time sim would otherwise run ~300ms)
 	_, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id})
 }
 

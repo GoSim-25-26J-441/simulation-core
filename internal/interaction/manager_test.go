@@ -8,6 +8,21 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
+func TestNewManagerWithSeed(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+		},
+	}
+	manager, err := NewManagerWithSeed(scenario, 42)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	if manager == nil || manager.GetGraph() == nil {
+		t.Fatalf("expected non-nil manager and graph")
+	}
+}
+
 func TestNewManager(t *testing.T) {
 	scenario := &config.Scenario{
 		Services: []config.Service{
@@ -137,6 +152,109 @@ func TestManagerCreateDownstreamRequest(t *testing.T) {
 
 	if downstreamRequest.Endpoint != "/api" {
 		t.Fatalf("expected endpoint /api, got %s", downstreamRequest.Endpoint)
+	}
+}
+
+func TestManagerCreateDownstreamRequestWithMetadata(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+			{ID: "svc2", Endpoints: []config.Endpoint{{Path: "/api"}}},
+		},
+	}
+	manager, err := NewManager(scenario)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	parentRequest := &models.Request{
+		ID:          "req-1",
+		TraceID:     "trace-1",
+		ServiceName: "svc1",
+		Endpoint:    "/test",
+		Status:      models.RequestStatusCompleted,
+		ArrivalTime: time.Now(),
+		Metadata:    map[string]interface{}{"instance_id": "inst-1"},
+	}
+	downstreamRequest, err := manager.CreateDownstreamRequest(parentRequest, ResolvedCall{ServiceID: "svc2", Path: "/api"})
+	if err != nil {
+		t.Fatalf("failed to create downstream request: %v", err)
+	}
+	if downstreamRequest.Metadata["parent_instance_id"] != "inst-1" {
+		t.Fatalf("expected parent_instance_id in metadata, got %v", downstreamRequest.Metadata)
+	}
+}
+
+func TestManagerCreateDownstreamRequestNonExistentService(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+		},
+	}
+	manager, err := NewManager(scenario)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	parentRequest := &models.Request{
+		ID: "req-1", TraceID: "trace-1", ServiceName: "svc1", Endpoint: "/test",
+		Status: models.RequestStatusCompleted, ArrivalTime: time.Now(),
+	}
+	_, err = manager.CreateDownstreamRequest(parentRequest, ResolvedCall{ServiceID: "nonexistent", Path: "/api"})
+	if err == nil {
+		t.Fatalf("expected error for nonexistent downstream service")
+	}
+}
+
+func TestManagerCreateDownstreamRequestNilParent(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+			{ID: "svc2", Endpoints: []config.Endpoint{{Path: "/api"}}},
+		},
+	}
+	manager, err := NewManager(scenario)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	_, err = manager.CreateDownstreamRequest(nil, ResolvedCall{ServiceID: "svc2", Path: "/api"})
+	if err == nil {
+		t.Fatalf("expected error for nil parent request")
+	}
+}
+
+func TestManagerWithBranchingStrategy(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+		},
+	}
+	manager, err := NewManager(scenario)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	custom := &struct {
+		BranchingStrategy
+	}{}
+	got := manager.WithBranchingStrategy(custom)
+	if got != manager {
+		t.Fatalf("expected same manager returned")
+	}
+}
+
+func TestManagerValidateService(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+		},
+	}
+	manager, err := NewManager(scenario)
+	if err != nil {
+		t.Fatalf("failed to create manager: %v", err)
+	}
+	if err := manager.ValidateService("svc1"); err != nil {
+		t.Fatalf("expected valid service, got error: %v", err)
+	}
+	if err := manager.ValidateService("nonexistent"); err == nil {
+		t.Fatalf("expected error for nonexistent service")
 	}
 }
 
