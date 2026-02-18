@@ -762,15 +762,19 @@ func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {
 		done <- true
 	}()
 
-	// Wait a bit for events to be sent
-	time.Sleep(200 * time.Millisecond)
+	// Wait for handler to complete before reading body (avoids data race on rr)
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("SSE stream did not complete within timeout")
+	}
 
 	// Check response headers
 	if rr.Header().Get("Content-Type") != "text/event-stream" {
 		t.Fatalf("expected Content-Type text/event-stream, got %s", rr.Header().Get("Content-Type"))
 	}
 
-	// Get response body
+	// Get response body (safe to read after handler completed)
 	body := rr.Body.String()
 	t.Logf("SSE response body length: %d", len(body))
 
@@ -878,13 +882,6 @@ func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {
 	if len(metricNames) < 1 {
 		t.Error("expected at least one unique metric name in time-series stream")
 	}
-
-	// Wait for goroutine to complete
-	select {
-	case <-done:
-	case <-time.After(1 * time.Second):
-		t.Error("SSE stream did not complete within timeout")
-	}
 }
 
 func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
@@ -942,10 +939,14 @@ func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
 		}
 	}()
 
-	// Wait for events to accumulate
-	time.Sleep(700 * time.Millisecond)
+	// Wait for handler to complete before reading body (avoids data race on rr)
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("SSE stream did not complete within timeout")
+	}
 
-	// Get response body
+	// Get response body (safe to read after handler completed)
 	body := rr.Body.String()
 
 	// Verify we received multiple metric_update events
@@ -983,13 +984,6 @@ func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
 	}
 
 	t.Logf("Successfully streamed %d metric_update events with %d valid events", metricUpdateCount, validEvents)
-
-	// Wait for goroutine
-	select {
-	case <-done:
-	case <-time.After(1 * time.Second):
-		t.Error("SSE stream did not complete within timeout")
-	}
 }
 
 func TestHTTPServerExportRun(t *testing.T) {

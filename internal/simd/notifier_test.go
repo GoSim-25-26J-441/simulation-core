@@ -188,9 +188,9 @@ func TestNotifierNotify_Success(t *testing.T) {
 }
 
 func TestNotifierNotify_WithSecret(t *testing.T) {
-	var receivedSecret string
+	receivedSecretCh := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedSecret = r.Header.Get("X-Simulation-Callback-Secret")
+		receivedSecretCh <- r.Header.Get("X-Simulation-Callback-Secret")
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -213,17 +213,21 @@ func TestNotifierNotify_WithSecret(t *testing.T) {
 	}
 
 	notifier.Notify(callbackURL+"/callback", "my-secret-123", rec)
-	time.Sleep(200 * time.Millisecond)
 
-	if receivedSecret != "my-secret-123" {
-		t.Errorf("expected secret 'my-secret-123', got '%s'", receivedSecret)
+	select {
+	case receivedSecret := <-receivedSecretCh:
+		if receivedSecret != "my-secret-123" {
+			t.Errorf("expected secret 'my-secret-123', got '%s'", receivedSecret)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
 	}
 }
 
 func TestNotifierNotify_URLTemplateSubstitution(t *testing.T) {
-	var receivedPath string
+	receivedPathCh := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedPath = r.URL.Path
+		receivedPathCh <- r.URL.Path
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -245,10 +249,14 @@ func TestNotifierNotify_URLTemplateSubstitution(t *testing.T) {
 	}
 
 	notifier.Notify(callbackURL+"/callback/{run_id}", "", rec)
-	time.Sleep(200 * time.Millisecond)
 
-	if receivedPath != "/callback/run-abc-123" {
-		t.Errorf("expected path '/callback/run-abc-123', got '%s'", receivedPath)
+	select {
+	case receivedPath := <-receivedPathCh:
+		if receivedPath != "/callback/run-abc-123" {
+			t.Errorf("expected path '/callback/run-abc-123', got '%s'", receivedPath)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
 	}
 }
 
