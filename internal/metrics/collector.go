@@ -181,11 +181,12 @@ func (c *Collector) GetSummary() *models.MetricsSummary {
 		summary.Metrics[name] = allValues
 	}
 
-	// Compute aggregations for each metric (using default labels)
+	// Compute aggregations for each metric (using default/empty labels to match GetAggregation(name, nil))
+	// Use getPointsUnsafe + calculateAggregation to avoid deadlock (GetAggregation would try to RLock again)
 	for name := range c.timeSeries {
-		agg := c.GetAggregation(name, nil)
-		if agg != nil {
-			summary.Aggregations[name] = agg
+		points := c.getPointsUnsafe(name, "")
+		if len(points) > 0 {
+			summary.Aggregations[name] = calculateAggregation(points)
 		}
 	}
 

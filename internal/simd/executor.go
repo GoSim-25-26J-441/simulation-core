@@ -20,7 +20,8 @@ import (
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
-	store *RunStore
+	store    *RunStore
+	notifier *Notifier
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
 
@@ -46,6 +47,7 @@ var (
 func NewRunExecutor(store *RunStore) *RunExecutor {
 	return &RunExecutor{
 		store:          store,
+		notifier:       NewNotifier(),
 		cancels:        make(map[string]context.CancelFunc),
 		workloadStates: make(map[string]*WorkloadState),
 	}
@@ -113,15 +115,8 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	e.sendCallbackIfConfigured(updated)
+	e.sendNotificationIfConfigured(updated)
 	return updated, nil
-}
-
-func (e *RunExecutor) sendCallbackIfConfigured(rec *RunRecord) {
-	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
-		return
-	}
-	notifyCallback(rec.Input.CallbackUrl, rec.Input.CallbackSecret, rec.Run)
 }
 
 func (e *RunExecutor) cleanup(runID string) {
@@ -137,6 +132,23 @@ func (e *RunExecutor) cleanup(runID string) {
 		delete(e.workloadStates, runID)
 	}
 	e.mu.Unlock()
+}
+
+// getCallbackSecret extracts the callback secret from a run record, returning empty string if not set
+func getCallbackSecret(rec *RunRecord) string {
+	if rec == nil || rec.Input == nil {
+		return ""
+	}
+	return rec.Input.CallbackSecret
+}
+
+// sendNotificationIfConfigured sends a notification to the callback URL if configured in the run record
+func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
+	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
+		return
+	}
+
+	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec)
 }
 
 func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
@@ -157,7 +169,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, "optimization not enabled"); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -168,7 +180,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -208,7 +220,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -223,7 +235,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	} else {
 		logger.Info("optimization completed", "run_id", runID,
 			"best_run_id", bestRunID, "best_score", bestScore, "iterations", iterations)
-		e.sendCallbackIfConfigured(updated)
+		e.sendNotificationIfConfigured(updated)
 	}
 }
 
@@ -244,7 +256,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("invalid scenario: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -278,7 +290,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("resource initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -313,7 +325,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -328,7 +340,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -344,13 +356,15 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		// Check if it was cancelled
 		if ctx.Err() != nil {
 			logger.Info("simulation cancelled", "run_id", runID)
+			rec, _ := e.store.Get(runID)
+			e.sendNotificationIfConfigured(rec)
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 		return
 	}
@@ -391,7 +405,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 			logger.Info("run completed", "run_id", runID,
 				"total_requests", pbMetrics.TotalRequests,
 				"throughput_rps", pbMetrics.ThroughputRps)
-			e.sendCallbackIfConfigured(updated)
+			e.sendNotificationIfConfigured(updated)
 		}
 	}
 }

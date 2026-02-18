@@ -115,7 +115,7 @@ func main() {
 		Addr:              httpAddr,
 		Handler:           simd.NewHTTPServer(store, executor).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      10 * time.Second,
+		WriteTimeout:      0, // Disabled for SSE streaming (long-lived connections)
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}

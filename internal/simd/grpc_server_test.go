@@ -2,6 +2,7 @@ package simd
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -81,14 +82,25 @@ workload:
 
 type fakeRunEventsStream struct {
 	ctx     context.Context
+	mu      sync.Mutex
 	sent    []*simulationv1.StreamRunEventsResponse
 	header  metadata.MD
 	trailer metadata.MD
 }
 
 func (s *fakeRunEventsStream) Send(resp *simulationv1.StreamRunEventsResponse) error {
+	s.mu.Lock()
 	s.sent = append(s.sent, resp)
+	s.mu.Unlock()
 	return nil
+}
+
+func (s *fakeRunEventsStream) getSent() []*simulationv1.StreamRunEventsResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*simulationv1.StreamRunEventsResponse, len(s.sent))
+	copy(out, s.sent)
+	return out
 }
 
 func (s *fakeRunEventsStream) SetHeader(md metadata.MD) error  { s.header = md; return nil }
@@ -169,10 +181,11 @@ workload:
 		MetricsIntervalMs: 5,
 	}, stream)
 
-	if len(stream.sent) == 0 {
+	sent := stream.getSent()
+	if len(sent) == 0 {
 		t.Fatalf("expected at least one event to be sent")
 	}
-	if stream.sent[0].Event == nil || stream.sent[0].Event.RunId != createResp.Run.Id {
+	if sent[0].Event == nil || sent[0].Event.RunId != createResp.Run.Id {
 		t.Fatalf("expected first event to reference run id")
 	}
 }
@@ -245,13 +258,14 @@ workload:
 	}
 
 	// Verify we received events
-	if len(stream.sent) == 0 {
+	sent := stream.getSent()
+	if len(sent) == 0 {
 		t.Fatalf("expected at least one event to be sent")
 	}
 
 	// Count status change events
 	statusChanges := 0
-	for _, resp := range stream.sent {
+	for _, resp := range sent {
 		if resp.Event != nil {
 			if _, ok := resp.Event.Event.(*simulationv1.RunEvent_StatusChanged); ok {
 				statusChanges++
@@ -265,7 +279,7 @@ workload:
 	}
 
 	// Verify initial event has correct status
-	firstEvent := stream.sent[0]
+	firstEvent := sent[0]
 	if firstEvent.Event == nil {
 		t.Fatalf("expected first event to have Event field")
 	}
