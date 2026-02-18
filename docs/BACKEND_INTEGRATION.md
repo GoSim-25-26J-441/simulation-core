@@ -519,21 +519,26 @@ Content-Type: text/event-stream
 Cache-Control: no-cache
 Connection: keep-alive
 
-event: status
-data: {"run_id":"run-20240115-103000-abc123","status":"RUN_STATUS_RUNNING"}
+event: status_change
+data: {"status":"RUN_STATUS_RUNNING"}
 
-event: metrics
-data: {"run_id":"run-20240115-103000-abc123","metrics":{"total_requests":100,"latency_p95_ms":15.2}}
+event: metrics_snapshot
+data: {"metrics":{"total_requests":100,"latency_p95_ms":15.2}}
 
-event: timeseries
-data: {"run_id":"run-20240115-103000-abc123","points":[{"metric":"cpu_utilization","value":0.65,"timestamp_unix_ms":1705312201000,"labels":{"service":"svc1"}}]}
+event: metric_update
+data: {"metric":"cpu_utilization","value":0.65,"timestamp":"2024-01-15T10:30:01Z","labels":{"service":"svc1"}}
+
+event: optimization_progress
+data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123"}
 
 ```
 
 **Event Types:**
-- `status`: Run status changes
-- `metrics`: Aggregated metrics updates
-- `timeseries`: Time-series data points (only new points since last update)
+- `status_change`: Run status changes (e.g. `RUN_STATUS_RUNNING`, `RUN_STATUS_COMPLETED`)
+- `metrics_snapshot`: Aggregated metrics updates
+- `metric_update`: Single time-series metric point
+- `optimization_progress`: (Optimization runs only) Iteration progress with `iteration`, `best_score`, `best_run_id`
+- `complete`: Stream ending; run reached terminal status
 
 **Status Codes:**
 - `200 OK`: Stream started successfully
@@ -544,6 +549,24 @@ data: {"run_id":"run-20240115-103000-abc123","points":[{"metric":"cpu_utilizatio
 - Connection remains open until the run completes or is stopped
 - Use EventSource API in JavaScript or SSE client libraries
 - Recommended for dashboard integration
+
+### Optimization Run SSE Events
+
+For runs created with `optimization` config, the stream emits additional events:
+
+**Event: `optimization_progress`**
+```json
+{
+  "iteration": 2,
+  "best_score": 12.5,
+  "best_run_id": "opt-1234567890-abc123"
+}
+```
+- `iteration`: Current optimization iteration (0 = initial config)
+- `best_score`: Best objective score found so far (lower is better for minimization)
+- `best_run_id`: Sub-run ID with best score (populated when known; may be empty during run)
+
+**Integration:** Backend and frontend can subscribe to the same `/v1/runs/{id}/metrics/stream` endpoint. For optimization runs, listen for `optimization_progress` to show iteration progress and best score in real time.
 
 ---
 
@@ -558,24 +581,37 @@ const eventSource = new EventSource(
 );
 
 // Handle status updates
-eventSource.addEventListener('status', (event) => {
+eventSource.addEventListener('status_change', (event) => {
   const data = JSON.parse(event.data);
   console.log('Run status:', data.status);
   updateStatusIndicator(data.status);
 });
 
 // Handle metrics updates
-eventSource.addEventListener('metrics', (event) => {
+eventSource.addEventListener('metrics_snapshot', (event) => {
   const data = JSON.parse(event.data);
   console.log('Metrics:', data.metrics);
   updateMetricsDashboard(data.metrics);
 });
 
 // Handle time-series updates
-eventSource.addEventListener('timeseries', (event) => {
+eventSource.addEventListener('metric_update', (event) => {
   const data = JSON.parse(event.data);
-  console.log('Time-series points:', data.points);
-  updateTimeSeriesChart(data.points);
+  updateTimeSeriesChart([data]);
+});
+
+// Handle optimization progress (for optimization runs)
+eventSource.addEventListener('optimization_progress', (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Optimization:', data.iteration, data.best_score, data.best_run_id);
+  updateOptimizationProgress(data.iteration, data.best_score, data.best_run_id);
+});
+
+// Handle stream completion
+eventSource.addEventListener('complete', (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Stream complete:', data.status);
+  eventSource.close();
 });
 
 // Handle errors
@@ -624,12 +660,16 @@ func streamMetrics(runID string) error {
             }
             
             switch eventType {
-            case "status":
+            case "status_change":
                 fmt.Printf("Status: %v\n", data["status"])
-            case "metrics":
+            case "metrics_snapshot":
                 fmt.Printf("Metrics: %v\n", data["metrics"])
-            case "timeseries":
-                fmt.Printf("Time-series: %v\n", data["points"])
+            case "metric_update":
+                fmt.Printf("Metric: %v\n", data)
+            case "optimization_progress":
+                fmt.Printf("Optimization: iter=%v best_score=%v\n", data["iteration"], data["best_score"])
+            case "complete":
+                fmt.Printf("Complete: %v\n", data["status"])
             }
         }
     }

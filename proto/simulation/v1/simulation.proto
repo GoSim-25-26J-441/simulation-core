@@ -133,6 +133,32 @@ message RunInput {
   // making it suitable for real-time dashboards and monitoring.
   // When false (default), the simulation runs as fast as possible.
   bool real_time_mode = 5;
+
+  // When set, this run is an optimization experiment. The scenario_yaml is used
+  // as the initial configuration; the orchestrator will run multiple simulations
+  // to find a better configuration.
+  OptimizationConfig optimization = 6;
+
+  // Optional callback URL for completion notifications. When set, the server
+  // POSTs run status to this URL on completion, failure, or cancellation.
+  // Supports {run_id} placeholder (e.g. http://example.com/callback/{run_id}).
+  string callback_url = 7;
+
+  // Optional secret sent as X-Simulation-Callback-Secret header for callback auth.
+  string callback_secret = 8;
+}
+
+// OptimizationConfig configures an optimization run (multi-run experiment).
+message OptimizationConfig {
+  // Objective function: p95_latency_ms, p99_latency_ms, mean_latency_ms,
+  // throughput_rps, error_rate, cost.
+  string objective = 1;
+
+  // Maximum optimization iterations (default 10).
+  int32 max_iterations = 2;
+
+  // Step size for parameter exploration (default 1.0).
+  double step_size = 3;
 }
 
 message Run {
@@ -145,6 +171,11 @@ message Run {
   int64 ended_at_unix_ms = 5;
 
   string error = 6;
+
+  // For optimization runs: the best run ID and score found.
+  string best_run_id = 7;
+  double best_score = 8;
+  int32 iterations = 9;
 }
 
 enum RunStatus {

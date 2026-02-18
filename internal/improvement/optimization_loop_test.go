@@ -717,23 +717,21 @@ func TestOptimizationCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Start optimization in a goroutine
-	done := make(chan bool)
+	// Start optimization in a goroutine (avoid t.Logf in goroutine - causes race with -race)
+	done := make(chan error, 1)
 	go func() {
 		_, err := orchestrator.RunExperiment(ctx, initialConfig, 1000)
-		if err != nil {
-			// Expected due to cancellation
-			t.Logf("RunExperiment cancelled (expected): %v", err)
-		}
-		done <- true
+		done <- err
 	}()
 
-	// Wait for cancellation or completion
+	var runErr error
 	select {
-	case <-done:
-		// Test passed
+	case runErr = <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatalf("optimization did not complete or cancel within timeout")
+	}
+	if runErr != nil {
+		t.Logf("RunExperiment cancelled (expected): %v", runErr)
 	}
 
 	// Verify we can cancel active runs

@@ -103,6 +103,46 @@ func TestNewGraphWithCycle(t *testing.T) {
 	}
 }
 
+func TestGraphGetDownstreamEdgesEmpty(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+		},
+	}
+	graph, err := NewGraph(scenario)
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	edges := graph.GetDownstreamEdges("svc1", "/test")
+	if edges != nil {
+		t.Fatalf("expected nil for endpoint with no downstream, got %v", edges)
+	}
+	edges = graph.GetDownstreamEdges("nonexistent", "/path")
+	if edges != nil {
+		t.Fatalf("expected nil for nonexistent endpoint")
+	}
+}
+
+func TestGraphGetAllServices(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+			{ID: "svc2", Endpoints: []config.Endpoint{{Path: "/api"}}},
+		},
+	}
+	graph, err := NewGraph(scenario)
+	if err != nil {
+		t.Fatalf("failed to create graph: %v", err)
+	}
+	services := graph.GetAllServices()
+	if len(services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(services))
+	}
+	if _, ok := services["svc1"]; !ok {
+		t.Fatalf("expected svc1 in services")
+	}
+}
+
 func TestNewGraphWithInvalidDownstream(t *testing.T) {
 	scenario := &config.Scenario{
 		Services: []config.Service{
