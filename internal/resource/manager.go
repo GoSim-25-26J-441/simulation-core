@@ -23,7 +23,8 @@ type Manager struct {
 	instances            map[string]*ServiceInstance
 	hostToInstances      map[string][]string           // host ID -> instance IDs
 	roundRobinIdx        map[string]int                // service name -> last selected instance index
-	sortedServiceInstMap map[string][]*ServiceInstance // service name -> sorted instances (cached)
+	sortedServiceInstMap map[string][]*ServiceInstance // service name -> sorted instances (cached); scale-down only shrinks this
+	nextInstanceID       int                           // global counter for new instance IDs when scaling up
 }
 
 // NewManager creates a new resource manager
@@ -79,8 +80,10 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
 			m.instances[instanceIDStr] = instance
 			m.hosts[hostID].AddService(instanceIDStr)
+			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
 		}
 	}
+	m.nextInstanceID = instanceID
 
 	// Build the sorted instance cache for each service
 	m.rebuildSortedInstanceCache()
@@ -162,6 +165,90 @@ func (m *Manager) rebuildSortedInstanceCache() {
 		})
 		m.sortedServiceInstMap[serviceName] = instances
 	}
+}
+
+// ScaleService changes the number of replicas for a service at runtime.
+// Scale-up: adds new instances (round-robin across hosts) using same CPU/memory as existing instances.
+// Scale-down: reduces the set of instances that receive new traffic (soft scale-down; existing instances remain for in-flight requests).
+func (m *Manager) ScaleService(serviceID string, newReplicas int) error {
+	if newReplicas < 1 {
+		return fmt.Errorf("replicas must be at least 1, got %d", newReplicas)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	instances := m.getInstancesForServiceLocked(serviceID)
+	if len(instances) == 0 {
+		return fmt.Errorf("service not found: %s", serviceID)
+	}
+
+	sort.Slice(instances, func(i, j int) bool {
+		return instances[i].ID() < instances[j].ID()
+	})
+	currentN := len(instances)
+
+	if newReplicas > currentN {
+		// Scale up: add new instances
+		hostIDs := make([]string, 0, len(m.hosts))
+		for hostID := range m.hosts {
+			hostIDs = append(hostIDs, hostID)
+		}
+		if len(hostIDs) == 0 {
+			return fmt.Errorf("no hosts available")
+		}
+		first := instances[0]
+		cpuCores := first.CPUCores()
+		memoryMB := first.MemoryMB()
+
+		for i := 0; i < newReplicas-currentN; i++ {
+			hostID := hostIDs[(currentN+i)%len(hostIDs)]
+			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceID, m.nextInstanceID)
+			m.nextInstanceID++
+
+			instance := NewServiceInstance(instanceIDStr, serviceID, hostID, cpuCores, memoryMB)
+			m.instances[instanceIDStr] = instance
+			m.hosts[hostID].AddService(instanceIDStr)
+			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
+		}
+		// Rebuild sorted cache for this service so new instances are included
+		instances = m.getInstancesForServiceLocked(serviceID)
+		sort.Slice(instances, func(i, j int) bool {
+			return instances[i].ID() < instances[j].ID()
+		})
+		m.sortedServiceInstMap[serviceID] = instances
+	} else if newReplicas < currentN {
+		// Soft scale down: only the first newReplicas instances receive new traffic
+		m.sortedServiceInstMap[serviceID] = instances[:newReplicas]
+		if m.roundRobinIdx[serviceID] >= newReplicas {
+			m.roundRobinIdx[serviceID] = 0
+		}
+	}
+	// else newReplicas == currentN: no-op
+
+	return nil
+}
+
+// ActiveReplicas returns the number of replicas currently in rotation for the service (for GET config).
+func (m *Manager) ActiveReplicas(serviceID string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	instances, ok := m.sortedServiceInstMap[serviceID]
+	if !ok {
+		return 0
+	}
+	return len(instances)
+}
+
+// ListServiceIDs returns all service IDs that have at least one instance (for GET config).
+func (m *Manager) ListServiceIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.sortedServiceInstMap))
+	for id := range m.sortedServiceInstMap {
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // AllocateCPU allocates CPU resources for a request

@@ -3,8 +3,49 @@ package simd
 import (
 	"fmt"
 
+	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
+
+// UpdateServiceReplicas updates the number of replicas for a service in a running simulation
+func (e *RunExecutor) UpdateServiceReplicas(runID string, serviceID string, replicas int) error {
+	if runID == "" {
+		return ErrRunIDMissing
+	}
+	if serviceID == "" {
+		return fmt.Errorf("service_id is required")
+	}
+
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	return rm.ScaleService(serviceID, replicas)
+}
+
+// UpdatePolicies updates policies (e.g. autoscaling) for a running simulation
+func (e *RunExecutor) UpdatePolicies(runID string, policies *config.Policies) error {
+	if runID == "" {
+		return ErrRunIDMissing
+	}
+
+	e.mu.Lock()
+	pm, ok := e.policyManagers[runID]
+	e.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	if policies != nil && policies.Autoscaling != nil {
+		pm.UpdateAutoscaling(policies.Autoscaling)
+	}
+	return nil
+}
 
 // UpdateWorkloadRate updates the rate for a specific workload pattern in a running simulation
 func (e *RunExecutor) UpdateWorkloadRate(runID string, patternKey string, newRateRPS float64) error {
@@ -59,4 +100,38 @@ func (e *RunExecutor) GetWorkloadPattern(runID string, patternKey string) (*Work
 	}
 
 	return workloadState.GetPattern(patternKey)
+}
+
+// GetRunConfiguration returns the current effective configuration for a running run (replicas per service, workload rates).
+func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfiguration, bool) {
+	if runID == "" {
+		return nil, false
+	}
+
+	e.mu.Lock()
+	rm, rmOk := e.resourceManagers[runID]
+	ws, wsOk := e.workloadStates[runID]
+	e.mu.Unlock()
+
+	if !rmOk || !wsOk {
+		return nil, false
+	}
+
+	cfg := &simulationv1.RunConfiguration{}
+	for _, svcID := range rm.ListServiceIDs() {
+		cfg.Services = append(cfg.Services, &simulationv1.ServiceConfigEntry{
+			ServiceId: svcID,
+			Replicas:  int32(rm.ActiveReplicas(svcID)),
+		})
+	}
+	patterns := ws.GetAllPatterns()
+	for key, state := range patterns {
+		if state != nil && state.Pattern.Arrival.RateRPS > 0 {
+			cfg.Workload = append(cfg.Workload, &simulationv1.WorkloadPatternEntry{
+				PatternKey: key,
+				RateRps:    state.Pattern.Arrival.RateRPS,
+			})
+		}
+	}
+	return cfg, true
 }

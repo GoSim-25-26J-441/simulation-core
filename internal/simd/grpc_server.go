@@ -251,3 +251,69 @@ func (s *SimulationGRPCServer) UpdateWorkloadRate(ctx context.Context, req *simu
 
 	return &simulationv1.UpdateWorkloadRateResponse{Run: updated.Run}, nil
 }
+
+func (s *SimulationGRPCServer) UpdateRunConfiguration(ctx context.Context, req *simulationv1.UpdateRunConfigurationRequest) (*simulationv1.UpdateRunConfigurationResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if req.RunId == "" {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+	if len(req.Services) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "at least one service update is required")
+	}
+
+	rec, ok := s.store.Get(req.RunId)
+	if !ok {
+		return nil, status.Error(codes.NotFound, "run not found")
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		return nil, status.Error(codes.FailedPrecondition, "run is not running")
+	}
+
+	for _, svc := range req.Services {
+		if svc.ServiceId == "" {
+			return nil, status.Error(codes.InvalidArgument, "service_id is required")
+		}
+		if svc.Replicas < 1 {
+			return nil, status.Error(codes.InvalidArgument, "replicas must be at least 1 for service "+svc.ServiceId)
+		}
+		if err := s.Executor.UpdateServiceReplicas(req.RunId, svc.ServiceId, int(svc.Replicas)); err != nil {
+			switch {
+			case errors.Is(err, ErrRunNotFound):
+				return nil, status.Error(codes.NotFound, err.Error())
+			case errors.Is(err, ErrRunIDMissing):
+				return nil, status.Error(codes.InvalidArgument, err.Error())
+			default:
+				return nil, status.Error(codes.Internal, err.Error())
+			}
+		}
+	}
+
+	logger.Info("run configuration updated (gRPC)", "run_id", req.RunId)
+	updated, _ := s.store.Get(req.RunId)
+	return &simulationv1.UpdateRunConfigurationResponse{Run: updated.Run}, nil
+}
+
+func (s *SimulationGRPCServer) GetRunConfiguration(ctx context.Context, req *simulationv1.GetRunConfigurationRequest) (*simulationv1.GetRunConfigurationResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if req.RunId == "" {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+
+	rec, ok := s.store.Get(req.RunId)
+	if !ok {
+		return nil, status.Error(codes.NotFound, "run not found")
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		return nil, status.Error(codes.FailedPrecondition, "configuration is only available for running runs")
+	}
+
+	cfg, ok := s.Executor.GetRunConfiguration(req.RunId)
+	if !ok {
+		return nil, status.Error(codes.Internal, "run configuration not available")
+	}
+	return &simulationv1.GetRunConfigurationResponse{Configuration: cfg}, nil
+}

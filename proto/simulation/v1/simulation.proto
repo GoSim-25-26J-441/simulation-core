@@ -32,6 +32,12 @@ service SimulationService {
 
   // UpdateWorkloadRate updates the request rate for a specific workload pattern in a running simulation.
   rpc UpdateWorkloadRate(UpdateWorkloadRateRequest) returns (UpdateWorkloadRateResponse);
+
+  // UpdateRunConfiguration updates run configuration at runtime (e.g. service replicas).
+  rpc UpdateRunConfiguration(UpdateRunConfigurationRequest) returns (UpdateRunConfigurationResponse);
+
+  // GetRunConfiguration returns the current effective configuration for a running run.
+  rpc GetRunConfiguration(GetRunConfigurationRequest) returns (GetRunConfigurationResponse);
 }
 
 // ---- Requests / responses
@@ -107,6 +113,43 @@ message UpdateWorkloadRateRequest {
 
 message UpdateWorkloadRateResponse {
   Run run = 1;
+}
+
+message UpdateRunConfigurationRequest {
+  string run_id = 1;
+  repeated ServiceReplicasUpdate services = 2;  // e.g. { service_id: "auth", replicas: 5 }
+}
+
+message ServiceReplicasUpdate {
+  string service_id = 1;
+  int32 replicas = 2;
+}
+
+message UpdateRunConfigurationResponse {
+  Run run = 1;
+}
+
+message GetRunConfigurationRequest {
+  string run_id = 1;
+}
+
+message GetRunConfigurationResponse {
+  RunConfiguration configuration = 1;
+}
+
+message RunConfiguration {
+  repeated ServiceConfigEntry services = 1;   // current replicas per service
+  repeated WorkloadPatternEntry workload = 2; // current workload patterns (pattern_key, rate_rps)
+}
+
+message ServiceConfigEntry {
+  string service_id = 1;
+  int32 replicas = 2;
+}
+
+message WorkloadPatternEntry {
+  string pattern_key = 1;
+  double rate_rps = 2;
 }
 
 // ---- Core models

@@ -137,6 +137,20 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for /configuration suffix
+	if strings.HasSuffix(path, "/configuration") {
+		runID := strings.TrimSuffix(path, "/configuration")
+		switch r.Method {
+		case http.MethodGet:
+			s.handleGetRunConfiguration(w, r, runID)
+		case http.MethodPatch:
+			s.handleUpdateRunConfiguration(w, r, runID)
+		default:
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
 	// Otherwise it's GET /v1/runs/{id} or POST /v1/runs/{id} (start run)
 	switch r.Method {
 	case http.MethodGet:
@@ -380,6 +394,165 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 		"message":     "workload updated successfully",
 		"run_id":      runID,
 		"pattern_key": req.PatternKey,
+	})
+}
+
+// handleUpdateRunConfiguration handles PATCH /v1/runs/{id}/configuration
+// Body may include services (replicas) and/or workload (rate_rps per pattern_key).
+func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http.Request, runID string) {
+	var req struct {
+		Services []struct {
+			ID       string `json:"id"`
+			Replicas int    `json:"replicas"`
+		} `json:"services"`
+		Workload []struct {
+			PatternKey string  `json:"pattern_key"`
+			RateRPS    float64 `json:"rate_rps"`
+		} `json:"workload"`
+		Policies *struct {
+			Autoscaling *struct {
+				Enabled       bool    `json:"enabled"`
+				TargetCPUUtil float64 `json:"target_cpu_util"`
+				ScaleStep     int     `json:"scale_step"`
+			} `json:"autoscaling,omitempty"`
+		} `json:"policies,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	if len(req.Services) == 0 && len(req.Workload) == 0 && req.Policies == nil {
+		s.writeError(w, http.StatusBadRequest, "at least one of services, workload, or policies must be provided")
+		return
+	}
+
+	rec, ok := s.store.Get(runID)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		s.writeError(w, http.StatusBadRequest, "run is not running (status: "+rec.Run.Status.String()+")")
+		return
+	}
+
+	for _, svc := range req.Services {
+		if svc.ID == "" {
+			s.writeError(w, http.StatusBadRequest, "service id is required")
+			return
+		}
+		if svc.Replicas < 1 {
+			s.writeError(w, http.StatusBadRequest, "replicas must be at least 1 for service "+svc.ID)
+			return
+		}
+		if err := s.Executor.UpdateServiceReplicas(runID, svc.ID, svc.Replicas); err != nil {
+			switch {
+			case errors.Is(err, ErrRunNotFound):
+				s.writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrRunIDMissing):
+				s.writeError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, ErrRunTerminal):
+				s.writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				s.writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+	}
+
+	for _, wl := range req.Workload {
+		if wl.PatternKey == "" {
+			s.writeError(w, http.StatusBadRequest, "pattern_key is required in workload entry")
+			return
+		}
+		if wl.RateRPS <= 0 {
+			s.writeError(w, http.StatusBadRequest, "rate_rps must be positive for pattern "+wl.PatternKey)
+			return
+		}
+		if err := s.Executor.UpdateWorkloadRate(runID, wl.PatternKey, wl.RateRPS); err != nil {
+			switch {
+			case errors.Is(err, ErrRunNotFound):
+				s.writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrRunIDMissing):
+				s.writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				s.writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+	}
+
+	if req.Policies != nil && req.Policies.Autoscaling != nil {
+		cfg := &config.AutoscalingPolicy{
+			Enabled:       req.Policies.Autoscaling.Enabled,
+			TargetCPUUtil: req.Policies.Autoscaling.TargetCPUUtil,
+			ScaleStep:     req.Policies.Autoscaling.ScaleStep,
+		}
+		if cfg.TargetCPUUtil <= 0 {
+			cfg.TargetCPUUtil = 0.7
+		}
+		if cfg.ScaleStep <= 0 {
+			cfg.ScaleStep = 1
+		}
+		if err := s.Executor.UpdatePolicies(runID, &config.Policies{Autoscaling: cfg}); err != nil {
+			switch {
+			case errors.Is(err, ErrRunNotFound):
+				s.writeError(w, http.StatusNotFound, err.Error())
+			case errors.Is(err, ErrRunIDMissing):
+				s.writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				s.writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+	}
+
+	logger.Info("run configuration updated (HTTP)", "run_id", runID)
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"message": "configuration updated successfully",
+		"run_id":  runID,
+	})
+}
+
+// handleGetRunConfiguration handles GET /v1/runs/{id}/configuration
+func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Request, runID string) {
+	rec, ok := s.store.Get(runID)
+	if !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		s.writeError(w, http.StatusPreconditionFailed, "configuration is only available for running runs (status: "+rec.Run.Status.String()+")")
+		return
+	}
+
+	cfg, ok := s.Executor.GetRunConfiguration(runID)
+	if !ok {
+		s.writeError(w, http.StatusInternalServerError, "run configuration not available")
+		return
+	}
+
+	services := make([]map[string]any, 0, len(cfg.Services))
+	for _, srv := range cfg.Services {
+		services = append(services, map[string]any{
+			"service_id": srv.ServiceId,
+			"replicas":   srv.Replicas,
+		})
+	}
+	workload := make([]map[string]any, 0, len(cfg.Workload))
+	for _, w := range cfg.Workload {
+		workload = append(workload, map[string]any{
+			"pattern_key": w.PatternKey,
+			"rate_rps":    w.RateRps,
+		})
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"configuration": map[string]any{
+			"services": services,
+			"workload": workload,
+		},
 	})
 }
 

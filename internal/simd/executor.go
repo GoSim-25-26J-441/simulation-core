@@ -25,9 +25,11 @@ import (
 type RunExecutor struct {
 	store *RunStore
 
-	mu             sync.Mutex
-	cancels        map[string]context.CancelFunc
-	workloadStates map[string]*WorkloadState // key: runID
+	mu               sync.Mutex
+	cancels          map[string]context.CancelFunc
+	workloadStates   map[string]*WorkloadState    // key: runID
+	resourceManagers map[string]*resource.Manager // key: runID; for dynamic replica updates
+	policyManagers   map[string]*policy.Manager   // key: runID; for dynamic policy updates
 }
 
 var (
@@ -38,9 +40,11 @@ var (
 
 func NewRunExecutor(store *RunStore) *RunExecutor {
 	return &RunExecutor{
-		store:          store,
-		cancels:        make(map[string]context.CancelFunc),
-		workloadStates: make(map[string]*WorkloadState),
+		store:            store,
+		cancels:          make(map[string]context.CancelFunc),
+		workloadStates:   make(map[string]*WorkloadState),
+		resourceManagers: make(map[string]*resource.Manager),
+		policyManagers:   make(map[string]*policy.Manager),
 	}
 }
 
@@ -111,11 +115,13 @@ func (e *RunExecutor) cleanup(runID string) {
 		cancel()
 		delete(e.cancels, runID)
 	}
-	// Stop and remove workload state
+	// Stop and remove workload state and resource manager
 	if ws, ok := e.workloadStates[runID]; ok {
 		ws.Stop()
 		delete(e.workloadStates, runID)
 	}
+	delete(e.resourceManagers, runID)
+	delete(e.policyManagers, runID)
 	e.mu.Unlock()
 }
 
@@ -211,9 +217,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		return
 	}
 
-	// Store workload state for rate updates
+	// Store workload state, resource manager, and policy manager for dynamic updates
 	e.mu.Lock()
 	e.workloadStates[runID] = workloadState
+	e.resourceManagers[runID] = rm
+	e.policyManagers[runID] = policies
 	e.mu.Unlock()
 
 	// Run simulation
