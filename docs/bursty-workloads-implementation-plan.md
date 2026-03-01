@@ -12,7 +12,7 @@
   - `BurstDurationSeconds` – length of each burst period
   - `QuietDurationSeconds` – length of each quiet period between bursts
 - **Behavior:** `internal/simd/workload_state.go` – `case "bursty"` uses the same logic as Poisson (exponential inter-arrival at `RateRPS`). The burst/quiet fields are ignored.
-- **Docs:** `docs/DYNAMIC_CONFIGURATION.md` and `docs/BACKEND_INTEGRATION.md` note that bursty is a Poisson alias (TODO).
+- **Docs:** `docs/DYNAMIC_CONFIGURATION.md` notes that bursty is currently a Poisson alias. `docs/BACKEND_INTEGRATION.md` does not yet mention bursty and should be updated as part of this work.
 
 ---
 
