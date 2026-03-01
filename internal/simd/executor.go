@@ -48,12 +48,12 @@ var (
 
 func NewRunExecutor(store *RunStore) *RunExecutor {
 	return &RunExecutor{
-		store:             store,
-		notifier:          NewNotifier(),
-		cancels:           make(map[string]context.CancelFunc),
-		workloadStates:    make(map[string]*WorkloadState),
-		resourceManagers:  make(map[string]*resource.Manager),
-		policyManagers:    make(map[string]*policy.Manager),
+		store:            store,
+		notifier:         NewNotifier(),
+		cancels:          make(map[string]context.CancelFunc),
+		workloadStates:   make(map[string]*WorkloadState),
+		resourceManagers: make(map[string]*resource.Manager),
+		policyManagers:   make(map[string]*policy.Manager),
 	}
 }
 
