@@ -62,7 +62,7 @@ jobs:
         run: |
           # Exclude cmd/* (entrypoints) and gen/* (generated protobuf code) from coverage accounting.
           PKGS=$(go list ./... | grep -v '/cmd/' | grep -v '/gen/')
-          go test -v -race -coverprofile=coverage.out -covermode=atomic $PKGS
+          go test -v -race -timeout 10m -coverprofile=coverage.out -covermode=atomic $PKGS
 
       - name: Check coverage threshold
         run: |

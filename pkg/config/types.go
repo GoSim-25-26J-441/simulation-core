@@ -2,7 +2,12 @@ package config
 
 import "time"
 
-// Config represents the main simulation configuration
+// Config represents a legacy/alternative simulation configuration using a
+// cluster- and graph-based model.
+//
+// Deprecated: Config is not used by the simd daemon or simulation engine.
+// Use Scenario for simulation runs (see doc.go for migration path).
+// Config remains supported for LoadConfig and file-based integration tests.
 type Config struct {
 	LogLevel     string        `yaml:"log_level"`
 	Clusters     []Cluster     `yaml:"clusters"`

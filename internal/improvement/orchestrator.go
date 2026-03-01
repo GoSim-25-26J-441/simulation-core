@@ -52,6 +52,7 @@ type ExperimentResult struct {
 	BestConfig        *config.Scenario
 	BestScore         float64
 	BestRunID         string
+	Iterations        int
 	TotalRuns         int
 	CompletedRuns     int
 	FailedRuns        int
@@ -108,6 +109,7 @@ func (o *Orchestrator) RunExperiment(ctx context.Context, initialConfig *config.
 	// Build experiment result from optimization result
 	result.BestConfig = optResult.BestConfig
 	result.BestScore = optResult.BestScore
+	result.Iterations = optResult.Iterations
 	result.Converged = optResult.Converged
 	result.ConvergenceReason = optResult.ConvergenceReason
 	result.Duration = time.Since(startTime)
@@ -197,16 +199,29 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 
 	// Wait for completion (with timeout)
 	timeout := time.Duration(durationMs) * time.Millisecond
-	if timeout < 30*time.Second {
-		timeout = 30 * time.Second // Minimum timeout
+	// For very short durations (likely tests), use a more reasonable minimum
+	if durationMs < 5000 {
+		// For test durations (< 5s), allow up to 10 seconds
+		if timeout < 10*time.Second {
+			timeout = 10 * time.Second
+		}
+	} else {
+		// For production durations, use longer timeout
+		if timeout < 30*time.Second {
+			timeout = 30 * time.Second // Minimum timeout
+		}
+		timeout *= 2 // Allow some buffer for longer runs
 	}
-	timeout *= 2 // Allow some buffer
 
 	completionCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Poll for completion
-	ticker := time.NewTicker(500 * time.Millisecond)
+	// Poll for completion - use faster polling for short durations (tests)
+	pollInterval := 500 * time.Millisecond
+	if durationMs < 5000 {
+		pollInterval = 100 * time.Millisecond // Faster polling for tests
+	}
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -215,9 +230,16 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 			// Timeout or context cancelled
 			o.mu.Lock()
 			runCtx.Status = RunStatusFailed
-			runCtx.Error = fmt.Errorf("run timed out or was cancelled")
+			if ctx.Err() != nil {
+				runCtx.Error = ctx.Err()
+			} else {
+				runCtx.Error = fmt.Errorf("run timed out or was cancelled")
+			}
 			runCtx.CompletedAt = time.Now()
 			o.mu.Unlock()
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
 			return 0, runCtx.Error
 		case <-ticker.C:
 			// Check run status

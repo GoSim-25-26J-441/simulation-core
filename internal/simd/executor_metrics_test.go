@@ -138,7 +138,15 @@ services:
 	}
 
 	// Wait for simulation to fail
-	time.Sleep(200 * time.Millisecond)
+	// Wait for completion (poll with timeout)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	rec, ok := store.Get("run-1")
 	if !ok {
@@ -186,7 +194,15 @@ workload:
 	}
 
 	// Wait for completion
-	time.Sleep(200 * time.Millisecond)
+	// Wait for completion (poll with timeout)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	rec, ok := store.Get("run-1")
 	if !ok {

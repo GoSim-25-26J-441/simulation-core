@@ -31,7 +31,7 @@ workload:
 `
 	_, err := store.Create("run-1", &simulationv1.RunInput{
 		ScenarioYaml: validScenario,
-		DurationMs:   5000, // 5 seconds
+		DurationMs:   500, // Short duration for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -82,6 +82,33 @@ func TestRunExecutorUpdateWorkloadRateNotFound(t *testing.T) {
 	}
 }
 
+func TestRunExecutorUpdateWorkloadPatternEmptyRunID(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store)
+	pattern := config.WorkloadPattern{
+		From:    "client",
+		To:      "svc1:/test",
+		Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 20},
+	}
+	err := exec.UpdateWorkloadPattern("", "client:svc1:/test", pattern)
+	if err == nil {
+		t.Fatalf("expected error for empty run ID")
+	}
+}
+
+func TestRunExecutorGetWorkloadPattern(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store)
+	_, ok := exec.GetWorkloadPattern("nope", "client:svc1:/test")
+	if ok {
+		t.Fatalf("expected false for non-existent run")
+	}
+	_, ok = exec.GetWorkloadPattern("", "key")
+	if ok {
+		t.Fatalf("expected false for empty run ID")
+	}
+}
+
 func TestRunExecutorUpdateWorkloadRateInvalidRate(t *testing.T) {
 	exec := NewRunExecutor(NewRunStore())
 
@@ -121,7 +148,7 @@ workload:
 `
 	_, err := store.Create("run-1", &simulationv1.RunInput{
 		ScenarioYaml: validScenario,
-		DurationMs:   5000, // 5 seconds
+		DurationMs:   500, // Short duration for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)

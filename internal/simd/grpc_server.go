@@ -144,7 +144,10 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 	}
 	previousStatus = rec.Run.Status
 
-	// Poll for status changes and metrics updates
+	var lastOptIteration int32 = -1
+	var lastOptBestScore float64 = -1
+
+	// Poll for status changes, optimization progress, and metrics updates
 	interval := 500 * time.Millisecond
 	if req.MetricsIntervalMs > 0 {
 		interval = time.Duration(req.MetricsIntervalMs) * time.Millisecond
@@ -177,6 +180,27 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 					return err
 				}
 				previousStatus = rec.Run.Status
+			}
+
+			// Send optimization progress for optimization runs (parity with HTTP SSE)
+			if rec.Input != nil && rec.Input.Optimization != nil {
+				if rec.Run.Iterations != lastOptIteration || rec.Run.BestScore != lastOptBestScore {
+					lastOptIteration = rec.Run.Iterations
+					lastOptBestScore = rec.Run.BestScore
+					if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
+						AtUnixMs: time.Now().UTC().UnixMilli(),
+						RunId:    req.RunId,
+						Event: &simulationv1.RunEvent_OptimizationProgress{
+							OptimizationProgress: &simulationv1.OptimizationProgress{
+								Iteration: rec.Run.Iterations,
+								BestScore: rec.Run.BestScore,
+								BestRunId: rec.Run.BestRunId,
+							},
+						},
+					}}); err != nil {
+						return err
+					}
+				}
 			}
 
 			// Send metrics snapshot if available

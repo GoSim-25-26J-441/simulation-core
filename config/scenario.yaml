@@ -6,21 +6,25 @@ services:
   - id: auth
     replicas: 2
     model: cpu
-    cpu_cores: 2.0    # Auth service gets 2 CPU cores per instance
-    memory_mb: 1024.0 # Auth service gets 1GB memory per instance
+    cpu_cores: 2.0
+    memory_mb: 1024.0
     endpoints:
       - path: /auth/login
         mean_cpu_ms: 50
         cpu_sigma_ms: 20
-        default_memory_mb: 15.0  # Auth login uses more memory
+        default_memory_mb: 15.0
         downstream: []
-        net_latency_ms: {mean: 2, sigma: 1}
+        net_latency_ms:
+          mean: 2
+          sigma: 1
       - path: /auth/verify
         mean_cpu_ms: 5
         cpu_sigma_ms: 3
-        default_memory_mb: 5.0  # Auth verify uses less memory
+        default_memory_mb: 5.0
         downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
+        net_latency_ms:
+          mean: 1
+          sigma: 0.5
 
   - id: user
     replicas: 2
@@ -30,20 +34,28 @@ services:
         mean_cpu_ms: 12
         cpu_sigma_ms: 6
         downstream:
-          - to: db
+          - to: db:/db/query
             call_count_mean: 1
-            call_latency_ms: {mean: 10, sigma: 5}
+            call_latency_ms:
+              mean: 10
+              sigma: 5
             downstream_fraction_cpu: 0.6
-        net_latency_ms: {mean: 3, sigma: 1}
+        net_latency_ms:
+          mean: 3
+          sigma: 1
       - path: /user/update
         mean_cpu_ms: 25
         cpu_sigma_ms: 12
         downstream:
-          - to: db
+          - to: db:/db/query
             call_count_mean: 1
-            call_latency_ms: {mean: 15, sigma: 8}
+            call_latency_ms:
+              mean: 15
+              sigma: 8
             downstream_fraction_cpu: 0.7
-        net_latency_ms: {mean: 3, sigma: 1}
+        net_latency_ms:
+          mean: 3
+          sigma: 1
 
   - id: db
     replicas: 1
@@ -53,12 +65,18 @@ services:
         mean_cpu_ms: 5
         cpu_sigma_ms: 2
         downstream: []
-        net_latency_ms: {mean: 1, sigma: 0.5}
+        net_latency_ms:
+          mean: 1
+          sigma: 0.5
 
 workload:
   - from: client
     to: auth:/auth/login
-    arrival: {type: poisson, rate_rps: 20}
+    arrival:
+      type: poisson
+      rate_rps: 20.0
   - from: client
     to: user:/user/get
-    arrival: {type: poisson, rate_rps: 5}
+    arrival:
+      type: poisson
+      rate_rps: 5.0

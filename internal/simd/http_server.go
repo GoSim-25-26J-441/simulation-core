@@ -194,7 +194,7 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("run created (HTTP)", "run_id", rec.Run.Id)
 	s.writeJSON(w, http.StatusCreated, map[string]any{
-		"run": convertRunToJSON(rec.Run),
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	})
 }
 
@@ -231,7 +231,7 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	// Convert to JSON format
 	runsJSON := make([]map[string]any, 0, len(runs))
 	for _, rec := range runs {
-		runsJSON = append(runsJSON, convertRunToJSON(rec.Run))
+		runsJSON = append(runsJSON, convertRunToJSON(rec.Run, rec.Input))
 	}
 
 	// Return response with pagination metadata
@@ -274,7 +274,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID 
 	}
 
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(rec.Run),
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	})
 }
 
@@ -296,8 +296,9 @@ func (s *HTTPServer) handleStartRun(w http.ResponseWriter, _ *http.Request, runI
 	}
 
 	logger.Info("run started (HTTP)", "run_id", runID)
+	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(updated.Run),
+		"run": convertRunToJSON(updated.Run, rec.Input),
 	})
 }
 
@@ -317,8 +318,9 @@ func (s *HTTPServer) handleStopRun(w http.ResponseWriter, _ *http.Request, runID
 	}
 
 	logger.Info("run cancelled (HTTP)", "run_id", runID)
+	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(updated.Run),
+		"run": convertRunToJSON(updated.Run, rec.Input),
 	})
 }
 
@@ -703,7 +705,7 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 
 	// Build export data
 	export := map[string]any{
-		"run": convertRunToJSON(rec.Run),
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	}
 
 	// Include input/scenario configuration
@@ -823,8 +825,24 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
+	// Disable write timeout for SSE streams (long-lived connections)
+	// Use ResponseController to continuously reset write deadline
+	rc := http.NewResponseController(w)
+	if rc != nil {
+		// Set write deadline to zero (no timeout) - needs to be reset periodically
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			logger.Debug("SetWriteDeadline failed", "error", err)
+		}
+	}
+
+	// Flush headers immediately
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
 	// Get collector (may be nil if simulation hasn't started)
 	collector, hasCollector := s.store.GetCollector(runID)
+	logger.Debug("SSE stream started", "run_id", runID, "has_collector", hasCollector, "collector_nil", collector == nil)
 
 	// Send initial status event
 	previousStatus := rec.Run.Status
@@ -848,6 +866,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	// Track last sent metrics to avoid duplicates (by timestamp)
 	lastSentTimestamps := make(map[string]map[string]time.Time) // metric -> labelKey -> timestamp
 
+	// Track last sent optimization progress (for optimization runs)
+	var lastOptIteration int32 = -1
+	var lastOptBestScore float64 = -1
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -869,6 +891,16 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				return
 			}
 
+			// Refresh collector check (it might become available after simulation starts)
+			// The collector is created asynchronously in runSimulation(), so it might not be
+			// available immediately when SSE stream connects
+			if !hasCollector || collector == nil {
+				collector, hasCollector = s.store.GetCollector(runID)
+				if hasCollector && collector != nil {
+					logger.Debug("collector now available for SSE", "run_id", runID)
+				}
+			}
+
 			// Check for status changes
 			if rec.Run.Status != previousStatus {
 				s.sendSSEEvent(w, "status_change", map[string]any{
@@ -887,6 +919,19 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				}
 			}
 
+			// Send optimization progress for optimization runs
+			if rec.Input != nil && rec.Input.Optimization != nil {
+				if rec.Run.Iterations != lastOptIteration || rec.Run.BestScore != lastOptBestScore {
+					lastOptIteration = rec.Run.Iterations
+					lastOptBestScore = rec.Run.BestScore
+					s.sendSSEEvent(w, "optimization_progress", map[string]any{
+						"iteration":   rec.Run.Iterations,
+						"best_score":  rec.Run.BestScore,
+						"best_run_id": rec.Run.BestRunId,
+					})
+				}
+			}
+
 			// Send aggregated metrics snapshot if available
 			if rec.Metrics != nil {
 				metricsJSON := convertMetricsToJSON(rec.Metrics)
@@ -899,6 +944,9 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			if hasCollector && collector != nil {
 				// Get all metrics and send new/updated points
 				metricNames := collector.GetMetricNames()
+				if len(metricNames) == 0 {
+					logger.Debug("no metrics available yet", "run_id", runID)
+				}
 				for _, metricName := range metricNames {
 					labelCombos := collector.GetLabelsForMetric(metricName)
 					if len(labelCombos) == 0 {
@@ -947,6 +995,13 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				}
 			}
 
+			// Reset write deadline before each flush to prevent timeouts
+			// This is critical for SSE streams with many events
+			if rc != nil {
+				if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+					logger.Debug("SetWriteDeadline failed", "error", err)
+				}
+			}
 			// Flush to send data immediately
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
@@ -964,14 +1019,40 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 		return
 	}
 
+	// Reset write deadline before EVERY write to prevent timeouts
+	// This is critical when sending many events rapidly
+	if rc := http.NewResponseController(w); rc != nil {
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			logger.Debug("SetWriteDeadline failed", "error", err)
+		}
+	}
+
 	// Write event in SSE format
 	// Note: Errors are logged but not returned as SSE streams are best-effort
 	if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
-		logger.Error("failed to write SSE event header", "error", err)
+		// Check if it's a timeout error - downgrade to warning if so
+		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
+			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
+		} else {
+			logger.Error("failed to write SSE event header", "error", err)
+		}
 		return
 	}
+
+	// Reset deadline again before writing data
+	if rc := http.NewResponseController(w); rc != nil {
+		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+			logger.Debug("SetWriteDeadline failed", "error", err)
+		}
+	}
+
 	if _, err := w.Write([]byte("data: " + string(jsonData) + "\n\n")); err != nil {
-		logger.Error("failed to write SSE event data", "error", err)
+		// Check if it's a timeout error - downgrade to warning if so
+		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
+			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
+		} else {
+			logger.Error("failed to write SSE event data", "error", err)
+		}
 		return
 	}
 }
@@ -1011,8 +1092,8 @@ func (s *HTTPServer) writeError(w http.ResponseWriter, status int, message strin
 	})
 }
 
-func convertRunToJSON(run *simulationv1.Run) map[string]any {
-	return map[string]any{
+func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[string]any {
+	result := map[string]any{
 		"id":                 run.Id,
 		"status":             run.Status.String(),
 		"created_at_unix_ms": run.CreatedAtUnixMs,
@@ -1020,6 +1101,31 @@ func convertRunToJSON(run *simulationv1.Run) map[string]any {
 		"ended_at_unix_ms":   run.EndedAtUnixMs,
 		"error":              run.Error,
 	}
+
+	// Calculate real-world duration (wall-clock time)
+	if run.StartedAtUnixMs > 0 && run.EndedAtUnixMs > 0 {
+		realDurationMs := run.EndedAtUnixMs - run.StartedAtUnixMs
+		result["real_duration_ms"] = realDurationMs
+		result["real_duration_seconds"] = float64(realDurationMs) / 1000.0
+	}
+
+	// Include simulation duration from input (this is the actual simulation time)
+	if input != nil && input.DurationMs > 0 {
+		result["simulation_duration_ms"] = input.DurationMs
+		result["simulation_duration_seconds"] = float64(input.DurationMs) / 1000.0
+	}
+
+	// Optimization run results
+	if run.BestRunId != "" {
+		result["best_run_id"] = run.BestRunId
+		result["best_score"] = run.BestScore
+		result["iterations"] = run.Iterations
+	}
+	if len(run.CandidateRunIds) > 0 {
+		result["candidate_run_ids"] = run.CandidateRunIds
+	}
+
+	return result
 }
 
 func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {

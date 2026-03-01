@@ -181,11 +181,12 @@ func (c *Collector) GetSummary() *models.MetricsSummary {
 		summary.Metrics[name] = allValues
 	}
 
-	// Compute aggregations for each metric (using default labels)
+	// Compute aggregations for each metric (using default/empty labels to match GetAggregation(name, nil))
+	// Use getPointsUnsafe + calculateAggregation to avoid deadlock (GetAggregation would try to RLock again)
 	for name := range c.timeSeries {
-		agg := c.GetAggregation(name, nil)
-		if agg != nil {
-			summary.Aggregations[name] = agg
+		points := c.getPointsUnsafe(name, "")
+		if len(points) > 0 {
+			summary.Aggregations[name] = calculateAggregation(points)
 		}
 	}
 
@@ -221,6 +222,40 @@ func (c *Collector) GetLabelsForMetric(name string) []map[string]string {
 		_ = labelKey // labelKey is for internal use
 	}
 	return labelsList
+}
+
+// labelsMatchSubset returns true if labels contains all key-value pairs in subset
+func labelsMatchSubset(labels, subset map[string]string) bool {
+	for k, v := range subset {
+		if labels[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+// GetOrComputeAggregationForLabelSubset returns aggregation for a metric across all
+// label combinations that contain the given subset (e.g. service="auth" to aggregate
+// over all endpoints of that service). Used for per-service metrics when recording
+// uses endpoint-level labels.
+func (c *Collector) GetOrComputeAggregationForLabelSubset(name string, labelSubset map[string]string) *models.Aggregation {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.timeSeries[name] == nil || len(labelSubset) == 0 {
+		return nil
+	}
+
+	var allPoints []*models.MetricPoint
+	for _, points := range c.timeSeries[name] {
+		if len(points) > 0 && labelsMatchSubset(points[0].Labels, labelSubset) {
+			allPoints = append(allPoints, points...)
+		}
+	}
+	if len(allPoints) == 0 {
+		return nil
+	}
+	return calculateAggregation(allPoints)
 }
 
 // Clear clears all collected metrics

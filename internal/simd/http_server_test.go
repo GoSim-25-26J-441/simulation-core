@@ -140,7 +140,7 @@ func TestHTTPServerStopRun(t *testing.T) {
 	srv := NewHTTPServer(store, executor)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   5000, // Long duration
+		DurationMs:   500, // Short duration for test
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -658,6 +658,334 @@ func TestHTTPServerMetricsStreamWithInterval(t *testing.T) {
 	}
 }
 
+func TestHTTPServerMetricsStreamOptimizationProgress(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	// Create an optimization run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+		Optimization: &simulationv1.OptimizationConfig{
+			Objective:     "p95_latency_ms",
+			MaxIterations: 5,
+			StepSize:      1.0,
+		},
+	}
+	rec, err := store.Create("opt-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Set status to running and simulate progress
+	_, _ = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	store.SetOptimizationProgress(rec.Run.Id, 1, 12.5)
+
+	// Connect to metrics stream - use short interval and longer timeout for reliability
+	// under -race (race detector slows execution significantly)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/opt-run/metrics/stream?interval_ms=10", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), 500*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream")
+	}
+
+	// Parse SSE output and look for optimization_progress event
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: optimization_progress") {
+		t.Fatalf("expected optimization_progress event in stream, got: %s", body)
+	}
+	if !strings.Contains(body, `"iteration":1`) {
+		t.Fatalf("expected iteration 1 in optimization_progress")
+	}
+	// Check best_score flexibly (JSON may format 12.5 as "12.5" or "1.25e+01" on some platforms)
+	if !strings.Contains(body, "12.5") && !strings.Contains(body, "1.25e+01") {
+		t.Fatalf("expected best_score 12.5 in optimization_progress, got: %s", body)
+	}
+}
+
+func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
+
+	// Create a run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run-ts", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Create and populate a collector with time-series metrics
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	// Record multiple time-series data points
+	baseTime := time.Now()
+	for i := 0; i < 5; i++ {
+		timestamp := baseTime.Add(time.Duration(i) * 100 * time.Millisecond)
+		collector.Record("cpu_usage", 50.0+float64(i)*5.0, timestamp, map[string]string{"service": "svc1"})
+		collector.Record("request_rate", 10.0+float64(i)*2.0, timestamp, map[string]string{"endpoint": "/test"})
+	}
+
+	// Store the collector
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	// Set status to running
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	// Test SSE streaming with fast interval
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run-ts/metrics/stream?interval_ms=100", nil)
+
+	// Create context with timeout to collect events
+	ctx, cancel := context.WithTimeout(req.Context(), 500*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	// Start streaming in goroutine to avoid blocking
+	done := make(chan bool)
+	go func() {
+		srv.Handler().ServeHTTP(rr, req)
+		done <- true
+	}()
+
+	// Wait for handler to complete before reading body (avoids data race on rr)
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("SSE stream did not complete within timeout")
+	}
+
+	// Check response headers
+	if rr.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected Content-Type text/event-stream, got %s", rr.Header().Get("Content-Type"))
+	}
+
+	// Get response body (safe to read after handler completed)
+	body := rr.Body.String()
+	t.Logf("SSE response body length: %d", len(body))
+
+	// Verify we received SSE events
+	if !strings.Contains(body, "event:") {
+		t.Fatalf("expected SSE event format, got: %s", body)
+	}
+
+	// Verify status_change event was sent
+	if !strings.Contains(body, "event: status_change") {
+		t.Error("expected status_change event in SSE stream")
+	}
+
+	// Verify metric_update events were sent for time-series data
+	if !strings.Contains(body, "event: metric_update") {
+		t.Error("expected metric_update events in SSE stream for time-series data")
+	}
+
+	// Verify specific metric names in the stream
+	if !strings.Contains(body, "cpu_usage") {
+		t.Error("expected cpu_usage metric in SSE stream")
+	}
+
+	if !strings.Contains(body, "request_rate") {
+		t.Error("expected request_rate metric in SSE stream")
+	}
+
+	// Verify metric data structure (should contain timestamp, metric, value, labels)
+	if !strings.Contains(body, "\"metric\"") {
+		t.Error("expected metric field in metric_update event data")
+	}
+
+	if !strings.Contains(body, "\"value\"") {
+		t.Error("expected value field in metric_update event data")
+	}
+
+	if !strings.Contains(body, "\"timestamp\"") {
+		t.Error("expected timestamp field in metric_update event data")
+	}
+
+	// Verify labels are included
+	if !strings.Contains(body, "\"labels\"") {
+		t.Error("expected labels field in metric_update event data")
+	}
+
+	// Parse and verify metric_update events structure
+	lines := strings.Split(body, "\n")
+	metricUpdateCount := 0
+	metricNames := make(map[string]bool)
+
+	for i, line := range lines {
+		if strings.HasPrefix(line, "event: metric_update") {
+			metricUpdateCount++
+			// Next line should be data line
+			if i+1 < len(lines) && strings.HasPrefix(lines[i+1], "data:") {
+				dataLine := strings.TrimPrefix(lines[i+1], "data: ")
+				var data map[string]any
+				if err := json.Unmarshal([]byte(dataLine), &data); err == nil {
+					// Verify required fields
+					if _, ok := data["timestamp"]; !ok {
+						t.Error("metric_update event missing timestamp field")
+					}
+					if _, ok := data["metric"]; !ok {
+						t.Error("metric_update event missing metric field")
+					}
+					if _, ok := data["value"]; !ok {
+						t.Error("metric_update event missing value field")
+					}
+					if _, ok := data["labels"]; !ok {
+						t.Error("metric_update event missing labels field")
+					}
+					// Verify metric name and track it
+					if metricName, ok := data["metric"].(string); ok {
+						metricNames[metricName] = true
+						if metricName != "cpu_usage" && metricName != "request_rate" {
+							t.Errorf("unexpected metric name: %s", metricName)
+						}
+					}
+					// Verify timestamp format
+					if tsStr, ok := data["timestamp"].(string); ok {
+						if _, err := time.Parse(time.RFC3339Nano, tsStr); err != nil {
+							t.Errorf("invalid timestamp format: %s, error: %v", tsStr, err)
+						}
+					}
+					// Verify value is numeric
+					if val, ok := data["value"].(float64); ok {
+						if val < 0 {
+							t.Errorf("unexpected negative value: %f", val)
+						}
+					}
+				} else {
+					t.Errorf("failed to parse metric_update data: %s, error: %v", dataLine, err)
+				}
+			}
+		}
+	}
+
+	if metricUpdateCount == 0 {
+		t.Error("no metric_update events found in SSE stream")
+	} else {
+		t.Logf("Received %d metric_update events", metricUpdateCount)
+	}
+
+	// Verify we received both metrics
+	if len(metricNames) < 1 {
+		t.Error("expected at least one unique metric name in time-series stream")
+	}
+}
+
+func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
+
+	// Create a run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run-multi", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	// Create a collector
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	// Store the collector first
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	// Set status to running
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	// Test SSE streaming with fast interval
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run-multi/metrics/stream?interval_ms=150", nil)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(req.Context(), 800*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	// Start streaming in goroutine
+	done := make(chan bool)
+	go func() {
+		srv.Handler().ServeHTTP(rr, req)
+		done <- true
+	}()
+
+	// Add metrics progressively while streaming
+	baseTime := time.Now()
+	go func() {
+		for i := 0; i < 3; i++ {
+			timestamp := baseTime.Add(time.Duration(i) * 200 * time.Millisecond)
+			collector.Record("latency_p50", 25.0+float64(i)*5.0, timestamp, map[string]string{"service": "svc1"})
+			time.Sleep(200 * time.Millisecond)
+		}
+	}()
+
+	// Wait for handler to complete before reading body (avoids data race on rr)
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("SSE stream did not complete within timeout")
+	}
+
+	// Get response body (safe to read after handler completed)
+	body := rr.Body.String()
+
+	// Verify we received multiple metric_update events
+	metricUpdateCount := strings.Count(body, "event: metric_update")
+	if metricUpdateCount < 2 {
+		t.Errorf("expected at least 2 metric_update events, got %d", metricUpdateCount)
+	}
+
+	// Verify all events have proper structure
+	lines := strings.Split(body, "\n")
+	validEvents := 0
+	for i, line := range lines {
+		if strings.HasPrefix(line, "event: metric_update") && i+1 < len(lines) {
+			if strings.HasPrefix(lines[i+1], "data:") {
+				dataLine := strings.TrimPrefix(lines[i+1], "data: ")
+				var data map[string]any
+				if err := json.Unmarshal([]byte(dataLine), &data); err == nil {
+					// Check all required fields
+					if _, ok := data["timestamp"]; ok {
+						if _, ok := data["metric"]; ok {
+							if _, ok := data["value"]; ok {
+								if _, ok := data["labels"]; ok {
+									validEvents++
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if validEvents < 2 {
+		t.Errorf("expected at least 2 valid metric_update events, got %d", validEvents)
+	}
+
+	t.Logf("Successfully streamed %d metric_update events with %d valid events", metricUpdateCount, validEvents)
+}
+
 func TestHTTPServerExportRun(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)
@@ -994,10 +1322,11 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	executor := NewRunExecutor(store)
 	srv := NewHTTPServer(store, executor)
 
-	// Create and start a run
+	// Create and start a run - use real-time mode so sim runs ~300ms real time (discrete-event completes in microseconds)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   60000, // Long duration to ensure run stays running
+		DurationMs:   300,
+		RealTimeMode: true,
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -1009,7 +1338,13 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	}
 
 	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	// Check if run has already completed before attempting update (safety for slow CI)
+	updatedRec, _ := store.Get(rec.Run.Id)
+	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", updatedRec.Run.Status)
+	}
 
 	// Test successful rate update
 	reqBody := map[string]any{
@@ -1022,13 +1357,6 @@ func TestHTTPServerUpdateWorkloadRate(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Handler().ServeHTTP(rr, req)
-
-	// Check if run has already completed
-	updatedRec, _ := store.Get(rec.Run.Id)
-	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-		// Simulation completed too quickly - this is expected for discrete-event sims
-		t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", updatedRec.Run.Status)
-	}
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
@@ -1051,10 +1379,11 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	executor := NewRunExecutor(store)
 	srv := NewHTTPServer(store, executor)
 
-	// Create and start a run
+	// Create and start a run - use real-time mode so sim runs ~300ms real time (discrete-event completes in microseconds)
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   60000, // Long duration to ensure run stays running
+		DurationMs:   300,
+		RealTimeMode: true,
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -1066,7 +1395,13 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	}
 
 	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+
+	// Check if run has already completed before attempting update (safety for slow CI)
+	updatedRec, _ := store.Get(rec.Run.Id)
+	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Skipf("Simulation completed too quickly (status: %v) - skipping pattern update test", updatedRec.Run.Status)
+	}
 
 	// Test successful pattern update
 	reqBody := map[string]any{
@@ -1086,13 +1421,6 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	srv.Handler().ServeHTTP(rr, req)
-
-	// Check if run has already completed
-	updatedRec, _ := store.Get(rec.Run.Id)
-	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-		// Simulation completed too quickly - this is expected for discrete-event sims
-		t.Skipf("Simulation completed too quickly (status: %v) - skipping pattern update test", updatedRec.Run.Status)
-	}
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())

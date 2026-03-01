@@ -269,6 +269,93 @@ func TestWorkloadStateStop(t *testing.T) {
 	ws.Stop()
 }
 
+func TestWorkloadStateUpdatePattern(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(5 * time.Second)
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID: "svc1",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+		Workload: []config.WorkloadPattern{
+			{
+				From: "client",
+				To:   "svc1:/test",
+				Arrival: config.ArrivalSpec{
+					Type:    "poisson",
+					RateRPS: 10.0,
+				},
+			},
+		},
+	}
+
+	ws := NewWorkloadState("test-run", eng, endTime)
+	err := ws.Start(scenario, startTime)
+	if err != nil {
+		t.Fatalf("Start() returned error: %v", err)
+	}
+
+	patternKey := patternKey("client", "svc1:/test")
+	newPattern := config.WorkloadPattern{
+		From: "client",
+		To:   "svc1:/test",
+		Arrival: config.ArrivalSpec{
+			Type:    "poisson",
+			RateRPS: 25.0,
+		},
+	}
+
+	err = ws.UpdatePattern(patternKey, newPattern)
+	if err != nil {
+		t.Fatalf("UpdatePattern() returned error: %v", err)
+	}
+
+	patternState, ok := ws.GetPattern(patternKey)
+	if !ok {
+		t.Fatal("Pattern not found")
+	}
+	if patternState.Pattern.Arrival.RateRPS != 25.0 {
+		t.Errorf("Expected rate 25.0, got %f", patternState.Pattern.Arrival.RateRPS)
+	}
+
+	ws.Stop()
+}
+
+func TestWorkloadStateStartInvalidTarget(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(5 * time.Second)
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}},
+		},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 10}}, // empty path fails
+		},
+	}
+
+	ws := NewWorkloadState("test-run", eng, endTime)
+	err := ws.Start(scenario, startTime)
+	if err == nil {
+		t.Fatal("Expected error for invalid workload target")
+	}
+	ws.Stop()
+}
+
 func TestPatternKey(t *testing.T) {
 	key := patternKey("client", "svc1:/test")
 	expected := "client:svc1:/test"

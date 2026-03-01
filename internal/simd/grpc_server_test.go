@@ -2,6 +2,7 @@ package simd
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ workload:
 	}
 
 	// Wait for the simulation to complete.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) {
 		getResp, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: createResp.Run.Id})
 		if err != nil {
@@ -81,14 +82,25 @@ workload:
 
 type fakeRunEventsStream struct {
 	ctx     context.Context
+	mu      sync.Mutex
 	sent    []*simulationv1.StreamRunEventsResponse
 	header  metadata.MD
 	trailer metadata.MD
 }
 
 func (s *fakeRunEventsStream) Send(resp *simulationv1.StreamRunEventsResponse) error {
+	s.mu.Lock()
 	s.sent = append(s.sent, resp)
+	s.mu.Unlock()
 	return nil
+}
+
+func (s *fakeRunEventsStream) getSent() []*simulationv1.StreamRunEventsResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*simulationv1.StreamRunEventsResponse, len(s.sent))
+	copy(out, s.sent)
+	return out
 }
 
 func (s *fakeRunEventsStream) SetHeader(md metadata.MD) error  { s.header = md; return nil }
@@ -97,6 +109,31 @@ func (s *fakeRunEventsStream) SetTrailer(md metadata.MD)       { s.trailer = md 
 func (s *fakeRunEventsStream) Context() context.Context        { return s.ctx }
 func (s *fakeRunEventsStream) SendMsg(m any) error             { return nil }
 func (s *fakeRunEventsStream) RecvMsg(m any) error             { return nil }
+
+func TestGRPCServerStreamRunEventsEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+	stream := &fakeRunEventsStream{ctx: ctx}
+
+	err := srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{RunId: ""}, stream)
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerStreamRunEventsRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stream := &fakeRunEventsStream{ctx: ctx}
+
+	err := srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{RunId: "nope"}, stream)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
 
 func TestGRPCServerStreamRunEventsSendsInitialEvent(t *testing.T) {
 	store := NewRunStore()
@@ -144,10 +181,11 @@ workload:
 		MetricsIntervalMs: 5,
 	}, stream)
 
-	if len(stream.sent) == 0 {
+	sent := stream.getSent()
+	if len(sent) == 0 {
 		t.Fatalf("expected at least one event to be sent")
 	}
-	if stream.sent[0].Event == nil || stream.sent[0].Event.RunId != createResp.Run.Id {
+	if sent[0].Event == nil || sent[0].Event.RunId != createResp.Run.Id {
 		t.Fatalf("expected first event to reference run id")
 	}
 }
@@ -220,13 +258,14 @@ workload:
 	}
 
 	// Verify we received events
-	if len(stream.sent) == 0 {
+	sent := stream.getSent()
+	if len(sent) == 0 {
 		t.Fatalf("expected at least one event to be sent")
 	}
 
 	// Count status change events
 	statusChanges := 0
-	for _, resp := range stream.sent {
+	for _, resp := range sent {
 		if resp.Event != nil {
 			if _, ok := resp.Event.Event.(*simulationv1.RunEvent_StatusChanged); ok {
 				statusChanges++
@@ -240,7 +279,7 @@ workload:
 	}
 
 	// Verify initial event has correct status
-	firstEvent := stream.sent[0]
+	firstEvent := sent[0]
 	if firstEvent.Event == nil {
 		t.Fatalf("expected first event to have Event field")
 	}
@@ -248,6 +287,79 @@ workload:
 		if statusChange.StatusChanged.Previous != simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED {
 			t.Fatalf("expected initial previous status to be UNSPECIFIED, got %v", statusChange.StatusChanged.Previous)
 		}
+	}
+}
+
+func TestGRPCServerStreamRunEventsOptimizationProgress(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   100,
+			Optimization: &simulationv1.OptimizationConfig{
+				Objective:     "p95_latency_ms",
+				MaxIterations: 5,
+				StepSize:      1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	streamCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	stream := &fakeRunEventsStream{ctx: streamCtx}
+
+	// Set status to running and optimization progress before streaming
+	_, _ = store.SetStatus(createResp.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	store.SetOptimizationProgress(createResp.Run.Id, 1, 12.5)
+
+	_ = srv.StreamRunEvents(&simulationv1.StreamRunEventsRequest{
+		RunId:             createResp.Run.Id,
+		MetricsIntervalMs: 10,
+	}, stream)
+
+	sent := stream.getSent()
+	var optProgress *simulationv1.OptimizationProgress
+	for _, resp := range sent {
+		if resp.Event != nil {
+			if prog, ok := resp.Event.Event.(*simulationv1.RunEvent_OptimizationProgress); ok {
+				optProgress = prog.OptimizationProgress
+				break
+			}
+		}
+	}
+	if optProgress == nil {
+		t.Fatalf("expected OptimizationProgress event in stream, got %d events", len(sent))
+	}
+	if optProgress.Iteration != 1 {
+		t.Errorf("expected iteration 1, got %d", optProgress.Iteration)
+	}
+	if optProgress.BestScore != 12.5 {
+		t.Errorf("expected best_score 12.5, got %f", optProgress.BestScore)
 	}
 }
 
@@ -288,6 +400,50 @@ func TestGRPCServerListRuns(t *testing.T) {
 	}
 }
 
+func TestGRPCServerCreateRunWithNilRequest(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.CreateRun(ctx, nil)
+	if err == nil {
+		t.Fatalf("expected error for nil request")
+	}
+}
+
+func TestGRPCServerStartRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerGetRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
+func TestGRPCServerGetRunMetricsWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRunMetrics(ctx, &simulationv1.GetRunMetricsRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+}
+
 func TestGRPCServerCreateRunWithNilInput(t *testing.T) {
 	store := NewRunStore()
 	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
@@ -318,6 +474,17 @@ func TestGRPCServerStartRunOnNonExistent(t *testing.T) {
 	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: "nope"})
 	if err == nil {
 		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerStopRunWithEmptyRunId(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
 	}
 }
 
@@ -358,11 +525,13 @@ workload:
     arrival: {type: poisson, rate_rps: 10}
 `
 
-	// Create and start a run
+	// Use real-time mode so the simulation actually runs for ~300ms; discrete-event mode
+	// completes in microseconds, making UpdateWorkloadRate impossible to test reliably.
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
 		Input: &simulationv1.RunInput{
 			ScenarioYaml: validScenario,
-			DurationMs:   60000, // Long duration to ensure run stays running
+			DurationMs:   300,
+			RealTimeMode: true,
 		},
 	})
 	if err != nil {
@@ -374,10 +543,8 @@ workload:
 		t.Fatalf("StartRun error: %v", err)
 	}
 
-	// Brief delay to let workload state initialize
-	time.Sleep(2 * time.Millisecond)
-
-	// Test successful rate update - discrete-event simulations can complete very quickly
+	// Brief delay for workload state to initialize, then update rate
+	time.Sleep(50 * time.Millisecond)
 	patternKey := "client:svc1:/test"
 	newRate := 50.0
 	updateResp, err := srv.UpdateWorkloadRate(ctx, &simulationv1.UpdateWorkloadRateRequest{
@@ -386,10 +553,8 @@ workload:
 		RateRps:    newRate,
 	})
 	if err != nil {
-		// Check if run has already completed
 		rec, ok := store.Get(createResp.Run.Id)
 		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-			// Simulation completed too quickly - this is expected for discrete-event sims
 			t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", rec.Run.Status)
 		}
 		t.Fatalf("UpdateWorkloadRate error: %v", err)
@@ -398,7 +563,7 @@ workload:
 		t.Fatalf("expected run in response")
 	}
 
-	// Stop the run if it's still running
+	// Stop the run (real-time sim would otherwise run ~300ms)
 	_, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id})
 }
 

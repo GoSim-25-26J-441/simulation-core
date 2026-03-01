@@ -171,6 +171,33 @@ func TestGeneratorBurstyArrivalsLongDuration(t *testing.T) {
 	t.Logf("Scheduled %d events for 1-hour simulation with high burst rate", queueSize)
 }
 
+func TestGeneratorExponentialArrivals(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	g := NewGenerator(12345)
+	startTime := time.Now()
+	endTime := startTime.Add(1 * time.Second)
+	arrival := config.ArrivalSpec{Type: "exponential", RateRPS: 5.0}
+	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
+	if err != nil {
+		t.Fatalf("ScheduleArrivals error: %v", err)
+	}
+	if eng.GetEventQueue().Size() == 0 {
+		t.Fatalf("expected events to be scheduled")
+	}
+}
+
+func TestGeneratorScheduleArrivalsNegativeRate(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	g := NewGenerator(12345)
+	startTime := time.Now()
+	endTime := startTime.Add(1 * time.Second)
+	arrival := config.ArrivalSpec{Type: "poisson", RateRPS: -1.0}
+	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
+	if err == nil {
+		t.Fatalf("expected error for negative rate")
+	}
+}
+
 func TestGeneratorInvalidRate(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	g := NewGenerator(12345)
@@ -186,6 +213,37 @@ func TestGeneratorInvalidRate(t *testing.T) {
 	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
 	if err == nil {
 		t.Fatalf("expected error for invalid rate")
+	}
+}
+
+func TestGeneratorGaussianArrivals(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	g := NewGenerator(12345)
+	startTime := time.Now()
+	endTime := startTime.Add(1 * time.Second)
+	arrival := config.ArrivalSpec{
+		Type:      "gaussian",
+		RateRPS:   8.0,
+		StdDevRPS: 1.0,
+	}
+	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
+	if err != nil {
+		t.Fatalf("ScheduleArrivals error: %v", err)
+	}
+	if eng.GetEventQueue().Size() == 0 {
+		t.Fatalf("expected events to be scheduled")
+	}
+}
+
+func TestGeneratorScheduleArrivalsZeroRate(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	g := NewGenerator(12345)
+	startTime := time.Now()
+	endTime := startTime.Add(1 * time.Second)
+	arrival := config.ArrivalSpec{Type: "uniform", RateRPS: 0}
+	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
+	if err == nil {
+		t.Fatalf("expected error for zero rate")
 	}
 }
 

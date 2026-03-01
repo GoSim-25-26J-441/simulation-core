@@ -188,6 +188,37 @@ func TestConfigValidation(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "Empty cluster name",
+			config: &Config{
+				LogLevel: "info",
+				Clusters: []Cluster{
+					{Name: "", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "Duplicate cluster name",
+			config: &Config{
+				LogLevel: "info",
+				Clusters: []Cluster{
+					{Name: "dup", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+					{Name: "dup", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "Zero mem_gb",
+			config: &Config{
+				LogLevel: "info",
+				Clusters: []Cluster{
+					{Name: "test", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 0}},
+				},
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -250,6 +281,28 @@ func TestScenarioValidation(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "Empty host id",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "", Cores: 4}},
+				Services: []Service{
+					{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
+		{
+			name: "Duplicate host id",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "h1", Cores: 4}, {ID: "h1", Cores: 2}},
+				Services: []Service{
+					{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -269,6 +322,43 @@ func TestLoadInvalidFile(t *testing.T) {
 	_, err := LoadConfig("/nonexistent/path/config.yaml")
 	if err == nil {
 		t.Error("Expected error when loading nonexistent file")
+	}
+}
+
+func TestValidateServiceGraph(t *testing.T) {
+	cfg := &Config{
+		LogLevel: "info",
+		Clusters: []Cluster{
+			{Name: "c1", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+		},
+		ServiceGraph: &ServiceGraph{
+			Nodes: []ServiceNode{{Name: "svc1", Cluster: "c1", CPUCostMs: 10}},
+			Edges: []ServiceEdge{{From: "svc1", To: "svc2", Mode: "sync", P: 1.0}},
+		},
+	}
+	err := validateConfig(cfg)
+	if err == nil {
+		t.Error("expected error when edge references non-existent node svc2")
+	}
+}
+
+func TestValidateConfigEmptyClusterName(t *testing.T) {
+	cfg := &Config{
+		LogLevel: "info",
+		Clusters: []Cluster{
+			{Name: "", NetworkRTTMs: 1.0, Capacity: Capacity{CPUCores: 4, MemGB: 8}},
+		},
+	}
+	err := validateConfig(cfg)
+	if err == nil {
+		t.Error("expected error for empty cluster name")
+	}
+}
+
+func TestLoadScenarioInvalidFile(t *testing.T) {
+	_, err := LoadScenario("/nonexistent/path/scenario.yaml")
+	if err == nil {
+		t.Error("Expected error when loading nonexistent scenario file")
 	}
 }
 

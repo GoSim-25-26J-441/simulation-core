@@ -255,6 +255,97 @@ func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 	}
 }
 
+func TestHandleRequestCompleteWithDownstreamCallLatencyAndCount(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    5,
+						CPUSigmaMs:   1,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+						Downstream: []config.DownstreamCall{
+							{
+								To:            "svc2:/api",
+								CallCountMean: 2,
+								CallLatencyMs: config.LatencySpec{Mean: 10, Sigma: 2},
+							},
+						},
+					},
+				},
+			},
+			{
+				ID:       "svc2",
+				Replicas: 1,
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/api",
+						MeanCPUMs:    3,
+						CPUSigmaMs:   1,
+						NetLatencyMs: config.LatencySpec{Mean: 0.5, Sigma: 0.2},
+					},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
+	RegisterHandlers(eng, state)
+
+	instance, err := state.rm.SelectInstanceForService("svc1")
+	if err != nil {
+		t.Fatalf("SelectInstanceForService: %v", err)
+	}
+
+	request := &models.Request{
+		ID:          "req-1",
+		TraceID:     "trace-1",
+		ServiceName: "svc1",
+		Endpoint:    "/test",
+		Status:      models.RequestStatusPending,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata:    map[string]interface{}{"instance_id": instance.ID()},
+	}
+	eng.GetRunManager().AddRequest(request)
+
+	eng.ScheduleAt(engine.EventTypeRequestStart, eng.GetSimTime(), request, "svc1", map[string]interface{}{
+		"endpoint_path": "/test",
+		"instance_id":   instance.ID(),
+	})
+
+	err = eng.Run(100 * time.Millisecond)
+	if err != nil {
+		t.Fatalf("Engine run error: %v", err)
+	}
+
+	req, ok := eng.GetRunManager().GetRequest("req-1")
+	if !ok {
+		t.Fatalf("expected parent request to exist")
+	}
+	if req.Status != models.RequestStatusCompleted {
+		t.Fatalf("expected parent to be completed, got %v", req.Status)
+	}
+
+	stats := eng.GetRunManager().GetStats()
+	totalRequests := stats["total_requests"].(int)
+	if totalRequests < 2 {
+		t.Fatalf("expected at least 2 requests (parent + downstream), got %d", totalRequests)
+	}
+}
+
 func TestHandleDownstreamCall(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	scenario := &config.Scenario{
