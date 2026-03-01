@@ -162,8 +162,8 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	return nil
 }
 
-// SetOptimizationResult stores optimization result fields for a run (best_run_id, best_score, iterations).
-func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestScore float64, iterations int32) error {
+// SetOptimizationResult stores optimization result fields for a run (best_run_id, best_score, iterations, candidate_run_ids).
+func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestScore float64, iterations int32, candidateRunIDs []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -174,6 +174,12 @@ func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestSco
 	rec.Run.BestRunId = bestRunID
 	rec.Run.BestScore = bestScore
 	rec.Run.Iterations = iterations
+	if candidateRunIDs != nil {
+		rec.Run.CandidateRunIds = make([]string, len(candidateRunIDs))
+		copy(rec.Run.CandidateRunIds, candidateRunIDs)
+	} else {
+		rec.Run.CandidateRunIds = nil
+	}
 	return nil
 }
 

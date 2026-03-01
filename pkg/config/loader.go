@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// LoadConfig loads and parses a configuration file
+// LoadConfig loads and parses a Config file (legacy cluster/graph format).
+// For simulation runs, use Scenario and ParseScenarioYAML instead.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

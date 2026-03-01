@@ -16,7 +16,8 @@ type OptimizationParams struct {
 // OptimizationRunner runs a multi-run optimization experiment.
 // Implementations (e.g. improvement.Orchestrator) are injected at startup to avoid circular imports.
 type OptimizationRunner interface {
-	// RunExperiment runs an optimization experiment and returns the best run ID, score, and iteration count.
-	// runID is the optimization run ID (for progress reporting to SSE subscribers).
-	RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *OptimizationParams) (bestRunID string, bestScore float64, iterations int32, err error)
+	// RunExperiment runs an optimization experiment and returns the best run ID, score, iteration count,
+	// and the list of candidate run IDs (evaluation runs from the optimizer). runID is the optimization
+	// run ID (for progress reporting to SSE subscribers).
+	RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *OptimizationParams) (bestRunID string, bestScore float64, iterations int32, candidateRunIDs []string, err error)
 }

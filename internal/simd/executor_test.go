@@ -13,8 +13,8 @@ import (
 
 type mockOptimizationRunner struct{}
 
-func (m *mockOptimizationRunner) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *OptimizationParams) (string, float64, int32, error) {
-	return "best", 0.0, 0, nil
+func (m *mockOptimizationRunner) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *OptimizationParams) (string, float64, int32, []string, error) {
+	return "best", 0.0, 0, nil, nil
 }
 
 func TestRunExecutorStartTransitionsToRunning(t *testing.T) {

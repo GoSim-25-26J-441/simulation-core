@@ -210,7 +210,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 
 	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective, "max_iterations", params.MaxIterations)
 
-	bestRunID, bestScore, iterations, err := runner.RunExperiment(ctx, runID, scenario, durationMs, params)
+	bestRunID, bestScore, iterations, candidateRunIDs, err := runner.RunExperiment(ctx, runID, scenario, durationMs, params)
 	if err != nil {
 		if ctx.Err() != nil {
 			logger.Info("optimization cancelled", "run_id", runID)
@@ -225,7 +225,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		return
 	}
 
-	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations); err != nil {
+	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations, candidateRunIDs); err != nil {
 		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
 	}
 
@@ -387,6 +387,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Convert metrics collector data to RunMetrics
 	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
+
+	// Populate ActiveReplicas from scenario (not recorded in collector)
+	for _, svc := range scenario.Services {
+		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
+			sm.ActiveReplicas = svc.Replicas
+		}
+	}
 
 	// Convert engine metrics to protobuf format
 	pbMetrics := convertMetricsToProto(engineMetrics)

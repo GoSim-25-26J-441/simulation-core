@@ -397,7 +397,7 @@ func TestHTTPServerGetRunWithOptimizationResult(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("opt-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
 	_, _ = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
-	_ = store.SetOptimizationResult(rec.Run.Id, "best-123", 42.5, 10)
+	_ = store.SetOptimizationResult(rec.Run.Id, "best-123", 42.5, 10, nil)
 	srv := NewHTTPServer(store, NewRunExecutor(store))
 
 	rr := httptest.NewRecorder()

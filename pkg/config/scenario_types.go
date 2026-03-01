@@ -1,6 +1,7 @@
 package config
 
-// Scenario represents a complete simulation scenario
+// Scenario represents a complete simulation scenario and is the primary
+// configuration format for simulation runs (see pkg/config/doc.go).
 type Scenario struct {
 	Hosts    []Host            `yaml:"hosts"`
 	Services []Service         `yaml:"services"`
