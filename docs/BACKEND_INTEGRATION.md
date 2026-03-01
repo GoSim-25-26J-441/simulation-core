@@ -734,8 +734,12 @@ docker run -d \
   -p 8080:8080 \
   -p 50051:50051 \
   -e LOG_LEVEL=info \
+  -e SIMD_OPTIMIZATION_TOP_CANDIDATES=10 \
   simulation-core:latest
 ```
+
+**Simd server environment variables:**
+- `SIMD_OPTIMIZATION_TOP_CANDIDATES`: For optimization runs, limit `candidate_run_ids` to the top N candidates by score (e.g. `10`). The best run is always included. Unset or `0` = return all candidates.
 
 ### Docker Compose
 

@@ -6,8 +6,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ParseConfigYAML parses a Config from YAML bytes and validates it.
-// This is used for APIs where config is provided as payload (not via filesystem).
+// ParseConfigYAML parses a Config from YAML bytes (legacy format).
+// For simulation runs, use ParseScenarioYAML instead.
 func ParseConfigYAML(data []byte) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {

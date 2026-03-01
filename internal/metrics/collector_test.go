@@ -373,3 +373,60 @@ func TestConvertToRunMetrics(t *testing.T) {
 		t.Fatalf("expected svc1 to have 2 requests, got %d", svc1Metrics.RequestCount)
 	}
 }
+
+// TestConvertToRunMetricsWithEndpointLabels verifies that per-service metrics are
+// populated when recording uses endpoint-level labels (service+endpoint).
+func TestConvertToRunMetricsWithEndpointLabels(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+
+	// Record with endpoint labels (as handlers do)
+	RecordLatency(c, 10.0, now, CreateEndpointLabels("auth", "/auth/login"))
+	RecordLatency(c, 20.0, now, CreateEndpointLabels("auth", "/auth/login"))
+	RecordLatency(c, 5.0, now, CreateEndpointLabels("auth", "/auth/verify"))
+	RecordRequestCount(c, 1.0, now, CreateEndpointLabels("auth", "/auth/login"))
+	RecordRequestCount(c, 1.0, now, CreateEndpointLabels("auth", "/auth/login"))
+	RecordRequestCount(c, 1.0, now, CreateEndpointLabels("auth", "/auth/verify"))
+
+	RecordLatency(c, 30.0, now, CreateEndpointLabels("user", "/user/get"))
+	RecordRequestCount(c, 1.0, now, CreateEndpointLabels("user", "/user/get"))
+
+	c.Stop()
+
+	// Convert with service-only labels (as executor does)
+	serviceLabels := []map[string]string{
+		{"service": "auth"},
+		{"service": "user"},
+	}
+	runMetrics := ConvertToRunMetrics(c, serviceLabels)
+	if runMetrics == nil {
+		t.Fatalf("expected non-nil RunMetrics")
+	}
+	if runMetrics.TotalRequests != 4 {
+		t.Fatalf("expected 4 total requests, got %d", runMetrics.TotalRequests)
+	}
+	if len(runMetrics.ServiceMetrics) != 2 {
+		t.Fatalf("expected 2 service metrics, got %d", len(runMetrics.ServiceMetrics))
+	}
+	authMetrics := runMetrics.ServiceMetrics["auth"]
+	if authMetrics == nil {
+		t.Fatalf("expected auth metrics")
+	}
+	if authMetrics.RequestCount != 3 {
+		t.Fatalf("expected auth to have 3 requests, got %d", authMetrics.RequestCount)
+	}
+	if authMetrics.LatencyMean == 0 {
+		t.Fatalf("expected auth to have non-zero latency mean")
+	}
+	userMetrics := runMetrics.ServiceMetrics["user"]
+	if userMetrics == nil {
+		t.Fatalf("expected user metrics")
+	}
+	if userMetrics.RequestCount != 1 {
+		t.Fatalf("expected user to have 1 request, got %d", userMetrics.RequestCount)
+	}
+	if userMetrics.LatencyMean != 30.0 {
+		t.Fatalf("expected user latency mean 30, got %f", userMetrics.LatencyMean)
+	}
+}

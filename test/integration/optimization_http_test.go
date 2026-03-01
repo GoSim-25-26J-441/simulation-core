@@ -23,10 +23,10 @@ type testOptimizationAdapter struct {
 	executor *simd.RunExecutor
 }
 
-func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, error) {
+func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, []string, error) {
 	objective, err := improvement.NewObjectiveFunction(params.Objective)
 	if err != nil {
-		return "", 0, 0, err
+		return "", 0, 0, nil, err
 	}
 	maxIter := int(params.MaxIterations)
 	if maxIter <= 0 {
@@ -43,40 +43,49 @@ func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID strin
 	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
 
 	done := make(chan struct {
-		bestRunID  string
-		bestScore  float64
-		iterations int32
-		err        error
+		bestRunID        string
+		bestScore        float64
+		iterations       int32
+		candidateRunIDs  []string
+		err              error
 	}, 1)
 	go func() {
 		r, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
 		if err != nil {
 			done <- struct {
-				bestRunID  string
-				bestScore  float64
-				iterations int32
-				err        error
+				bestRunID       string
+				bestScore       float64
+				iterations      int32
+				candidateRunIDs []string
+				err             error
 			}{err: err}
 			return
 		}
+		candidates := make([]string, 0, len(r.Runs))
+		for _, rc := range r.Runs {
+			if rc != nil && rc.RunID != "" {
+				candidates = append(candidates, rc.RunID)
+			}
+		}
 		done <- struct {
-			bestRunID  string
-			bestScore  float64
-			iterations int32
-			err        error
-		}{r.BestRunID, r.BestScore, int32(r.Iterations), nil}
+			bestRunID       string
+			bestScore       float64
+			iterations      int32
+			candidateRunIDs []string
+			err             error
+		}{r.BestRunID, r.BestScore, int32(r.Iterations), candidates, nil}
 	}()
 
 	select {
 	case res := <-done:
 		if res.err != nil {
-			return "", 0, 0, res.err
+			return "", 0, 0, nil, res.err
 		}
-		return res.bestRunID, res.bestScore, res.iterations, nil
+		return res.bestRunID, res.bestScore, res.iterations, res.candidateRunIDs, nil
 	case <-ctx.Done():
 		orchestrator.CancelActiveRuns()
 		<-done
-		return "", 0, 0, ctx.Err()
+		return "", 0, 0, nil, ctx.Err()
 	}
 }
 

@@ -155,7 +155,7 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		throughputRPS = float64(totalRequests) / summary.Duration.Seconds()
 	}
 
-	// Build service metrics
+	// Build service metrics (aggregate by service; handlers record with endpoint labels so we use label subset)
 	serviceMetrics := make(map[string]*models.ServiceMetrics)
 	for _, labels := range serviceLabels {
 		serviceName := labels["service"]
@@ -163,12 +163,12 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 			continue
 		}
 
-		// Get service-specific aggregations
-		svcLatencyAgg := collector.GetOrComputeAggregation(MetricRequestLatency, labels)
-		svcRequestAgg := collector.GetOrComputeAggregation(MetricRequestCount, labels)
-		svcErrorAgg := collector.GetOrComputeAggregation(MetricRequestErrorCount, labels)
-		svcCPUAgg := collector.GetOrComputeAggregation(MetricCPUUtilization, labels)
-		svcMemAgg := collector.GetOrComputeAggregation(MetricMemoryUtilization, labels)
+		// Aggregate across all label combinations that match this service (e.g. all endpoints)
+		svcLatencyAgg := collector.GetOrComputeAggregationForLabelSubset(MetricRequestLatency, labels)
+		svcRequestAgg := collector.GetOrComputeAggregationForLabelSubset(MetricRequestCount, labels)
+		svcErrorAgg := collector.GetOrComputeAggregationForLabelSubset(MetricRequestErrorCount, labels)
+		svcCPUAgg := collector.GetOrComputeAggregationForLabelSubset(MetricCPUUtilization, labels)
+		svcMemAgg := collector.GetOrComputeAggregationForLabelSubset(MetricMemoryUtilization, labels)
 
 		svcMetrics := &models.ServiceMetrics{
 			ServiceName: serviceName,

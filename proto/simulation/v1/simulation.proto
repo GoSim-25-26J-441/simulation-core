@@ -176,6 +176,10 @@ message Run {
   string best_run_id = 7;
   double best_score = 8;
   int32 iterations = 9;
+
+  // For optimization runs: run IDs of candidate configurations (from the optimizer).
+  // When SIMD_OPTIMIZATION_TOP_CANDIDATES is set to N, only the top N by score are included (best run always included).
+  repeated string candidate_run_ids = 10;
 }
 
 enum RunStatus {

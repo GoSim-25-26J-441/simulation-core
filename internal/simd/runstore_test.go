@@ -356,7 +356,7 @@ func TestRunStoreListFiltered(t *testing.T) {
 
 func TestRunStoreSetOptimizationResultOnNonExistentRun(t *testing.T) {
 	store := NewRunStore()
-	err := store.SetOptimizationResult("nope", "best", 1.0, 1)
+	err := store.SetOptimizationResult("nope", "best", 1.0, 1, nil)
 	if err == nil {
 		t.Fatalf("expected error for non-existent run")
 	}
@@ -372,7 +372,7 @@ func TestRunStoreSetOptimizationResult(t *testing.T) {
 		t.Fatalf("Create error: %v", err)
 	}
 
-	err = store.SetOptimizationResult("run-1", "best-run-42", 99.9, 10)
+	err = store.SetOptimizationResult("run-1", "best-run-42", 99.9, 10, nil)
 	if err != nil {
 		t.Fatalf("SetOptimizationResult error: %v", err)
 	}

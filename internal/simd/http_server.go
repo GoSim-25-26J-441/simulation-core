@@ -948,6 +948,9 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 		result["best_score"] = run.BestScore
 		result["iterations"] = run.Iterations
 	}
+	if len(run.CandidateRunIds) > 0 {
+		result["candidate_run_ids"] = run.CandidateRunIds
+	}
 
 	return result
 }
