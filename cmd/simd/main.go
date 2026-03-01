@@ -99,11 +99,11 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 
 	// Run in goroutine so we can cancel active sub-runs when ctx is done
 	type result struct {
-		bestRunID        string
-		bestScore        float64
-		iterations       int32
-		candidateRunIDs  []string
-		err              error
+		bestRunID       string
+		bestScore       float64
+		iterations      int32
+		candidateRunIDs []string
+		err             error
 	}
 	done := make(chan result, 1)
 	go func() {
