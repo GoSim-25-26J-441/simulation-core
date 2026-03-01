@@ -107,7 +107,7 @@ func main() {
 
 	var createResult struct {
 		Run struct {
-			ID              string `json:"id"`
+			ID              string  `json:"id"`
 			CreatedAtUnixMs float64 `json:"created_at_unix_ms"`
 		} `json:"run"`
 	}
@@ -230,10 +230,10 @@ poll:
 	// Fetch export for each run and deduplicate by scenario (node configuration).
 	// configKey = hash of normalized scenario YAML; value = best representative run for that config.
 	type runInfo struct {
-		ID         string
+		ID           string
 		ScenarioYAML string
-		ScoreP95   float64
-		TotalReqs  int64
+		ScoreP95     float64
+		TotalReqs    int64
 	}
 	configToRun := make(map[string]*runInfo) // configKey -> best representative
 	for _, id := range runIDsToUse {
@@ -321,14 +321,14 @@ poll:
 	}
 
 	type candidateSummary struct {
-		Index        int          `json:"index"`
-		RunID        string       `json:"run_id"`
-		ScoreP95Ms   float64      `json:"score_p95_latency_ms,omitempty"`
-		TotalReqs    int64        `json:"total_requests,omitempty"`
-		IsBest       bool         `json:"is_best"`
-		ScenarioPath string       `json:"scenario_path,omitempty"`
+		Index        int           `json:"index"`
+		RunID        string        `json:"run_id"`
+		ScoreP95Ms   float64       `json:"score_p95_latency_ms,omitempty"`
+		TotalReqs    int64         `json:"total_requests,omitempty"`
+		IsBest       bool          `json:"is_best"`
+		ScenarioPath string        `json:"scenario_path,omitempty"`
 		NodeSpecs    []serviceSpec `json:"node_specs,omitempty"`   // replicas, cpu_cores, memory_mb per service
-		SpecSummary  string       `json:"spec_summary,omitempty"`   // one-line e.g. "auth: 2r 2C 1024M; user: 2r"
+		SpecSummary  string        `json:"spec_summary,omitempty"` // one-line e.g. "auth: 2r 2C 1024M; user: 2r"
 	}
 	var summary []candidateSummary
 
@@ -345,13 +345,13 @@ poll:
 		}
 
 		summary = append(summary, candidateSummary{
-			Index:        i + 1,
-			RunID:        c.RunID,
-			ScoreP95Ms:   c.ScoreP95,
-			TotalReqs:    c.TotalReqs,
-			IsBest:       isBest,
-			NodeSpecs:    specs,
-			SpecSummary:  specSummary,
+			Index:       i + 1,
+			RunID:       c.RunID,
+			ScoreP95Ms:  c.ScoreP95,
+			TotalReqs:   c.TotalReqs,
+			IsBest:      isBest,
+			NodeSpecs:   specs,
+			SpecSummary: specSummary,
 		})
 
 		if *outDir != "" && c.ScenarioYAML != "" {

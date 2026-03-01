@@ -43,11 +43,11 @@ func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID strin
 	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
 
 	done := make(chan struct {
-		bestRunID        string
-		bestScore        float64
-		iterations       int32
-		candidateRunIDs  []string
-		err              error
+		bestRunID       string
+		bestScore       float64
+		iterations      int32
+		candidateRunIDs []string
+		err             error
 	}, 1)
 	go func() {
 		r, err := orchestrator.RunExperiment(ctx, scenario, durationMs)

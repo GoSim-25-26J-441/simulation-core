@@ -132,7 +132,7 @@ func main() {
 	expectedRateRPS := 25.0
 	expectedRequestsLo := expectedRateRPS * durationSec * 0.5
 	expectedRequestsHi := expectedRateRPS * durationSec * 1.8
-		if m, ok := metrics["metrics"].(map[string]any); ok {
+	if m, ok := metrics["metrics"].(map[string]any); ok {
 		fmt.Println("\n--- Accuracy check (vs config/scenario.yaml) ---")
 		total, _ := m["total_requests"].(float64)
 		success, _ := m["successful_requests"].(float64)
