@@ -2,6 +2,7 @@ package simd
 
 import (
 	"fmt"
+	"math"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -119,9 +120,16 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 
 	cfg := &simulationv1.RunConfiguration{}
 	for _, svcID := range rm.ListServiceIDs() {
+		n := rm.ActiveReplicas(svcID)
+		replicas := int32(n)
+		if n < 0 {
+			replicas = 0
+		} else if n > math.MaxInt32 {
+			replicas = math.MaxInt32
+		}
 		cfg.Services = append(cfg.Services, &simulationv1.ServiceConfigEntry{
 			ServiceId: svcID,
-			Replicas:  int32(rm.ActiveReplicas(svcID)),
+			Replicas:  replicas,
 		})
 	}
 	patterns := ws.GetAllPatterns()

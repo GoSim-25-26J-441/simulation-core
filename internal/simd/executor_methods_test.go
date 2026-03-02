@@ -96,6 +96,20 @@ func TestRunExecutorUpdateWorkloadPatternEmptyRunID(t *testing.T) {
 	}
 }
 
+func TestRunExecutorUpdateWorkloadPatternRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store)
+	pattern := config.WorkloadPattern{
+		From:    "client",
+		To:      "svc1:/test",
+		Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 20},
+	}
+	err := exec.UpdateWorkloadPattern("nonexistent", "client:svc1:/test", pattern)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
 func TestRunExecutorGetWorkloadPattern(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store)
@@ -229,5 +243,73 @@ workload:
 	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_COMPLETED &&
 		rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_FAILED {
 		t.Logf("Warning: Run did not complete within timeout, status: %v", rec.Run.Status)
+	}
+}
+
+func TestRunExecutorGetRunConfiguration(t *testing.T) {
+	store := NewRunStore()
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	_, err := store.Create("run-1", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   3000,
+		RealTimeMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	exec := NewRunExecutor(store)
+	_, err = exec.Start("run-1")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer exec.Stop("run-1")
+
+	time.Sleep(80 * time.Millisecond)
+
+	cfg, ok := exec.GetRunConfiguration("run-1")
+	if !ok {
+		t.Fatal("GetRunConfiguration expected ok=true")
+	}
+	if cfg == nil {
+		t.Fatal("GetRunConfiguration expected non-nil config")
+	}
+	if len(cfg.Services) == 0 {
+		t.Error("expected at least one service in config")
+	}
+	patternKey := patternKey("client", "svc1:/test")
+	patternState, ok := exec.GetWorkloadPattern("run-1", patternKey)
+	if !ok {
+		t.Fatal("GetWorkloadPattern expected ok=true")
+	}
+	if patternState == nil || patternState.Pattern.Arrival.RateRPS != 10 {
+		t.Errorf("expected rate 10, got %v", patternState)
+	}
+
+	_, ok = exec.GetRunConfiguration("")
+	if ok {
+		t.Fatal("GetRunConfiguration with empty runID should return ok=false")
+	}
+	_, ok = exec.GetRunConfiguration("nonexistent")
+	if ok {
+		t.Fatal("GetRunConfiguration for non-existent run should return ok=false")
 	}
 }
