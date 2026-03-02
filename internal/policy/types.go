@@ -112,3 +112,13 @@ func (pm *Manager) GetRetry() RetryPolicy {
 func (pm *Manager) GetCircuitBreaker() CircuitBreakerPolicy {
 	return pm.circuitBreaker
 }
+
+// UpdateAutoscaling replaces the autoscaling policy with one built from cfg (for dynamic config).
+// If cfg is nil or cfg.Enabled is false, autoscaling is cleared.
+func (pm *Manager) UpdateAutoscaling(cfg *config.AutoscalingPolicy) {
+	if cfg == nil || !cfg.Enabled {
+		pm.autoscaling = nil
+		return
+	}
+	pm.autoscaling = NewAutoscalingPolicyFromConfig(cfg)
+}

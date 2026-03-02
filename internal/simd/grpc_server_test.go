@@ -673,3 +673,189 @@ workload:
 		t.Fatalf("expected error when updating rate on non-running run")
 	}
 }
+
+func TestGRPCServerUpdateRunConfiguration(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewSimulationGRPCServer(store, executor)
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   2000,
+			RealTimeMode: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	_, err = srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: createResp.Run.Id})
+	if err != nil {
+		t.Fatalf("StartRun error: %v", err)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+
+	updateResp, err := srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
+		RunId: createResp.Run.Id,
+		Services: []*simulationv1.ServiceReplicasUpdate{
+			{ServiceId: "svc1", Replicas: 2},
+		},
+	})
+	if err != nil {
+		rec, ok := store.Get(createResp.Run.Id)
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			t.Skipf("Simulation completed too quickly - skipping UpdateRunConfiguration test")
+		}
+		t.Fatalf("UpdateRunConfiguration error: %v", err)
+	}
+	if updateResp.Run == nil {
+		t.Fatalf("expected run in response")
+	}
+
+	_, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id})
+}
+
+func TestGRPCServerUpdateRunConfigurationValidation(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.UpdateRunConfiguration(ctx, nil)
+	if err == nil {
+		t.Fatalf("expected error for nil request")
+	}
+
+	_, err = srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
+		RunId: "",
+		Services: []*simulationv1.ServiceReplicasUpdate{
+			{ServiceId: "svc1", Replicas: 2},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+
+	_, err = srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
+		RunId:    "run-1",
+		Services: []*simulationv1.ServiceReplicasUpdate{},
+	})
+	if err == nil {
+		t.Fatalf("expected error for empty services")
+	}
+
+	_, err = srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
+		RunId: "non-existent",
+		Services: []*simulationv1.ServiceReplicasUpdate{
+			{ServiceId: "svc1", Replicas: 2},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerGetRunConfiguration(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewSimulationGRPCServer(store, executor)
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   2000,
+			RealTimeMode: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	_, err = srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: createResp.Run.Id})
+	if err != nil {
+		t.Fatalf("StartRun error: %v", err)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+
+	getResp, err := srv.GetRunConfiguration(ctx, &simulationv1.GetRunConfigurationRequest{
+		RunId: createResp.Run.Id,
+	})
+	if err != nil {
+		rec, ok := store.Get(createResp.Run.Id)
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			t.Skipf("Simulation completed too quickly - skipping GetRunConfiguration test")
+		}
+		t.Fatalf("GetRunConfiguration error: %v", err)
+	}
+	if getResp.Configuration == nil {
+		t.Fatalf("expected configuration in response")
+	}
+	if len(getResp.Configuration.Services) == 0 {
+		t.Error("expected at least one service in configuration")
+	}
+
+	_, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id})
+}
+
+func TestGRPCServerGetRunConfigurationValidation(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	ctx := context.Background()
+
+	_, err := srv.GetRunConfiguration(ctx, nil)
+	if err == nil {
+		t.Fatalf("expected error for nil request")
+	}
+
+	_, err = srv.GetRunConfiguration(ctx, &simulationv1.GetRunConfigurationRequest{RunId: ""})
+	if err == nil {
+		t.Fatalf("expected error for empty run_id")
+	}
+
+	_, err = srv.GetRunConfiguration(ctx, &simulationv1.GetRunConfigurationRequest{RunId: "non-existent"})
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+}

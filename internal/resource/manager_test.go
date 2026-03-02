@@ -54,6 +54,63 @@ func TestManagerInitializeFromScenario(t *testing.T) {
 	}
 }
 
+func TestManagerScaleService(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+			{ID: "host-2", Cores: 8},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 2,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2},
+				},
+			},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+
+	// Scale up: 2 -> 4
+	if err := m.ScaleService("svc1", 4); err != nil {
+		t.Fatalf("ScaleService(svc1, 4): %v", err)
+	}
+	if n := m.ActiveReplicas("svc1"); n != 4 {
+		t.Fatalf("expected 4 active replicas after scale up, got %d", n)
+	}
+	instances := m.GetInstancesForService("svc1")
+	if len(instances) != 4 {
+		t.Fatalf("expected 4 instances for svc1, got %d", len(instances))
+	}
+
+	// Scale down (soft): 4 -> 2
+	if err := m.ScaleService("svc1", 2); err != nil {
+		t.Fatalf("ScaleService(svc1, 2): %v", err)
+	}
+	if n := m.ActiveReplicas("svc1"); n != 2 {
+		t.Fatalf("expected 2 active replicas after scale down, got %d", n)
+	}
+	// Instance count in manager may still be 4 (soft scale-down); only routing uses 2
+	instances = m.GetInstancesForService("svc1")
+	if len(instances) < 2 {
+		t.Fatalf("expected at least 2 instances, got %d", len(instances))
+	}
+
+	// Invalid: replicas < 1
+	if err := m.ScaleService("svc1", 0); err == nil {
+		t.Fatal("expected error for replicas 0")
+	}
+	// Unknown service
+	if err := m.ScaleService("nonexistent", 3); err == nil {
+		t.Fatal("expected error for unknown service")
+	}
+}
+
 func TestManagerAllocateCPU(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{
