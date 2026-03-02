@@ -121,11 +121,14 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 	cfg := &simulationv1.RunConfiguration{}
 	for _, svcID := range rm.ListServiceIDs() {
 		n := rm.ActiveReplicas(svcID)
-		replicas := int32(n)
-		if n < 0 {
+		var replicas int32
+		switch {
+		case n < 0:
 			replicas = 0
-		} else if n > math.MaxInt32 {
+		case n > math.MaxInt32:
 			replicas = math.MaxInt32
+		default:
+			replicas = int32(n)
 		}
 		cfg.Services = append(cfg.Services, &simulationv1.ServiceConfigEntry{
 			ServiceId: svcID,
