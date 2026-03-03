@@ -350,6 +350,79 @@ func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
 	}
 }
 
+// Test that the online controller prefers vertical scaling (CPU cores per instance)
+// when latency is above target and service CPU utilization is high.
+func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	runID := "online-vertical-scale-up"
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 16}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	// Record high latency so p95 is well above target and high CPU utilization for svc1.
+	now := time.Now()
+	svcLabels := metrics.CreateServiceLabels("svc1")
+	for i := 0; i < 5; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		metrics.RecordLatency(collector, 200.0, ts, svcLabels)
+		metrics.RecordCPUUtilization(collector, 0.9, ts, svcLabels)
+	}
+
+	// Make resource manager visible to controller helper methods.
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50.0,
+		ControlIntervalMs:  10,
+		StepSize:           1.0,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+
+	// Allow a few control iterations.
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	instances := rm.GetInstancesForService("svc1")
+	if len(instances) == 0 {
+		t.Fatalf("expected instances for svc1")
+	}
+	if instances[0].CPUCores() <= resource.DefaultInstanceCPUCores {
+		t.Fatalf("expected CPU cores to scale up above default, got %f", instances[0].CPUCores())
+	}
+}
+
 func TestRunExecutorCallbackWithInvalidURL(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store)

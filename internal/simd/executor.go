@@ -653,6 +653,10 @@ func (e *RunExecutor) runOnlineController(
 	bestScore := math.Inf(1)
 	var iter int32
 
+	const (
+		cpuHighThreshold = 0.8 // above this, consider CPU "hot"
+	)
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -669,9 +673,20 @@ func (e *RunExecutor) runOnlineController(
 				e.store.SetOptimizationProgress(runID, iter, bestScore)
 			}
 
-			// Simple controller: scale replicas up if above target, down if well below.
-			// We adjust all services in the scenario symmetrically for now.
+			// Controller: use p95 latency as the primary target, and CPU utilization as a
+			// guardrail to choose between horizontal scaling (replicas) and vertical scaling
+			// (CPU cores per instance). For now, we treat all services symmetrically.
+			step := int(opt.StepSize)
+			if step < 1 {
+				step = 1
+			}
+			cpuStep := opt.StepSize
+			if cpuStep <= 0 {
+				cpuStep = 1.0
+			}
+
 			for _, svc := range scenario.Services {
+				// Current replicas from resource manager.
 				currentReplicas := rm.ActiveReplicas(svc.ID)
 				if currentReplicas < 1 {
 					currentReplicas = 1
@@ -679,19 +694,69 @@ func (e *RunExecutor) runOnlineController(
 
 				newReplicas := currentReplicas
 
+				// Current per-instance CPU cores (assume homogeneous instances).
+				instances := rm.GetInstancesForService(svc.ID)
+				currentCores := resource.DefaultInstanceCPUCores
+				if len(instances) > 0 {
+					currentCores = instances[0].CPUCores()
+				}
+				newCPUCores := currentCores
+
+				// Service-level CPU utilization (if available).
+				var svcCPUUtil float64
+				if runMetrics.ServiceMetrics != nil {
+					if sm := runMetrics.ServiceMetrics[svc.ID]; sm != nil {
+						svcCPUUtil = sm.CPUUtilization
+					}
+				}
+
+				scaledVertically := false
+
 				switch {
 				case currentP95 > targetP95*1.05:
-					// Above target: scale up by at least 1
-					step := int(opt.StepSize)
-					if step < 1 {
-						step = 1
+					// Above target: add capacity. If CPU is already hot, prefer vertical scaling
+					// (more cores per instance); otherwise, scale replicas.
+					if svcCPUUtil >= cpuHighThreshold {
+						newCPUCores = currentCores + cpuStep
+						scaledVertically = true
+					} else {
+						newReplicas = currentReplicas + step
 					}
-					newReplicas = currentReplicas + step
 				case currentP95 < targetP95*0.7 && currentReplicas > 1:
-					// Well below target and we have capacity to scale down
-					newReplicas = currentReplicas - 1
+					// Well below target: scale replicas down, but only if CPU is not already hot;
+					// CPU acts as a guardrail to avoid over-consolidation under high load.
+					if svcCPUUtil < cpuHighThreshold {
+						newReplicas = currentReplicas - 1
+					}
 				default:
 					// Within band; no change
+				}
+
+				// Apply vertical scaling first if requested.
+				if scaledVertically && newCPUCores != currentCores {
+					if err := e.UpdateServiceResources(runID, svc.ID, newCPUCores, 0); err != nil {
+						logger.Error("online controller failed to update service resources",
+							"run_id", runID,
+							"service_id", svc.ID,
+							"old_cpu_cores", currentCores,
+							"new_cpu_cores", newCPUCores,
+							"error", err)
+						// Fallback: if we were trying to add capacity and vertical scaling
+						// failed (e.g., host capacity), fall back to horizontal scale-up.
+						if currentP95 > targetP95*1.05 {
+							newReplicas = currentReplicas + step
+						}
+					} else {
+						logger.Info("online controller updated service resources",
+							"run_id", runID,
+							"service_id", svc.ID,
+							"old_cpu_cores", currentCores,
+							"new_cpu_cores", newCPUCores,
+							"p95_ms", currentP95,
+							"target_p95_ms", targetP95,
+							"cpu_utilization", svcCPUUtil)
+						continue
+					}
 				}
 
 				if newReplicas != currentReplicas {
