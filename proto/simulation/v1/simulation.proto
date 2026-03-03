@@ -208,6 +208,22 @@ message OptimizationConfig {
   // per-run simulation horizon for all candidate runs in the optimization.
   // If both are 0, the server falls back to a built-in default.
   int64 evaluation_duration_ms = 4;
+
+  // When true, this optimization is an "online" controller that runs within a single
+  // long-lived simulation run. The simulator adjusts configuration dynamically using
+  // the existing dynamic configuration APIs instead of spawning separate evaluation
+  // runs. The run continues until it is explicitly stopped.
+  bool online = 5;
+
+  // Target p95 latency in milliseconds for online optimization. When > 0, the
+  // controller will attempt to keep the observed p95 latency at or below this
+  // threshold by adjusting configuration (e.g., replicas) over time.
+  double target_p95_latency_ms = 6;
+
+  // Control interval in milliseconds for online optimization. When > 0, this
+  // determines how often the controller reads metrics and attempts adjustments.
+  // Defaults to 1000ms when unset.
+  int64 control_interval_ms = 7;
 }
 
 message Run {
