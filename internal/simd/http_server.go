@@ -565,8 +565,10 @@ func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Re
 	services := make([]map[string]any, 0, len(cfg.Services))
 	for _, srv := range cfg.Services {
 		services = append(services, map[string]any{
-			"service_id": srv.ServiceId,
-			"replicas":   srv.Replicas,
+			"service_id":  srv.ServiceId,
+			"replicas":    srv.Replicas,
+			"cpu_cores":   srv.CpuCores,
+			"memory_mb":   srv.MemoryMb,
 		})
 	}
 	workload := make([]map[string]any, 0, len(cfg.Workload))
@@ -576,10 +578,19 @@ func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Re
 			"rate_rps":    w.RateRps,
 		})
 	}
+	hosts := make([]map[string]any, 0, len(cfg.Hosts))
+	for _, h := range cfg.Hosts {
+		hosts = append(hosts, map[string]any{
+			"host_id":   h.HostId,
+			"cpu_cores": h.CpuCores,
+			"memory_gb": h.MemoryGb,
+		})
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{
 			"services": services,
 			"workload": workload,
+			"hosts":    hosts,
 		},
 	})
 }
@@ -962,6 +973,30 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			if rec.Metrics != nil {
 				metricsJSON := convertMetricsToJSON(rec.Metrics)
 				payload := map[string]any{"metrics": metricsJSON}
+				// Include current resource allocations (services and hosts) when available
+				if cfg, ok := s.Executor.GetRunConfiguration(runID); ok {
+					serviceResources := make([]map[string]any, 0, len(cfg.Services))
+					for _, svc := range cfg.Services {
+						serviceResources = append(serviceResources, map[string]any{
+							"service_id":  svc.ServiceId,
+							"replicas":    svc.Replicas,
+							"cpu_cores":   svc.CpuCores,
+							"memory_mb":   svc.MemoryMb,
+						})
+					}
+					hostResources := make([]map[string]any, 0, len(cfg.Hosts))
+					for _, h := range cfg.Hosts {
+						hostResources = append(hostResources, map[string]any{
+							"host_id":   h.HostId,
+							"cpu_cores": h.CpuCores,
+							"memory_gb": h.MemoryGb,
+						})
+					}
+					payload["resources"] = map[string]any{
+						"services": serviceResources,
+						"hosts":    hostResources,
+					}
+				}
 				if hasCollector && collector != nil {
 					if hostMetrics := hostMetricsFromCollector(collector); len(hostMetrics) > 0 {
 						payload["host_metrics"] = hostMetrics

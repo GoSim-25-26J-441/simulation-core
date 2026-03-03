@@ -143,8 +143,9 @@ message GetRunConfigurationResponse {
 }
 
 message RunConfiguration {
-  repeated ServiceConfigEntry services = 1;   // current replicas per service
-  repeated WorkloadPatternEntry workload = 2; // current workload patterns (pattern_key, rate_rps)
+  repeated ServiceConfigEntry services = 1;    // current replicas and per-instance resources per service
+  repeated WorkloadPatternEntry workload = 2;  // current workload patterns (pattern_key, rate_rps)
+  repeated HostConfigEntry hosts = 3;          // current host resource allocations (cores, memory)
 }
 
 message ServiceConfigEntry {
@@ -158,6 +159,12 @@ message ServiceConfigEntry {
 message WorkloadPatternEntry {
   string pattern_key = 1;
   double rate_rps = 2;
+}
+
+message HostConfigEntry {
+  string host_id = 1;
+  int32 cpu_cores = 2;
+  int32 memory_gb = 3;
 }
 
 // ---- Core models

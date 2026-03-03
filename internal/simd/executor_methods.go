@@ -171,6 +171,17 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 			MemoryMb:  memoryMB,
 		})
 	}
+
+	// Populate host allocations (CPU cores and memory in GB) from the resource manager.
+	for _, hostID := range rm.HostIDs() {
+		if host, ok := rm.GetHost(hostID); ok {
+			cfg.Hosts = append(cfg.Hosts, &simulationv1.HostConfigEntry{
+				HostId:   hostID,
+				CpuCores: int32(host.CPUCores()),
+				MemoryGb: int32(host.MemoryGB()),
+			})
+		}
+	}
 	patterns := ws.GetAllPatterns()
 	for key, state := range patterns {
 		if state != nil && state.Pattern.Arrival.RateRPS > 0 {

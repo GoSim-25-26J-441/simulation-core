@@ -261,6 +261,17 @@ func (m *Manager) MaxHostCPUUtilization() float64 {
 	return maxUtil
 }
 
+// HostIDs returns a slice of all host IDs currently managed.
+func (m *Manager) HostIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.hosts))
+	for id := range m.hosts {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // ScaleOutHosts increases the number of hosts up to targetCount by adding new
 // hosts with the same capacity as an existing host. If targetCount is less
 // than or equal to the current host count, this is a no-op.
