@@ -616,6 +616,94 @@ func TestHTTPServerMetricsStreamNotFound(t *testing.T) {
 	}
 }
 
+func TestHostMetricsFromCollector(t *testing.T) {
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+
+	// No host-labelled metrics: should return nil
+	got := hostMetricsFromCollector(collector)
+	if got != nil {
+		t.Fatalf("expected nil when no host labels, got %d entries", len(got))
+	}
+
+	// Record host-level metrics for two hosts
+	metrics.RecordCPUUtilization(collector, 0.1, now, metrics.CreateHostLabels("host-1"))
+	metrics.RecordMemoryUtilization(collector, 0.2, now, metrics.CreateHostLabels("host-1"))
+	metrics.RecordCPUUtilization(collector, 0.3, now.Add(time.Second), metrics.CreateHostLabels("host-2"))
+	metrics.RecordMemoryUtilization(collector, 0.4, now, metrics.CreateHostLabels("host-2"))
+
+	got = hostMetricsFromCollector(collector)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 host entries, got %d", len(got))
+	}
+	// Sorted by host_id: host-1, host-2
+	if got[0]["host_id"] != "host-1" || got[1]["host_id"] != "host-2" {
+		t.Fatalf("expected host_id order host-1, host-2, got %v, %v", got[0]["host_id"], got[1]["host_id"])
+	}
+	if got[0]["cpu_utilization"].(float64) != 0.1 || got[0]["memory_utilization"].(float64) != 0.2 {
+		t.Fatalf("host-1: expected cpu=0.1 mem=0.2, got cpu=%v mem=%v", got[0]["cpu_utilization"], got[0]["memory_utilization"])
+	}
+	if got[1]["cpu_utilization"].(float64) != 0.3 || got[1]["memory_utilization"].(float64) != 0.4 {
+		t.Fatalf("host-2: expected cpu=0.3 mem=0.4, got cpu=%v mem=%v", got[1]["cpu_utilization"], got[1]["memory_utilization"])
+	}
+}
+
+func TestHTTPServerMetricsStreamSnapshotIncludesHostMetrics(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	rec, err := store.Create("test-run-hm", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetMetrics(rec.Run.Id, &simulationv1.RunMetrics{
+		TotalRequests:      10,
+		SuccessfulRequests: 10,
+		LatencyP50Ms:       5.0,
+		LatencyMeanMs:      6.0,
+	}); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	metrics.RecordCPUUtilization(collector, 0.15, now, metrics.CreateHostLabels("host-1"))
+	metrics.RecordMemoryUtilization(collector, 0.25, now, metrics.CreateHostLabels("host-1"))
+	collector.Stop()
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run-hm/metrics/stream?interval_ms=50", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), 300*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+	srv.Handler().ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: metrics_snapshot") {
+		t.Fatalf("expected metrics_snapshot event in stream, got: %s", body[:min(200, len(body))])
+	}
+	if !strings.Contains(body, "host_metrics") {
+		t.Error("expected host_metrics in metrics_snapshot payload")
+	}
+	if !strings.Contains(body, "\"host_id\"") {
+		t.Error("expected host_id in SSE stream")
+	}
+	if !strings.Contains(body, "host-1") {
+		t.Error("expected host-1 in SSE stream")
+	}
+}
+
 func TestHTTPServerMetricsStreamWithInterval(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)

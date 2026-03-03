@@ -935,9 +935,13 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Send aggregated metrics snapshot if available
 			if rec.Metrics != nil {
 				metricsJSON := convertMetricsToJSON(rec.Metrics)
-				s.sendSSEEvent(w, "metrics_snapshot", map[string]any{
-					"metrics": metricsJSON,
-				})
+				payload := map[string]any{"metrics": metricsJSON}
+				if hasCollector && collector != nil {
+					if hostMetrics := hostMetricsFromCollector(collector); len(hostMetrics) > 0 {
+						payload["host_metrics"] = hostMetrics
+					}
+				}
+				s.sendSSEEvent(w, "metrics_snapshot", payload)
 			}
 
 			// Send time-series metric updates if collector is available
@@ -1126,6 +1130,59 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 	}
 
 	return result
+}
+
+// hostMetricsFromCollector builds a list of per-host metrics from the collector's
+// host-labelled time series (cpu_utilization, memory_utilization). Returns nil if none.
+func hostMetricsFromCollector(collector *metrics.Collector) []map[string]any {
+	type hostVals struct {
+		cpuUtil float64
+		memUtil float64
+	}
+	byHost := make(map[string]*hostVals)
+
+	for _, metricName := range []string{"cpu_utilization", "memory_utilization"} {
+		labelCombos := collector.GetLabelsForMetric(metricName)
+		for _, labels := range labelCombos {
+			hostID, ok := labels["host"]
+			if !ok || hostID == "" {
+				continue
+			}
+			points := collector.GetTimeSeries(metricName, labels)
+			if len(points) == 0 {
+				continue
+			}
+			latest := points[len(points)-1].Value
+			if byHost[hostID] == nil {
+				byHost[hostID] = &hostVals{}
+			}
+			switch metricName {
+			case "cpu_utilization":
+				byHost[hostID].cpuUtil = latest
+			case "memory_utilization":
+				byHost[hostID].memUtil = latest
+			}
+		}
+	}
+
+	if len(byHost) == 0 {
+		return nil
+	}
+	hostIDs := make([]string, 0, len(byHost))
+	for h := range byHost {
+		hostIDs = append(hostIDs, h)
+	}
+	sort.Strings(hostIDs)
+	out := make([]map[string]any, 0, len(hostIDs))
+	for _, hostID := range hostIDs {
+		v := byHost[hostID]
+		out = append(out, map[string]any{
+			"host_id":            hostID,
+			"cpu_utilization":    v.cpuUtil,
+			"memory_utilization": v.memUtil,
+		})
+	}
+	return out
 }
 
 func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {

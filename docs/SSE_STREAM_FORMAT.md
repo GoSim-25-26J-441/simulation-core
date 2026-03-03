@@ -1,0 +1,78 @@
+# SSE metrics stream format (frontend reference)
+
+The simd HTTP API exposes a **Server-Sent Events (SSE)** stream for live run metrics:
+
+- **Endpoint:** `GET /v1/runs/{run_id}/metrics/stream`
+- **Query:** `interval_ms` (optional, default 1000) – how often metrics snapshots are sent (milliseconds).
+- **Headers:** Client should set `Accept: text/event-stream`.
+
+## Capturing a sample to a file
+
+With simd running (e.g. `go run ./cmd/simd`):
+
+```powershell
+.\scripts\capture_sse.ps1 -BaseUrl "http://localhost:8080" -OutputFile "sse_output.txt" -DurationSeconds 8 -IntervalMs 500
+```
+
+This creates a run, starts it, streams SSE for 8 seconds into `sse_output.txt`, then stops the run. Use that file to see real event sequences.
+
+## Event format
+
+Each SSE message consists of:
+
+1. A line `event: <event_type>`
+2. A line `data: <json_object>`
+3. A blank line (message boundary)
+
+Example:
+
+```
+event: status_change
+data: {"status":"RUN_STATUS_RUNNING"}
+
+event: metric_update
+data: {"metric":"request_rate","labels":{"run_id":"run-123","service":"svc1"},"value":10.5,"timestamp_ms":1700000000000}
+
+event: complete
+data: {"status":"RUN_STATUS_COMPLETED"}
+```
+
+## Event types the frontend should handle
+
+| Event type             | When / meaning |
+|------------------------|----------------|
+| `status_change`        | Run status changed; `data.status` is the new status string (e.g. `RUN_STATUS_RUNNING`, `RUN_STATUS_COMPLETED`). |
+| `metric_update`        | One metric data point; `data` has `metric`, `labels`, `value`, and often `timestamp`. Labels may include `host` (node-level), `service`, `instance`, or `endpoint`. |
+| `metrics_snapshot`      | Aggregated snapshot: `metrics` (run/service aggregates) and optionally `host_metrics` (per-host `host_id`, `cpu_utilization`, `memory_utilization`). |
+| `complete`             | Run reached a terminal state (completed/failed/cancelled). |
+| `optimization_progress` | For optimization runs; iteration and best score. |
+| `error`                | Stream or run error; `data.error` has the message. |
+
+## Frontend usage (EventSource)
+
+```javascript
+const runId = '...'; // from create/start run response
+const url = `http://localhost:8080/v1/runs/${runId}/metrics/stream?interval_ms=500`;
+const es = new EventSource(url);
+
+es.addEventListener('status_change', (e) => {
+  const data = JSON.parse(e.data);
+  console.log('Status:', data.status);
+});
+
+es.addEventListener('metric_update', (e) => {
+  const data = JSON.parse(e.data);
+  console.log('Metric:', data.metric, data.labels, data.value);
+});
+
+es.addEventListener('complete', () => {
+  es.close();
+});
+
+es.onerror = (err) => {
+  console.error('SSE error', err);
+  es.close();
+};
+```
+
+Use the captured `sse_output.txt` to see the exact field names and shapes for your environment.

@@ -177,6 +177,80 @@ func TestHandleRequestStart(t *testing.T) {
 	}
 }
 
+// TestHandlersRecordHostLevelMetrics verifies that when a request is processed (handleRequestStart),
+// the collector receives host-level metrics (cpu_utilization, memory_utilization) with host labels.
+func TestHandlersRecordHostLevelMetrics(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
+	RegisterHandlers(eng, state)
+
+	request := &models.Request{
+		ID:          "req-1",
+		TraceID:     "trace-1",
+		ServiceName: "svc1",
+		Endpoint:    "/test",
+		Status:      models.RequestStatusPending,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata:    make(map[string]interface{}),
+	}
+	eng.GetRunManager().AddRequest(request)
+
+	instance, err := state.rm.SelectInstanceForService("svc1")
+	if err != nil {
+		t.Fatalf("failed to get instance: %v", err)
+	}
+
+	eng.ScheduleAt(engine.EventTypeRequestStart, eng.GetSimTime(), request, "svc1", map[string]interface{}{
+		"endpoint_path": "/test",
+		"instance_id":   instance.ID(),
+	})
+
+	if err := eng.Run(50 * time.Millisecond); err != nil {
+		t.Fatalf("Engine run error: %v", err)
+	}
+
+	// Verify host-level metrics were recorded (handlers record with CreateHostLabels when processing request start)
+	for _, metricName := range []string{"cpu_utilization", "memory_utilization"} {
+		labelCombos := collector.GetLabelsForMetric(metricName)
+		var foundHost bool
+		for _, labels := range labelCombos {
+			if labels["host"] == "host-1" {
+				foundHost = true
+				break
+			}
+		}
+		if !foundHost {
+			t.Errorf("expected at least one %s series with label host=host-1, got label combos: %v", metricName, labelCombos)
+		}
+	}
+}
+
 func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	scenario := &config.Scenario{

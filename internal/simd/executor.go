@@ -191,11 +191,6 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		return
 	}
 
-	durationMs := rec.Input.DurationMs
-	if durationMs <= 0 {
-		durationMs = 10000 // 10 seconds default
-	}
-
 	opt := rec.Input.Optimization
 	params := &OptimizationParams{
 		Objective:     "p95_latency_ms",
@@ -212,6 +207,19 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if opt.StepSize > 0 {
 			params.StepSize = opt.StepSize
 		}
+	}
+
+	// Determine evaluation duration for each candidate run in the optimization.
+	// Priority:
+	// 1) Explicit RunInput.DurationMs (per-run override)
+	// 2) OptimizationConfig.EvaluationDurationMs (per-experiment default)
+	// 3) Built-in default (10s) for backwards compatibility
+	durationMs := rec.Input.DurationMs
+	if durationMs <= 0 && opt != nil && opt.EvaluationDurationMs > 0 {
+		durationMs = opt.EvaluationDurationMs
+	}
+	if durationMs <= 0 {
+		durationMs = 10000 // 10 seconds default
 	}
 
 	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective, "max_iterations", params.MaxIterations)

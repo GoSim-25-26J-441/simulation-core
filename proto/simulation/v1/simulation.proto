@@ -202,6 +202,12 @@ message OptimizationConfig {
 
   // Step size for parameter exploration (default 1.0).
   double step_size = 3;
+
+  // Duration (in milliseconds) for each evaluation run in this optimization experiment.
+  // If RunInput.duration_ms is 0 and this is > 0, the server uses this value as the
+  // per-run simulation horizon for all candidate runs in the optimization.
+  // If both are 0, the server falls back to a built-in default.
+  int64 evaluation_duration_ms = 4;
 }
 
 message Run {

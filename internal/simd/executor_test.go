@@ -129,10 +129,11 @@ workload:
 `
 	rec, err := store.Create("opt-run", &simulationv1.RunInput{
 		ScenarioYaml: optScenario,
-		DurationMs:   1000,
+		DurationMs:   0,
 		Optimization: &simulationv1.OptimizationConfig{
-			Objective:     "p95_latency_ms",
-			MaxIterations: 3,
+			Objective:            "p95_latency_ms",
+			MaxIterations:        3,
+			EvaluationDurationMs: 5000,
 		},
 	})
 	if err != nil {
