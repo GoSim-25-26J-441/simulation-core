@@ -43,10 +43,32 @@ data: {"status":"RUN_STATUS_COMPLETED"}
 |------------------------|----------------|
 | `status_change`        | Run status changed; `data.status` is the new status string (e.g. `RUN_STATUS_RUNNING`, `RUN_STATUS_COMPLETED`). |
 | `metric_update`        | One metric data point; `data` has `metric`, `labels`, `value`, and often `timestamp`. Labels may include `host` (node-level), `service`, `instance`, or `endpoint`. |
-| `metrics_snapshot`      | Aggregated snapshot: `metrics` (run/service aggregates) and optionally `host_metrics` (per-host `host_id`, `cpu_utilization`, `memory_utilization`). |
+| `metrics_snapshot`      | Aggregated snapshot: `metrics` (run/service aggregates), optional `host_metrics` (per-host `host_id`, `cpu_utilization`, `memory_utilization`), and optional `resources` (current pod/host allocations). |
 | `complete`             | Run reached a terminal state (completed/failed/cancelled). |
 | `optimization_progress` | For optimization runs; iteration and best score. |
 | `error`                | Stream or run error; `data.error` has the message. |
+
+### `metrics_snapshot` payload shape
+
+The `data` payload for `metrics_snapshot` has this high-level structure:
+
+- **`metrics`**: JSON form of the protobuf `RunMetrics` (totals + per-service aggregates).
+- **`host_metrics`** (optional): Array of host-level utilization snapshots:
+  - `host_id` (string)
+  - `cpu_utilization` (0.0–1.0)
+  - `memory_utilization` (0.0–1.0)
+- **`resources`** (optional): Current resource allocations for pods and hosts:
+  - `resources.services`: array of:
+    - `service_id` (string)
+    - `replicas` (int)
+    - `cpu_cores` (float, per-instance)
+    - `memory_mb` (float, per-instance)
+  - `resources.hosts`: array of:
+    - `host_id` (string)
+    - `cpu_cores` (int, host capacity)
+    - `memory_gb` (int, host capacity)
+
+These fields are populated from the simulator’s live configuration via `GetRunConfiguration`, so they reflect any dynamic updates performed by the online optimizer (horizontal/vertical pod scaling and host scaling).
 
 ## Frontend usage (EventSource)
 
