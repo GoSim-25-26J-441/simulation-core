@@ -803,6 +803,51 @@ func TestServiceInstanceMethods(t *testing.T) {
 	if util < 0 {
 		t.Fatalf("memory utilization should not be negative")
 	}
+
+	// Test setters for CPU and memory
+	instance.SetCPUCores(4.0)
+	if instance.CPUCores() != 4.0 {
+		t.Fatalf("expected CPU cores updated to 4.0, got %f", instance.CPUCores())
+	}
+	instance.SetMemoryMB(2048.0)
+	if instance.MemoryMB() != 2048.0 {
+		t.Fatalf("expected memory updated to 2048.0, got %f", instance.MemoryMB())
+	}
+}
+
+func TestManagerUpdateServiceResources(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, Model: "cpu"},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	instances := m.GetInstancesForService("svc1")
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances for svc1, got %d", len(instances))
+	}
+	if instances[0].CPUCores() != DefaultInstanceCPUCores || instances[0].MemoryMB() != DefaultInstanceMemoryMB {
+		t.Fatalf("expected default resources before update, got cpu=%f mem=%f", instances[0].CPUCores(), instances[0].MemoryMB())
+	}
+
+	if err := m.UpdateServiceResources("svc1", 4.0, 2048.0); err != nil {
+		t.Fatalf("UpdateServiceResources error: %v", err)
+	}
+
+	instances = m.GetInstancesForService("svc1")
+	for _, inst := range instances {
+		if inst.CPUCores() != 4.0 {
+			t.Fatalf("expected CPU cores updated to 4.0, got %f", inst.CPUCores())
+		}
+		if inst.MemoryMB() != 2048.0 {
+			t.Fatalf("expected memory updated to 2048.0, got %f", inst.MemoryMB())
+		}
+	}
 }
 
 func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {

@@ -123,6 +123,11 @@ message UpdateRunConfigurationRequest {
 message ServiceReplicasUpdate {
   string service_id = 1;
   int32 replicas = 2;
+  // Optional vertical scaling parameters per service instance. When > 0, these
+  // override the CPU cores and memory (MB) allocated to each instance of the
+  // service in this run. When 0, the existing allocation is left unchanged.
+  double cpu_cores = 3;
+  double memory_mb = 4;
 }
 
 message UpdateRunConfigurationResponse {
@@ -145,6 +150,9 @@ message RunConfiguration {
 message ServiceConfigEntry {
   string service_id = 1;
   int32 replicas = 2;
+  // Current per-instance CPU cores and memory (MB) for this service.
+  double cpu_cores = 3;
+  double memory_mb = 4;
 }
 
 message WorkloadPatternEntry {

@@ -972,6 +972,80 @@ func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {
 	}
 }
 
+func TestHTTPServerUpdateRunConfigurationVerticalScaling(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store)
+	srv := NewHTTPServer(store, exec)
+
+	// Create run
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	}
+	rec, err := store.Create("run-vert", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	// Wait briefly for initialization but ensure run is still RUNNING
+	time.Sleep(10 * time.Millisecond)
+	recLatest, ok := store.Get(rec.Run.Id)
+	if !ok {
+		t.Fatal("run not found after start")
+	}
+	if recLatest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping vertical scaling test", recLatest.Run.Status)
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	body := map[string]any{
+		"services": []map[string]any{
+			{
+				"id":        "svc1",
+				"replicas":  2,
+				"cpu_cores": 4.0,
+				"memory_mb": 2048.0,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(body)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-vert/configuration", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200 from PATCH configuration, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	cfg, ok := exec.GetRunConfiguration("run-vert")
+	if !ok || cfg == nil {
+		t.Fatalf("expected GetRunConfiguration to succeed after vertical scaling")
+	}
+	var svcCfg *simulationv1.ServiceConfigEntry
+	for _, sCfg := range cfg.Services {
+		if sCfg.ServiceId == "svc1" {
+			svcCfg = sCfg
+			break
+		}
+	}
+	if svcCfg == nil {
+		t.Fatalf("expected svc1 in run configuration")
+	}
+	if svcCfg.CpuCores != 4.0 {
+		t.Fatalf("expected cpu_cores=4.0, got %f", svcCfg.CpuCores)
+	}
+	if svcCfg.MemoryMb != 2048.0 {
+		t.Fatalf("expected memory_mb=2048.0, got %f", svcCfg.MemoryMb)
+	}
+}
+
 func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)

@@ -404,8 +404,10 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http.Request, runID string) {
 	var req struct {
 		Services []struct {
-			ID       string `json:"id"`
-			Replicas int    `json:"replicas"`
+			ID       string   `json:"id"`
+			Replicas int      `json:"replicas"`
+			CPUCores *float64 `json:"cpu_cores,omitempty"`
+			MemoryMB *float64 `json:"memory_mb,omitempty"`
 		} `json:"services"`
 		Workload []struct {
 			PatternKey string  `json:"pattern_key"`
@@ -461,6 +463,30 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 				s.writeError(w, http.StatusInternalServerError, err.Error())
 			}
 			return
+		}
+
+		// Optional vertical scaling for this service
+		if (svc.CPUCores != nil && *svc.CPUCores > 0) || (svc.MemoryMB != nil && *svc.MemoryMB > 0) {
+			var cpuVal, memVal float64
+			if svc.CPUCores != nil {
+				cpuVal = *svc.CPUCores
+			}
+			if svc.MemoryMB != nil {
+				memVal = *svc.MemoryMB
+			}
+			if err := s.Executor.UpdateServiceResources(runID, svc.ID, cpuVal, memVal); err != nil {
+				switch {
+				case errors.Is(err, ErrRunNotFound):
+					s.writeError(w, http.StatusNotFound, err.Error())
+				case errors.Is(err, ErrRunIDMissing):
+					s.writeError(w, http.StatusBadRequest, err.Error())
+				case errors.Is(err, ErrRunTerminal):
+					s.writeError(w, http.StatusBadRequest, err.Error())
+				default:
+					s.writeError(w, http.StatusInternalServerError, err.Error())
+				}
+				return
+			}
 		}
 	}
 

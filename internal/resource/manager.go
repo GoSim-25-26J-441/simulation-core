@@ -240,6 +240,35 @@ func (m *Manager) ActiveReplicas(serviceID string) int {
 	return len(instances)
 }
 
+// UpdateServiceResources updates per-instance CPU cores and memory (MB) for all
+// instances of a given service. Passing 0 for a field leaves it unchanged.
+func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB float64) error {
+	if cpuCores < 0 || memoryMB < 0 {
+		return fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	instances := m.getInstancesForServiceLocked(serviceID)
+	if len(instances) == 0 {
+		return fmt.Errorf("service not found: %s", serviceID)
+	}
+
+	for _, inst := range instances {
+		if cpuCores > 0 {
+			inst.SetCPUCores(cpuCores)
+		}
+		if memoryMB > 0 {
+			inst.SetMemoryMB(memoryMB)
+		}
+	}
+
+	// Host utilization will be recomputed on next allocation/release; no need
+	// to force an update here for correctness of the simulator.
+	return nil
+}
+
 // ListServiceIDs returns all service IDs that have at least one instance (for GET config).
 func (m *Manager) ListServiceIDs() []string {
 	m.mu.RLock()

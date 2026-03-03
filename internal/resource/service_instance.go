@@ -84,6 +84,26 @@ func (s *ServiceInstance) MemoryMB() float64 {
 	return s.memoryMB
 }
 
+// SetCPUCores updates the allocated CPU cores for this instance.
+func (s *ServiceInstance) SetCPUCores(cores float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cores < 0 {
+		cores = 0
+	}
+	s.cpuCores = cores
+}
+
+// SetMemoryMB updates the allocated memory (MB) for this instance.
+func (s *ServiceInstance) SetMemoryMB(memoryMB float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if memoryMB < 0 {
+		memoryMB = 0
+	}
+	s.memoryMB = memoryMB
+}
+
 // CPUUtilization returns CPU utilization (0.0 to 1.0) based on a sliding time window
 func (s *ServiceInstance) CPUUtilization() float64 {
 	s.mu.RLock()
