@@ -423,6 +423,183 @@ func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T
 	}
 }
 
+// Test that the online controller scales out hosts up to max_hosts when hosts are hot
+// and latency is above target, before resorting to vertical host capacity increases.
+func TestRunExecutorOnlineControllerScalesOutHostsBeforeVertical(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	runID := "online-host-scale-out"
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	// High latency to trigger scaling.
+	now := time.Now()
+	svcLabels := metrics.CreateServiceLabels("svc1")
+	for i := 0; i < 5; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		metrics.RecordLatency(collector, 200.0, ts, svcLabels)
+	}
+
+	// Mark the existing host as hot so host-level scaling is considered.
+	if host, ok := rm.GetHost("host-1"); ok {
+		host.SetCPUUtilization(0.9)
+	}
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50.0,
+		ControlIntervalMs:  10,
+		StepSize:           1.0,
+		MinHosts:           1,
+		MaxHosts:           3,
+	}
+
+	initialHosts := rm.HostCount()
+	if initialHosts != 1 {
+		t.Fatalf("expected initial HostCount 1, got %d", initialHosts)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	hostCount := rm.HostCount()
+	if hostCount <= initialHosts {
+		t.Fatalf("expected host count to scale out above %d, got %d", initialHosts, hostCount)
+	}
+	if hostCount > int(opt.MaxHosts) {
+		t.Fatalf("expected host count to not exceed max_hosts=%d, got %d", opt.MaxHosts, hostCount)
+	}
+}
+
+// Test that when already at max_hosts and hosts are hot, the controller increases
+// host CPU capacity instead of adding more hosts.
+func TestRunExecutorOnlineControllerIncreasesHostCapacityAtMaxHosts(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	runID := "online-host-vertical-scale"
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 2},
+			{ID: "host-2", Cores: 2},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 2,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	now := time.Now()
+	svcLabels := metrics.CreateServiceLabels("svc1")
+	for i := 0; i < 5; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		metrics.RecordLatency(collector, 200.0, ts, svcLabels)
+	}
+
+	// Mark hosts as hot.
+	for _, hostID := range rm.HostIDs() {
+		if host, ok := rm.GetHost(hostID); ok {
+			host.SetCPUUtilization(0.9)
+		}
+	}
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50.0,
+		ControlIntervalMs:  10,
+		StepSize:           1.0,
+		MinHosts:           2,
+		MaxHosts:           2,
+	}
+
+	initialHostCount := rm.HostCount()
+	if initialHostCount != 2 {
+		t.Fatalf("expected initial HostCount 2, got %d", initialHostCount)
+	}
+	// Capture initial cores for one host to verify capacity increases.
+	host, ok := rm.GetHost("host-1")
+	if !ok {
+		t.Fatalf("expected host-1 to exist")
+	}
+	initialCores := host.CPUCores()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	if got := rm.HostCount(); got != initialHostCount {
+		t.Fatalf("expected HostCount to remain %d at max_hosts, got %d", initialHostCount, got)
+	}
+	updatedHost, ok := rm.GetHost("host-1")
+	if !ok {
+		t.Fatalf("expected host-1 to still exist")
+	}
+	if updatedHost.CPUCores() <= initialCores {
+		t.Fatalf("expected host CPU cores to increase above %d, got %d", initialCores, updatedHost.CPUCores())
+	}
+}
+
 func TestRunExecutorCallbackWithInvalidURL(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store)
