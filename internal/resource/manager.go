@@ -240,6 +240,88 @@ func (m *Manager) ActiveReplicas(serviceID string) int {
 	return len(instances)
 }
 
+// HostCount returns the number of hosts currently managed.
+func (m *Manager) HostCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.hosts)
+}
+
+// MaxHostCPUUtilization returns the maximum CPU utilization across all hosts.
+// If there are no hosts, it returns 0.
+func (m *Manager) MaxHostCPUUtilization() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	maxUtil := 0.0
+	for _, host := range m.hosts {
+		if util := host.CPUUtilization(); util > maxUtil {
+			maxUtil = util
+		}
+	}
+	return maxUtil
+}
+
+// ScaleOutHosts increases the number of hosts up to targetCount by adding new
+// hosts with the same capacity as an existing host. If targetCount is less
+// than or equal to the current host count, this is a no-op.
+func (m *Manager) ScaleOutHosts(targetCount int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current := len(m.hosts)
+	if targetCount <= current {
+		return nil
+	}
+	if current == 0 {
+		return fmt.Errorf("cannot scale out hosts: no existing hosts to copy capacity from")
+	}
+
+	// Pick an arbitrary existing host as the template for new hosts.
+	var template *Host
+	for _, h := range m.hosts {
+		template = h
+		break
+	}
+	if template == nil {
+		return fmt.Errorf("cannot scale out hosts: template host not found")
+	}
+
+	nextIndex := current + 1
+	for len(m.hosts) < targetCount {
+		id := fmt.Sprintf("host-auto-%d", nextIndex)
+		nextIndex++
+		if _, exists := m.hosts[id]; exists {
+			continue
+		}
+		host := NewHost(id, template.CPUCores(), template.MemoryGB())
+		m.hosts[id] = host
+	}
+
+	return nil
+}
+
+// IncreaseHostCapacity increases CPU cores and/or memory (GB) for all hosts.
+// Non-positive deltas are ignored for the respective dimension.
+func (m *Manager) IncreaseHostCapacity(cpuDelta, memoryGBDelta int) {
+	if cpuDelta <= 0 && memoryGBDelta <= 0 {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, host := range m.hosts {
+		if cpuDelta > 0 {
+			newCores := host.CPUCores() + cpuDelta
+			host.SetCPUCores(newCores)
+		}
+		if memoryGBDelta > 0 {
+			newMem := host.MemoryGB() + memoryGBDelta
+			host.SetMemoryGB(newMem)
+		}
+	}
+}
+
 // UpdateServiceResources updates per-instance CPU cores and memory (MB) for all
 // instances of a given service. Passing 0 for a field leaves it unchanged.
 func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB float64) error {

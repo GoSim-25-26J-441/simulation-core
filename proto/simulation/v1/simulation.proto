@@ -232,6 +232,14 @@ message OptimizationConfig {
   // determines how often the controller reads metrics and attempts adjustments.
   // Defaults to 1000ms when unset.
   int64 control_interval_ms = 7;
+
+  // Minimum and maximum number of hosts that the online controller is allowed
+  // to use when performing host-level scaling. When max_hosts is greater than
+  // the initial host count, the controller may scale out by adding hosts up to
+  // this limit before switching to vertical host scaling. When min_hosts is
+  // greater than 0, the controller will avoid scaling below this bound.
+  int32 min_hosts = 8;
+  int32 max_hosts = 9;
 }
 
 message Run {

@@ -864,6 +864,41 @@ func TestManagerUpdateServiceResources(t *testing.T) {
 
 }
 
+func TestManagerHostScalingHelpers(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	if got := m.HostCount(); got != 1 {
+		t.Fatalf("expected HostCount 1, got %d", got)
+	}
+
+	// With a single idle host, MaxHostCPUUtilization should be 0.
+	if maxCPU := m.MaxHostCPUUtilization(); maxCPU != 0.0 {
+		t.Fatalf("expected MaxHostCPUUtilization 0.0, got %f", maxCPU)
+	}
+
+	// Scale out hosts to 3 total.
+	if err := m.ScaleOutHosts(3); err != nil {
+		t.Fatalf("ScaleOutHosts error: %v", err)
+	}
+	if got := m.HostCount(); got != 3 {
+		t.Fatalf("expected HostCount 3 after scale-out, got %d", got)
+	}
+
+	// Increase host capacity for all hosts. We primarily verify that this does
+	// not panic and that the host count remains unchanged.
+	m.IncreaseHostCapacity(2, 4)
+	if got := m.HostCount(); got != 3 {
+		t.Fatalf("expected HostCount to remain 3 after capacity increase, got %d", got)
+	}
+}
+
 func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	instance := NewServiceInstance("inst-1", "svc1", "host-1", 2.0, 1024.0)
 
@@ -962,6 +997,26 @@ func TestHostMethods(t *testing.T) {
 	}
 	if host.MemoryGB() != 8 {
 		t.Fatalf("expected 8 GB memory, got %d", host.MemoryGB())
+	}
+
+	// Test SetCPUCores clamps to >= 1.
+	host.SetCPUCores(0)
+	if host.CPUCores() != 1 {
+		t.Fatalf("expected CPU cores clamped to 1, got %d", host.CPUCores())
+	}
+	host.SetCPUCores(16)
+	if host.CPUCores() != 16 {
+		t.Fatalf("expected CPU cores updated to 16, got %d", host.CPUCores())
+	}
+
+	// Test SetMemoryGB clamps to >= 1.
+	host.SetMemoryGB(0)
+	if host.MemoryGB() != 1 {
+		t.Fatalf("expected memory GB clamped to 1, got %d", host.MemoryGB())
+	}
+	host.SetMemoryGB(32)
+	if host.MemoryGB() != 32 {
+		t.Fatalf("expected memory GB updated to 32, got %d", host.MemoryGB())
 	}
 
 	// Test initial utilization

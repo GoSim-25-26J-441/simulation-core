@@ -654,8 +654,24 @@ func (e *RunExecutor) runOnlineController(
 	var iter int32
 
 	const (
-		cpuHighThreshold = 0.8 // above this, consider CPU "hot"
+		cpuHighThreshold     = 0.8 // above this, consider service CPU "hot"
+		hostCPUHighThreshold = 0.8 // above this, consider host CPU "hot"
 	)
+
+	// Host scaling bounds. Defaults: use the initial scenario host count as both
+	// the minimum and maximum when not explicitly configured.
+	initialHosts := len(scenario.Hosts)
+	minHosts := int(opt.MinHosts)
+	if minHosts <= 0 {
+		minHosts = initialHosts
+	}
+	maxHosts := int(opt.MaxHosts)
+	if maxHosts <= 0 {
+		maxHosts = initialHosts
+	}
+	if maxHosts < minHosts {
+		maxHosts = minHosts
+	}
 
 	for {
 		select {
@@ -673,9 +689,47 @@ func (e *RunExecutor) runOnlineController(
 				e.store.SetOptimizationProgress(runID, iter, bestScore)
 			}
 
-			// Controller: use p95 latency as the primary target, and CPU utilization as a
-			// guardrail to choose between horizontal scaling (replicas) and vertical scaling
-			// (CPU cores per instance). For now, we treat all services symmetrically.
+			// Host-level controller: when latency is above target and hosts are hot, scale
+			// out hosts up to max_hosts; once that bound is reached, scale host capacity
+			// vertically by increasing CPU cores per host.
+			hostCount := rm.HostCount()
+			maxHostCPU := rm.MaxHostCPUUtilization()
+
+			if currentP95 > targetP95*1.05 && hostCount > 0 {
+				if hostCount < maxHosts && maxHostCPU >= hostCPUHighThreshold {
+					if err := rm.ScaleOutHosts(hostCount + 1); err != nil {
+						logger.Error("online controller failed to scale out hosts",
+							"run_id", runID,
+							"current_hosts", hostCount,
+							"target_hosts", hostCount+1,
+							"error", err)
+					} else {
+						logger.Info("online controller scaled out hosts",
+							"run_id", runID,
+							"previous_hosts", hostCount,
+							"new_hosts", rm.HostCount(),
+							"max_hosts", maxHosts,
+							"max_host_cpu_utilization", maxHostCPU)
+					}
+				} else if hostCount >= maxHosts && maxHostCPU >= hostCPUHighThreshold {
+					hostCPUStep := int(math.Ceil(opt.StepSize))
+					if hostCPUStep < 1 {
+						hostCPUStep = 1
+					}
+					rm.IncreaseHostCapacity(hostCPUStep, 0)
+					logger.Info("online controller increased host capacity",
+						"run_id", runID,
+						"cpu_step", hostCPUStep,
+						"host_count", rm.HostCount(),
+						"max_hosts", maxHosts,
+						"max_host_cpu_utilization", maxHostCPU)
+				}
+			}
+
+			// Service-level controller: use p95 latency as the primary target, and CPU
+			// utilization as a guardrail to choose between horizontal scaling (replicas)
+			// and vertical scaling (CPU cores per instance). For now, we treat all
+			// services symmetrically.
 			step := int(opt.StepSize)
 			if step < 1 {
 				step = 1

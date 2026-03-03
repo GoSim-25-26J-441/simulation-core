@@ -51,6 +51,26 @@ func (h *Host) MemoryGB() int {
 	return h.memoryGB
 }
 
+// SetCPUCores updates the host's CPU core capacity. Values less than 1 are clamped to 1.
+func (h *Host) SetCPUCores(cores int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cores < 1 {
+		cores = 1
+	}
+	h.cpuCores = cores
+}
+
+// SetMemoryGB updates the host's memory capacity in GB. Values less than 1 are clamped to 1.
+func (h *Host) SetMemoryGB(memoryGB int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if memoryGB < 1 {
+		memoryGB = 1
+	}
+	h.memoryGB = memoryGB
+}
+
 // CPUUtilization returns CPU utilization (0.0 to 1.0)
 func (h *Host) CPUUtilization() float64 {
 	h.mu.RLock()
