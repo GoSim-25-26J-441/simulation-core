@@ -255,6 +255,45 @@ func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB fl
 		return fmt.Errorf("service not found: %s", serviceID)
 	}
 
+	// First, check host capacity constraints for the proposed change.
+	for hostID, host := range m.hosts {
+		hostInstances := m.collectInstancesForHost(hostID)
+		if len(hostInstances) == 0 {
+			continue
+		}
+
+		totalCPU := 0.0
+		totalMemMB := 0.0
+		for _, inst := range hostInstances {
+			cpu := inst.CPUCores()
+			mem := inst.MemoryMB()
+			if inst.ServiceName() == serviceID {
+				if cpuCores > 0 {
+					cpu = cpuCores
+				}
+				if memoryMB > 0 {
+					mem = memoryMB
+				}
+			}
+			totalCPU += cpu
+			totalMemMB += mem
+		}
+
+		// Enforce CPU capacity if host has a finite number of cores.
+		if cores := host.CPUCores(); cores > 0 && totalCPU > float64(cores)+1e-9 {
+			return fmt.Errorf("host CPU capacity exceeded on %s: requested %.2f cores, capacity %d", hostID, totalCPU, cores)
+		}
+
+		// Enforce memory capacity if host has finite memory configured.
+		if memGB := host.MemoryGB(); memGB > 0 {
+			capacityMB := float64(memGB) * 1024.0
+			if totalMemMB > capacityMB+1e-6 {
+				return fmt.Errorf("host memory capacity exceeded on %s: requested %.2f MB, capacity %.2f MB", hostID, totalMemMB, capacityMB)
+			}
+		}
+	}
+
+	// Apply the update now that capacity checks have passed.
 	for _, inst := range instances {
 		if cpuCores > 0 {
 			inst.SetCPUCores(cpuCores)

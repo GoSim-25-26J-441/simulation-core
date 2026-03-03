@@ -818,10 +818,8 @@ func TestServiceInstanceMethods(t *testing.T) {
 func TestManagerUpdateServiceResources(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{
-		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
-		Services: []config.Service{
-			{ID: "svc1", Replicas: 2, Model: "cpu"},
-		},
+		Hosts:    []config.Host{{ID: "host-1", Cores: 8}},
+		Services: []config.Service{{ID: "svc1", Replicas: 2, Model: "cpu"}},
 	}
 	if err := m.InitializeFromScenario(scenario); err != nil {
 		t.Fatalf("InitializeFromScenario error: %v", err)
@@ -835,6 +833,7 @@ func TestManagerUpdateServiceResources(t *testing.T) {
 		t.Fatalf("expected default resources before update, got cpu=%f mem=%f", instances[0].CPUCores(), instances[0].MemoryMB())
 	}
 
+	// Happy path: increase resources within host capacity.
 	if err := m.UpdateServiceResources("svc1", 4.0, 2048.0); err != nil {
 		t.Fatalf("UpdateServiceResources error: %v", err)
 	}
@@ -848,6 +847,21 @@ func TestManagerUpdateServiceResources(t *testing.T) {
 			t.Fatalf("expected memory updated to 2048.0, got %f", inst.MemoryMB())
 		}
 	}
+
+	// Capacity guard: attempt to overcommit CPU should fail and leave resources unchanged.
+	if err := m.UpdateServiceResources("svc1", 16.0, 2048.0); err == nil {
+		t.Fatalf("expected error when exceeding host CPU capacity, got nil")
+	}
+	instances = m.GetInstancesForService("svc1")
+	for _, inst := range instances {
+		if inst.CPUCores() != 4.0 {
+			t.Fatalf("expected CPU cores to remain at 4.0 after failed update, got %f", inst.CPUCores())
+		}
+		if inst.MemoryMB() != 2048.0 {
+			t.Fatalf("expected memory to remain at 2048.0 after failed update, got %f", inst.MemoryMB())
+		}
+	}
+
 }
 
 func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
