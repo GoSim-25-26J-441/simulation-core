@@ -219,7 +219,8 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 			// Exit when terminal status is reached
 			if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
 				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
-				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
+				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
 				return nil
 			}
 		}

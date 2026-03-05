@@ -216,3 +216,86 @@ workload:
 		t.Fatalf("expected metrics to exist")
 	}
 }
+
+// Test that an online optimization run that is explicitly stopped (STOPPED status)
+// still produces aggregated metrics that are stored on the run record.
+func TestRunExecutorOnlineStopFinalizesMetrics(t *testing.T) {
+	store := NewRunStore()
+	onlineScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 5}
+`
+
+	rec, err := store.Create("online-stop", &simulationv1.RunInput{
+		ScenarioYaml: onlineScenario,
+		// DurationMs is ignored for online optimization; controller runs until StopRun.
+		DurationMs:   0,
+		RealTimeMode: true,
+		Optimization: &simulationv1.OptimizationConfig{
+			Objective:            "p95_latency_ms",
+			MaxIterations:        0,
+			EvaluationDurationMs: 0,
+			Online:               true,
+			TargetP95LatencyMs:   50.0,
+			ControlIntervalMs:    50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	exec := NewRunExecutor(store)
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	// Wait for the run to reach RUNNING before we stop it.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("online-stop")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if _, err := exec.Stop("online-stop"); err != nil {
+		t.Fatalf("Stop error: %v", err)
+	}
+
+	// Wait for STOPPED status and metrics to be finalized.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("online-stop")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED && rec.Metrics != nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	rec, ok := store.Get("online-stop")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_STOPPED {
+		t.Fatalf("expected STOPPED status, got %v", rec.Run.Status)
+	}
+	if rec.Metrics == nil {
+		t.Fatalf("expected metrics to be finalized for stopped online run")
+	}
+}

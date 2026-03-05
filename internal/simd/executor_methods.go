@@ -177,8 +177,8 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 		if host, ok := rm.GetHost(hostID); ok {
 			cfg.Hosts = append(cfg.Hosts, &simulationv1.HostConfigEntry{
 				HostId:   hostID,
-				CpuCores: int32(host.CPUCores()),
-				MemoryGb: int32(host.MemoryGB()),
+				CpuCores: clampIntToInt32(host.CPUCores()),
+				MemoryGb: clampIntToInt32(host.MemoryGB()),
 			})
 		}
 	}
@@ -192,4 +192,17 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 		}
 	}
 	return cfg, true
+}
+
+// clampIntToInt32 safely converts an int to int32, clamping to the int32 range.
+func clampIntToInt32(n int) int32 {
+	const max = 1<<31 - 1
+	const min = -1 << 31
+	if n > max {
+		return max
+	}
+	if n < min {
+		return min
+	}
+	return int32(n)
 }

@@ -260,6 +260,8 @@ func parseRunStatus(statusStr string) simulationv1.RunStatus {
 		return simulationv1.RunStatus_RUN_STATUS_FAILED
 	case "CANCELLED":
 		return simulationv1.RunStatus_RUN_STATUS_CANCELLED
+	case "STOPPED":
+		return simulationv1.RunStatus_RUN_STATUS_STOPPED
 	default:
 		return simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED
 	}
@@ -565,10 +567,10 @@ func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Re
 	services := make([]map[string]any, 0, len(cfg.Services))
 	for _, srv := range cfg.Services {
 		services = append(services, map[string]any{
-			"service_id":  srv.ServiceId,
-			"replicas":    srv.Replicas,
-			"cpu_cores":   srv.CpuCores,
-			"memory_mb":   srv.MemoryMb,
+			"service_id": srv.ServiceId,
+			"replicas":   srv.Replicas,
+			"cpu_cores":  srv.CpuCores,
+			"memory_mb":  srv.MemoryMb,
 		})
 	}
 	workload := make([]map[string]any, 0, len(cfg.Workload))
@@ -948,7 +950,8 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				// Exit if terminal status
 				if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
 					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
-					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
+					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
 					s.sendSSEEvent(w, "complete", map[string]any{
 						"status": rec.Run.Status.String(),
 					})
@@ -978,10 +981,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					serviceResources := make([]map[string]any, 0, len(cfg.Services))
 					for _, svc := range cfg.Services {
 						serviceResources = append(serviceResources, map[string]any{
-							"service_id":  svc.ServiceId,
-							"replicas":    svc.Replicas,
-							"cpu_cores":   svc.CpuCores,
-							"memory_mb":   svc.MemoryMb,
+							"service_id": svc.ServiceId,
+							"replicas":   svc.Replicas,
+							"cpu_cores":  svc.CpuCores,
+							"memory_mb":  svc.MemoryMb,
 						})
 					}
 					hostResources := make([]map[string]any, 0, len(cfg.Hosts))

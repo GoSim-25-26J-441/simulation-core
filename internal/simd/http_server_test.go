@@ -168,8 +168,8 @@ func TestHTTPServerStopRun(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected run in response")
 	}
-	if run["status"] != "RUN_STATUS_CANCELLED" {
-		t.Fatalf("expected cancelled status, got %v", run["status"])
+	if run["status"] != "RUN_STATUS_STOPPED" {
+		t.Fatalf("expected stopped status, got %v", run["status"])
 	}
 }
 

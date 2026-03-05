@@ -74,7 +74,8 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 		return rec, nil
 	case simulationv1.RunStatus_RUN_STATUS_COMPLETED,
 		simulationv1.RunStatus_RUN_STATUS_FAILED,
-		simulationv1.RunStatus_RUN_STATUS_CANCELLED:
+		simulationv1.RunStatus_RUN_STATUS_CANCELLED,
+		simulationv1.RunStatus_RUN_STATUS_STOPPED:
 		return nil, fmt.Errorf("%w: %s", ErrRunTerminal, runID)
 	}
 
@@ -107,7 +108,7 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	return updated, nil
 }
 
-// Stop requests cancellation for a running run and marks it cancelled.
+// Stop requests cancellation for a running run and marks it stopped.
 func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if runID == "" {
 		return nil, ErrRunIDMissing
@@ -121,7 +122,7 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 		cancel()
 	}
 
-	updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_STOPPED, "")
 	if err != nil {
 		return nil, err
 	}
@@ -247,6 +248,16 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 
 	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations, candidateRunIDs); err != nil {
 		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
+	}
+
+	// Copy the best run's metrics onto the parent optimization run so GET /metrics
+	// and SSE metrics_snapshot (on the next tick before complete) expose them.
+	if bestRunID != "" {
+		if bestRec, ok := e.store.Get(bestRunID); ok && bestRec.Metrics != nil {
+			if setErr := e.store.SetMetrics(runID, bestRec.Metrics); setErr != nil {
+				logger.Error("failed to set parent run metrics from best run", "run_id", runID, "best_run_id", bestRunID, "error", setErr)
+			}
+		}
 	}
 
 	updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
@@ -381,10 +392,47 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	// Run simulation; expect it to be stopped explicitly via StopRun.
 	logger.Info("starting online optimization run", "run_id", runID, "duration", onlineRunDuration)
 	if err := eng.Run(onlineRunDuration); err != nil {
-		// If cancelled, treat as normal shutdown for online mode
+		// If cancelled, handle based on current run status.
 		if ctx.Err() != nil {
+			rec, ok := e.store.Get(runID)
+			if !ok {
+				logger.Info("online simulation cancelled; run record not found", "run_id", runID)
+				return
+			}
+
+			// If the run was explicitly stopped (STOPPED status), finalize metrics
+			// similarly to the natural completion path so callbacks and GET /metrics
+			// have a final aggregated snapshot.
+			if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
+				logger.Info("online simulation stopped; finalizing metrics", "run_id", runID)
+
+				metricsCollector.Stop()
+
+				serviceLabels := make([]map[string]string, 0, len(scenario.Services))
+				for _, svc := range scenario.Services {
+					serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
+				}
+				engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
+				for _, svc := range scenario.Services {
+					if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
+						sm.ActiveReplicas = svc.Replicas
+					}
+				}
+
+				pbMetrics := convertMetricsToProto(engineMetrics)
+				if err := e.store.SetMetrics(runID, pbMetrics); err != nil {
+					logger.Error("failed to set metrics for stopped online run", "run_id", runID, "error", err)
+				}
+
+				// Fetch updated record (with metrics) for notification.
+				if updatedRec, ok := e.store.Get(runID); ok {
+					e.sendNotificationIfConfigured(updatedRec)
+				}
+				return
+			}
+
+			// For other cancellation reasons, keep legacy behaviour (no aggregated metrics).
 			logger.Info("online simulation cancelled", "run_id", runID)
-			rec, _ := e.store.Get(runID)
 			e.sendNotificationIfConfigured(rec)
 			return
 		}

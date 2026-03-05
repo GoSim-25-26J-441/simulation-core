@@ -730,8 +730,8 @@ workload:
 	if !ok {
 		t.Fatalf("expected run to exist")
 	}
-	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_CANCELLED {
-		t.Fatalf("expected cancelled, got %v", rec.Run.Status)
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_STOPPED {
+		t.Fatalf("expected stopped, got %v", rec.Run.Status)
 	}
 }
 
@@ -932,7 +932,7 @@ workload:
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		rec, ok := store.Get("run-1")
-		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -941,7 +941,7 @@ workload:
 	if !ok {
 		t.Fatalf("expected run to exist")
 	}
-	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_CANCELLED {
-		t.Fatalf("expected cancelled, got %v", rec.Run.Status)
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_STOPPED {
+		t.Fatalf("expected stopped, got %v", rec.Run.Status)
 	}
 }

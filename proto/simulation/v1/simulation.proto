@@ -277,6 +277,7 @@ enum RunStatus {
   RUN_STATUS_COMPLETED = 3;
   RUN_STATUS_FAILED = 4;
   RUN_STATUS_CANCELLED = 5;
+  RUN_STATUS_STOPPED = 6;
 }
 
 message RunMetrics {
