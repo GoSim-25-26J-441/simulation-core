@@ -143,7 +143,8 @@ func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg
 		}
 	case simulationv1.RunStatus_RUN_STATUS_COMPLETED,
 		simulationv1.RunStatus_RUN_STATUS_FAILED,
-		simulationv1.RunStatus_RUN_STATUS_CANCELLED:
+		simulationv1.RunStatus_RUN_STATUS_CANCELLED,
+		simulationv1.RunStatus_RUN_STATUS_STOPPED:
 		rec.Run.EndedAtUnixMs = nowUnixMs()
 	}
 

@@ -288,7 +288,8 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 				return score, nil
 
 			case simulationv1.RunStatus_RUN_STATUS_FAILED,
-				simulationv1.RunStatus_RUN_STATUS_CANCELLED:
+				simulationv1.RunStatus_RUN_STATUS_CANCELLED,
+				simulationv1.RunStatus_RUN_STATUS_STOPPED:
 				// Run failed
 				o.mu.Lock()
 				runCtx.Status = RunStatusFailed

@@ -674,6 +674,99 @@ workload:
 	}
 }
 
+func TestGRPCServerUpdateRunConfigurationVerticalScaling(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewSimulationGRPCServer(store, executor)
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   1000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	if _, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: createResp.Run.Id}); err != nil {
+		t.Fatalf("StartRun error: %v", err)
+	}
+
+	// Wait briefly for initialization but ensure run is still RUNNING
+	time.Sleep(10 * time.Millisecond)
+	rec, ok := store.Get(createResp.Run.Id)
+	if !ok {
+		t.Fatal("run not found after start")
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping vertical scaling test", rec.Run.Status)
+	}
+
+	_, err = srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
+		RunId: createResp.Run.Id,
+		Services: []*simulationv1.ServiceReplicasUpdate{
+			{
+				ServiceId: "svc1",
+				Replicas:  2,
+				CpuCores:  4.0,
+				MemoryMb:  2048.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRunConfiguration error: %v", err)
+	}
+
+	// Verify via GetRunConfiguration
+	cfgResp, err := srv.GetRunConfiguration(ctx, &simulationv1.GetRunConfigurationRequest{
+		RunId: createResp.Run.Id,
+	})
+	if err != nil {
+		t.Fatalf("GetRunConfiguration error: %v", err)
+	}
+	if cfgResp.Configuration == nil || len(cfgResp.Configuration.Services) == 0 {
+		t.Fatalf("expected configuration with at least one service")
+	}
+	var svcCfg *simulationv1.ServiceConfigEntry
+	for _, sCfg := range cfgResp.Configuration.Services {
+		if sCfg.ServiceId == "svc1" {
+			svcCfg = sCfg
+			break
+		}
+	}
+	if svcCfg == nil {
+		t.Fatalf("expected svc1 in configuration")
+	}
+	if svcCfg.CpuCores != 4.0 {
+		t.Fatalf("expected cpu_cores=4.0, got %f", svcCfg.CpuCores)
+	}
+	if svcCfg.MemoryMb != 2048.0 {
+		t.Fatalf("expected memory_mb=2048.0, got %f", svcCfg.MemoryMb)
+	}
+}
+
 func TestGRPCServerUpdateRunConfiguration(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)

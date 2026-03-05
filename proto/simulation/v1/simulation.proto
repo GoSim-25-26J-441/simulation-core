@@ -123,6 +123,11 @@ message UpdateRunConfigurationRequest {
 message ServiceReplicasUpdate {
   string service_id = 1;
   int32 replicas = 2;
+  // Optional vertical scaling parameters per service instance. When > 0, these
+  // override the CPU cores and memory (MB) allocated to each instance of the
+  // service in this run. When 0, the existing allocation is left unchanged.
+  double cpu_cores = 3;
+  double memory_mb = 4;
 }
 
 message UpdateRunConfigurationResponse {
@@ -138,18 +143,28 @@ message GetRunConfigurationResponse {
 }
 
 message RunConfiguration {
-  repeated ServiceConfigEntry services = 1;   // current replicas per service
-  repeated WorkloadPatternEntry workload = 2; // current workload patterns (pattern_key, rate_rps)
+  repeated ServiceConfigEntry services = 1;    // current replicas and per-instance resources per service
+  repeated WorkloadPatternEntry workload = 2;  // current workload patterns (pattern_key, rate_rps)
+  repeated HostConfigEntry hosts = 3;          // current host resource allocations (cores, memory)
 }
 
 message ServiceConfigEntry {
   string service_id = 1;
   int32 replicas = 2;
+  // Current per-instance CPU cores and memory (MB) for this service.
+  double cpu_cores = 3;
+  double memory_mb = 4;
 }
 
 message WorkloadPatternEntry {
   string pattern_key = 1;
   double rate_rps = 2;
+}
+
+message HostConfigEntry {
+  string host_id = 1;
+  int32 cpu_cores = 2;
+  int32 memory_gb = 3;
 }
 
 // ---- Core models
@@ -202,6 +217,36 @@ message OptimizationConfig {
 
   // Step size for parameter exploration (default 1.0).
   double step_size = 3;
+
+  // Duration (in milliseconds) for each evaluation run in this optimization experiment.
+  // If RunInput.duration_ms is 0 and this is > 0, the server uses this value as the
+  // per-run simulation horizon for all candidate runs in the optimization.
+  // If both are 0, the server falls back to a built-in default.
+  int64 evaluation_duration_ms = 4;
+
+  // When true, this optimization is an "online" controller that runs within a single
+  // long-lived simulation run. The simulator adjusts configuration dynamically using
+  // the existing dynamic configuration APIs instead of spawning separate evaluation
+  // runs. The run continues until it is explicitly stopped.
+  bool online = 5;
+
+  // Target p95 latency in milliseconds for online optimization. When > 0, the
+  // controller will attempt to keep the observed p95 latency at or below this
+  // threshold by adjusting configuration (e.g., replicas) over time.
+  double target_p95_latency_ms = 6;
+
+  // Control interval in milliseconds for online optimization. When > 0, this
+  // determines how often the controller reads metrics and attempts adjustments.
+  // Defaults to 1000ms when unset.
+  int64 control_interval_ms = 7;
+
+  // Minimum and maximum number of hosts that the online controller is allowed
+  // to use when performing host-level scaling. When max_hosts is greater than
+  // the initial host count, the controller may scale out by adding hosts up to
+  // this limit before switching to vertical host scaling. When min_hosts is
+  // greater than 0, the controller will avoid scaling below this bound.
+  int32 min_hosts = 8;
+  int32 max_hosts = 9;
 }
 
 message Run {
@@ -232,6 +277,7 @@ enum RunStatus {
   RUN_STATUS_COMPLETED = 3;
   RUN_STATUS_FAILED = 4;
   RUN_STATUS_CANCELLED = 5;
+  RUN_STATUS_STOPPED = 6;
 }
 
 message RunMetrics {

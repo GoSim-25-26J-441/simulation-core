@@ -313,3 +313,75 @@ workload:
 		t.Fatal("GetRunConfiguration for non-existent run should return ok=false")
 	}
 }
+
+func TestRunExecutorUpdateServiceResources(t *testing.T) {
+	store := NewRunStore()
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 2
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	_, err := store.Create("run-1", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   1000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	exec := NewRunExecutor(store)
+	if _, err := exec.Start("run-1"); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	// Allow resource manager to be initialized but ensure run is still RUNNING.
+	time.Sleep(10 * time.Millisecond)
+	rec, ok := store.Get("run-1")
+	if !ok {
+		t.Fatal("run not found after start")
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping UpdateServiceResources test", rec.Run.Status)
+	}
+	defer exec.Stop("run-1")
+
+	if err := exec.UpdateServiceResources("run-1", "svc1", 4.0, 2048.0); err != nil {
+		t.Fatalf("UpdateServiceResources error: %v", err)
+	}
+
+	cfg, ok := exec.GetRunConfiguration("run-1")
+	if !ok || cfg == nil {
+		t.Fatalf("expected GetRunConfiguration to succeed after resource update")
+	}
+
+	var svcCfg *simulationv1.ServiceConfigEntry
+	for _, s := range cfg.Services {
+		if s.ServiceId == "svc1" {
+			svcCfg = s
+			break
+		}
+	}
+	if svcCfg == nil {
+		t.Fatalf("expected svc1 in run configuration")
+	}
+	if svcCfg.CpuCores != 4.0 {
+		t.Fatalf("expected cpu_cores=4.0 in config, got %f", svcCfg.CpuCores)
+	}
+	if svcCfg.MemoryMb != 2048.0 {
+		t.Fatalf("expected memory_mb=2048.0 in config, got %f", svcCfg.MemoryMb)
+	}
+}

@@ -240,6 +240,167 @@ func (m *Manager) ActiveReplicas(serviceID string) int {
 	return len(instances)
 }
 
+// HostCount returns the number of hosts currently managed.
+func (m *Manager) HostCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.hosts)
+}
+
+// MaxHostCPUUtilization returns the maximum CPU utilization across all hosts.
+// If there are no hosts, it returns 0.
+func (m *Manager) MaxHostCPUUtilization() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	maxUtil := 0.0
+	for _, host := range m.hosts {
+		if util := host.CPUUtilization(); util > maxUtil {
+			maxUtil = util
+		}
+	}
+	return maxUtil
+}
+
+// HostIDs returns a slice of all host IDs currently managed.
+func (m *Manager) HostIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ids := make([]string, 0, len(m.hosts))
+	for id := range m.hosts {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ScaleOutHosts increases the number of hosts up to targetCount by adding new
+// hosts with the same capacity as an existing host. If targetCount is less
+// than or equal to the current host count, this is a no-op.
+func (m *Manager) ScaleOutHosts(targetCount int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current := len(m.hosts)
+	if targetCount <= current {
+		return nil
+	}
+	if current == 0 {
+		return fmt.Errorf("cannot scale out hosts: no existing hosts to copy capacity from")
+	}
+
+	// Pick an arbitrary existing host as the template for new hosts.
+	var template *Host
+	for _, h := range m.hosts {
+		template = h
+		break
+	}
+	if template == nil {
+		return fmt.Errorf("cannot scale out hosts: template host not found")
+	}
+
+	nextIndex := current + 1
+	for len(m.hosts) < targetCount {
+		id := fmt.Sprintf("host-auto-%d", nextIndex)
+		nextIndex++
+		if _, exists := m.hosts[id]; exists {
+			continue
+		}
+		host := NewHost(id, template.CPUCores(), template.MemoryGB())
+		m.hosts[id] = host
+	}
+
+	return nil
+}
+
+// IncreaseHostCapacity increases CPU cores and/or memory (GB) for all hosts.
+// Non-positive deltas are ignored for the respective dimension.
+func (m *Manager) IncreaseHostCapacity(cpuDelta, memoryGBDelta int) {
+	if cpuDelta <= 0 && memoryGBDelta <= 0 {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, host := range m.hosts {
+		if cpuDelta > 0 {
+			newCores := host.CPUCores() + cpuDelta
+			host.SetCPUCores(newCores)
+		}
+		if memoryGBDelta > 0 {
+			newMem := host.MemoryGB() + memoryGBDelta
+			host.SetMemoryGB(newMem)
+		}
+	}
+}
+
+// UpdateServiceResources updates per-instance CPU cores and memory (MB) for all
+// instances of a given service. Passing 0 for a field leaves it unchanged.
+func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB float64) error {
+	if cpuCores < 0 || memoryMB < 0 {
+		return fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	instances := m.getInstancesForServiceLocked(serviceID)
+	if len(instances) == 0 {
+		return fmt.Errorf("service not found: %s", serviceID)
+	}
+
+	// First, check host capacity constraints for the proposed change.
+	for hostID, host := range m.hosts {
+		hostInstances := m.collectInstancesForHost(hostID)
+		if len(hostInstances) == 0 {
+			continue
+		}
+
+		totalCPU := 0.0
+		totalMemMB := 0.0
+		for _, inst := range hostInstances {
+			cpu := inst.CPUCores()
+			mem := inst.MemoryMB()
+			if inst.ServiceName() == serviceID {
+				if cpuCores > 0 {
+					cpu = cpuCores
+				}
+				if memoryMB > 0 {
+					mem = memoryMB
+				}
+			}
+			totalCPU += cpu
+			totalMemMB += mem
+		}
+
+		// Enforce CPU capacity if host has a finite number of cores.
+		if cores := host.CPUCores(); cores > 0 && totalCPU > float64(cores)+1e-9 {
+			return fmt.Errorf("host CPU capacity exceeded on %s: requested %.2f cores, capacity %d", hostID, totalCPU, cores)
+		}
+
+		// Enforce memory capacity if host has finite memory configured.
+		if memGB := host.MemoryGB(); memGB > 0 {
+			capacityMB := float64(memGB) * 1024.0
+			if totalMemMB > capacityMB+1e-6 {
+				return fmt.Errorf("host memory capacity exceeded on %s: requested %.2f MB, capacity %.2f MB", hostID, totalMemMB, capacityMB)
+			}
+		}
+	}
+
+	// Apply the update now that capacity checks have passed.
+	for _, inst := range instances {
+		if cpuCores > 0 {
+			inst.SetCPUCores(cpuCores)
+		}
+		if memoryMB > 0 {
+			inst.SetMemoryMB(memoryMB)
+		}
+	}
+
+	// Host utilization will be recomputed on next allocation/release; no need
+	// to force an update here for correctness of the simulator.
+	return nil
+}
+
 // ListServiceIDs returns all service IDs that have at least one instance (for GET config).
 func (m *Manager) ListServiceIDs() []string {
 	m.mu.RLock()

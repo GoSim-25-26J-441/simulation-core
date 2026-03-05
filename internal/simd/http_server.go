@@ -260,6 +260,8 @@ func parseRunStatus(statusStr string) simulationv1.RunStatus {
 		return simulationv1.RunStatus_RUN_STATUS_FAILED
 	case "CANCELLED":
 		return simulationv1.RunStatus_RUN_STATUS_CANCELLED
+	case "STOPPED":
+		return simulationv1.RunStatus_RUN_STATUS_STOPPED
 	default:
 		return simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED
 	}
@@ -404,8 +406,10 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http.Request, runID string) {
 	var req struct {
 		Services []struct {
-			ID       string `json:"id"`
-			Replicas int    `json:"replicas"`
+			ID       string   `json:"id"`
+			Replicas int      `json:"replicas"`
+			CPUCores *float64 `json:"cpu_cores,omitempty"`
+			MemoryMB *float64 `json:"memory_mb,omitempty"`
 		} `json:"services"`
 		Workload []struct {
 			PatternKey string  `json:"pattern_key"`
@@ -461,6 +465,30 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 				s.writeError(w, http.StatusInternalServerError, err.Error())
 			}
 			return
+		}
+
+		// Optional vertical scaling for this service
+		if (svc.CPUCores != nil && *svc.CPUCores > 0) || (svc.MemoryMB != nil && *svc.MemoryMB > 0) {
+			var cpuVal, memVal float64
+			if svc.CPUCores != nil {
+				cpuVal = *svc.CPUCores
+			}
+			if svc.MemoryMB != nil {
+				memVal = *svc.MemoryMB
+			}
+			if err := s.Executor.UpdateServiceResources(runID, svc.ID, cpuVal, memVal); err != nil {
+				switch {
+				case errors.Is(err, ErrRunNotFound):
+					s.writeError(w, http.StatusNotFound, err.Error())
+				case errors.Is(err, ErrRunIDMissing):
+					s.writeError(w, http.StatusBadRequest, err.Error())
+				case errors.Is(err, ErrRunTerminal):
+					s.writeError(w, http.StatusBadRequest, err.Error())
+				default:
+					s.writeError(w, http.StatusInternalServerError, err.Error())
+				}
+				return
+			}
 		}
 	}
 
@@ -541,6 +569,8 @@ func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Re
 		services = append(services, map[string]any{
 			"service_id": srv.ServiceId,
 			"replicas":   srv.Replicas,
+			"cpu_cores":  srv.CpuCores,
+			"memory_mb":  srv.MemoryMb,
 		})
 	}
 	workload := make([]map[string]any, 0, len(cfg.Workload))
@@ -550,10 +580,19 @@ func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Re
 			"rate_rps":    w.RateRps,
 		})
 	}
+	hosts := make([]map[string]any, 0, len(cfg.Hosts))
+	for _, h := range cfg.Hosts {
+		hosts = append(hosts, map[string]any{
+			"host_id":   h.HostId,
+			"cpu_cores": h.CpuCores,
+			"memory_gb": h.MemoryGb,
+		})
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"configuration": map[string]any{
 			"services": services,
 			"workload": workload,
+			"hosts":    hosts,
 		},
 	})
 }
@@ -911,7 +950,8 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				// Exit if terminal status
 				if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
 					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
-					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
+					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
 					s.sendSSEEvent(w, "complete", map[string]any{
 						"status": rec.Run.Status.String(),
 					})
@@ -935,9 +975,37 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Send aggregated metrics snapshot if available
 			if rec.Metrics != nil {
 				metricsJSON := convertMetricsToJSON(rec.Metrics)
-				s.sendSSEEvent(w, "metrics_snapshot", map[string]any{
-					"metrics": metricsJSON,
-				})
+				payload := map[string]any{"metrics": metricsJSON}
+				// Include current resource allocations (services and hosts) when available
+				if cfg, ok := s.Executor.GetRunConfiguration(runID); ok {
+					serviceResources := make([]map[string]any, 0, len(cfg.Services))
+					for _, svc := range cfg.Services {
+						serviceResources = append(serviceResources, map[string]any{
+							"service_id": svc.ServiceId,
+							"replicas":   svc.Replicas,
+							"cpu_cores":  svc.CpuCores,
+							"memory_mb":  svc.MemoryMb,
+						})
+					}
+					hostResources := make([]map[string]any, 0, len(cfg.Hosts))
+					for _, h := range cfg.Hosts {
+						hostResources = append(hostResources, map[string]any{
+							"host_id":   h.HostId,
+							"cpu_cores": h.CpuCores,
+							"memory_gb": h.MemoryGb,
+						})
+					}
+					payload["resources"] = map[string]any{
+						"services": serviceResources,
+						"hosts":    hostResources,
+					}
+				}
+				if hasCollector && collector != nil {
+					if hostMetrics := hostMetricsFromCollector(collector); len(hostMetrics) > 0 {
+						payload["host_metrics"] = hostMetrics
+					}
+				}
+				s.sendSSEEvent(w, "metrics_snapshot", payload)
 			}
 
 			// Send time-series metric updates if collector is available
@@ -1126,6 +1194,59 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 	}
 
 	return result
+}
+
+// hostMetricsFromCollector builds a list of per-host metrics from the collector's
+// host-labelled time series (cpu_utilization, memory_utilization). Returns nil if none.
+func hostMetricsFromCollector(collector *metrics.Collector) []map[string]any {
+	type hostVals struct {
+		cpuUtil float64
+		memUtil float64
+	}
+	byHost := make(map[string]*hostVals)
+
+	for _, metricName := range []string{"cpu_utilization", "memory_utilization"} {
+		labelCombos := collector.GetLabelsForMetric(metricName)
+		for _, labels := range labelCombos {
+			hostID, ok := labels["host"]
+			if !ok || hostID == "" {
+				continue
+			}
+			points := collector.GetTimeSeries(metricName, labels)
+			if len(points) == 0 {
+				continue
+			}
+			latest := points[len(points)-1].Value
+			if byHost[hostID] == nil {
+				byHost[hostID] = &hostVals{}
+			}
+			switch metricName {
+			case "cpu_utilization":
+				byHost[hostID].cpuUtil = latest
+			case "memory_utilization":
+				byHost[hostID].memUtil = latest
+			}
+		}
+	}
+
+	if len(byHost) == 0 {
+		return nil
+	}
+	hostIDs := make([]string, 0, len(byHost))
+	for h := range byHost {
+		hostIDs = append(hostIDs, h)
+	}
+	sort.Strings(hostIDs)
+	out := make([]map[string]any, 0, len(hostIDs))
+	for _, hostID := range hostIDs {
+		v := byHost[hostID]
+		out = append(out, map[string]any{
+			"host_id":            hostID,
+			"cpu_utilization":    v.cpuUtil,
+			"memory_utilization": v.memUtil,
+		})
+	}
+	return out
 }
 
 func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {

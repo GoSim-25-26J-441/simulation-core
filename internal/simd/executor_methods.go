@@ -28,6 +28,33 @@ func (e *RunExecutor) UpdateServiceReplicas(runID string, serviceID string, repl
 	return rm.ScaleService(serviceID, replicas)
 }
 
+// UpdateServiceResources updates per-instance CPU cores and memory (MB) for a service
+// in a running simulation. Passing 0 for a field leaves it unchanged.
+func (e *RunExecutor) UpdateServiceResources(runID string, serviceID string, cpuCores, memoryMB float64) error {
+	if runID == "" {
+		return ErrRunIDMissing
+	}
+	if serviceID == "" {
+		return fmt.Errorf("service_id is required")
+	}
+	if cpuCores < 0 || memoryMB < 0 {
+		return fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+	if cpuCores == 0 && memoryMB == 0 {
+		return nil
+	}
+
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	return rm.UpdateServiceResources(serviceID, cpuCores, memoryMB)
+}
+
 // UpdatePolicies updates policies (e.g. autoscaling) for a running simulation
 func (e *RunExecutor) UpdatePolicies(runID string, policies *config.Policies) error {
 	if runID == "" {
@@ -130,10 +157,30 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 		default:
 			replicas = int32(n)
 		}
+		// Derive per-instance CPU/memory from one of the active instances.
+		var cpuCores, memoryMB float64
+		instances := rm.GetInstancesForService(svcID)
+		if len(instances) > 0 {
+			cpuCores = instances[0].CPUCores()
+			memoryMB = instances[0].MemoryMB()
+		}
 		cfg.Services = append(cfg.Services, &simulationv1.ServiceConfigEntry{
 			ServiceId: svcID,
 			Replicas:  replicas,
+			CpuCores:  cpuCores,
+			MemoryMb:  memoryMB,
 		})
+	}
+
+	// Populate host allocations (CPU cores and memory in GB) from the resource manager.
+	for _, hostID := range rm.HostIDs() {
+		if host, ok := rm.GetHost(hostID); ok {
+			cfg.Hosts = append(cfg.Hosts, &simulationv1.HostConfigEntry{
+				HostId:   hostID,
+				CpuCores: clampIntToInt32(host.CPUCores()),
+				MemoryGb: clampIntToInt32(host.MemoryGB()),
+			})
+		}
 	}
 	patterns := ws.GetAllPatterns()
 	for key, state := range patterns {
@@ -145,4 +192,17 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 		}
 	}
 	return cfg, true
+}
+
+// clampIntToInt32 safely converts an int to int32, clamping to the int32 range.
+func clampIntToInt32(n int) int32 {
+	const max = 1<<31 - 1
+	const min = -1 << 31
+	if n > max {
+		return max
+	}
+	if n < min {
+		return min
+	}
+	return int32(n)
 }

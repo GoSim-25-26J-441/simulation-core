@@ -219,7 +219,8 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 			// Exit when terminal status is reached
 			if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
 				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
-				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED {
+				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
+				rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
 				return nil
 			}
 		}
@@ -310,6 +311,22 @@ func (s *SimulationGRPCServer) UpdateRunConfiguration(ctx context.Context, req *
 				return nil, status.Error(codes.InvalidArgument, err.Error())
 			default:
 				return nil, status.Error(codes.Internal, err.Error())
+			}
+		}
+
+		// Optional vertical scaling for this service
+		if svc.CpuCores > 0 || svc.MemoryMb > 0 {
+			if err := s.Executor.UpdateServiceResources(req.RunId, svc.ServiceId, svc.CpuCores, svc.MemoryMb); err != nil {
+				switch {
+				case errors.Is(err, ErrRunNotFound):
+					return nil, status.Error(codes.NotFound, err.Error())
+				case errors.Is(err, ErrRunIDMissing):
+					return nil, status.Error(codes.InvalidArgument, err.Error())
+				case errors.Is(err, ErrRunTerminal):
+					return nil, status.Error(codes.FailedPrecondition, err.Error())
+				default:
+					return nil, status.Error(codes.Internal, err.Error())
+				}
 			}
 		}
 	}

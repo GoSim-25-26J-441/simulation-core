@@ -283,18 +283,26 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		// Record resource utilization metrics
 		instance, ok := state.rm.GetServiceInstance(instanceID)
 		if ok {
-			// Record CPU utilization
+			// Record CPU utilization (instance-level)
 			cpuUtil := instance.CPUUtilization()
 			instanceLabels := metrics.CreateInstanceLabels(serviceID, instanceID)
 			metrics.RecordCPUUtilization(state.collector, cpuUtil, simTime, instanceLabels)
 
-			// Record memory utilization
+			// Record memory utilization (instance-level)
 			memUtil := instance.MemoryUtilization()
 			metrics.RecordMemoryUtilization(state.collector, memUtil, simTime, instanceLabels)
 
-			// Record queue length
+			// Record queue length (instance-level)
 			queueLength := instance.QueueLength()
 			metrics.RecordQueueLength(state.collector, float64(queueLength), simTime, instanceLabels)
+
+			// Record host-level metrics so SSE stream includes node-level data
+			hostID := instance.HostID()
+			if host, hostOk := state.rm.GetHost(hostID); hostOk {
+				hostLabels := metrics.CreateHostLabels(hostID)
+				metrics.RecordCPUUtilization(state.collector, host.CPUUtilization(), simTime, hostLabels)
+				metrics.RecordMemoryUtilization(state.collector, host.MemoryUtilization(), simTime, hostLabels)
+			}
 
 			// Model queueing delay based on mean service time
 			// Queue delay is estimated as the sum of expected service times for all queued requests.

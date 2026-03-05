@@ -234,14 +234,14 @@ Start executing a simulation run. The run status will change to `RUNNING` and si
 
 **POST** `/v1/runs/{run_id}:stop`
 
-Cancel a running simulation run.
+Stop a running simulation run. For online mode runs, this sets the status to `RUN_STATUS_STOPPED` and the simulator will attempt to compute a final aggregated metrics snapshot that is available via the callback and `GET /v1/runs/{id}/metrics`.
 
 **Response:**
 ```json
 {
   "run": {
     "id": "run-20240115-103000-abc123",
-    "status": "RUN_STATUS_CANCELLED",
+    "status": "RUN_STATUS_STOPPED",
     "created_at_unix_ms": 1705312200000,
     "started_at_unix_ms": 1705312201000,
     "completed_at_unix_ms": 1705312205000
@@ -1114,7 +1114,7 @@ func (c *SimulationClient) WaitForCompletion(runID string, timeout time.Duration
         }
 
         status := run.Run.Status
-        if status == "RUN_STATUS_COMPLETED" || status == "RUN_STATUS_FAILED" || status == "RUN_STATUS_CANCELLED" {
+        if status == "RUN_STATUS_COMPLETED" || status == "RUN_STATUS_FAILED" || status == "RUN_STATUS_CANCELLED" || status == "RUN_STATUS_STOPPED" {
             return nil
         }
 
@@ -1213,7 +1213,7 @@ class SimulationClient:
         while time.time() < deadline:
             run = self.get_run(run_id)
             status = run["status"]
-            if status in ["RUN_STATUS_COMPLETED", "RUN_STATUS_FAILED", "RUN_STATUS_CANCELLED"]:
+            if status in ["RUN_STATUS_COMPLETED", "RUN_STATUS_FAILED", "RUN_STATUS_CANCELLED", "RUN_STATUS_STOPPED"]:
                 return run
             time.sleep(1)
         raise TimeoutError("Run did not complete within timeout")
