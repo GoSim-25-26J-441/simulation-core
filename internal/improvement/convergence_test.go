@@ -127,6 +127,8 @@ func TestCombinedStrategy(t *testing.T) {
 		MinIterations:           2,
 	}
 	strategy := NewCombinedStrategy(cfg)
+	// Cover AddStrategy
+	strategy.AddStrategy(NewNoImprovementStrategy(cfg))
 
 	// Test with plateau (should trigger convergence)
 	history := []OptimizationStep{
