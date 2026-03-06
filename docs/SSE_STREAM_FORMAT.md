@@ -49,7 +49,14 @@ data: {"status":"RUN_STATUS_COMPLETED"}
 | `optimization_step`    | For online optimization runs; emitted when the controller applies a config change (replicas, CPU, hosts). Backend can append to `run.metadata.optimization_history`. |
 | `error`                | Stream or run error; `data.error` has the message. |
 
+### `metric_update` value semantics
+
+- **`request_count`** and **`request_error_count`**: `data.value` is the **cumulative total** so far for that (metric, labels). You can plot `(timestamp, value)` directly for “total requests over time” without client-side accumulation.
+- **All other metrics** (e.g. `request_latency_ms`, `cpu_utilization`, `memory_utilization`, `queue_length`): `data.value` is the **latest reading** (one observation or current gauge value).
+
 ### `metrics_snapshot` payload shape
+
+`metrics_snapshot` is sent **every poll interval** while the run is active (aggregates computed from the collector) and when the run has stored metrics (e.g. after completion). So the frontend receives periodic run-wide and per-service totals during the run without summing `metric_update` events.
 
 The `data` payload for `metrics_snapshot` has this high-level structure:
 

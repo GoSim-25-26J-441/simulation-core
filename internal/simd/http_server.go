@@ -994,11 +994,19 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				}
 			}
 
-			// Send aggregated metrics snapshot if available
+			// Send aggregated metrics snapshot: from store when run has ended, or from collector during run
+			var metricsToSend *simulationv1.RunMetrics
 			if rec.Metrics != nil {
-				metricsJSON := convertMetricsToJSON(rec.Metrics)
+				metricsToSend = rec.Metrics
+			} else if hasCollector && collector != nil {
+				// During run: compute aggregates from collector so frontend gets totals without client-side accumulation
+				serviceLabels := serviceLabelsFromInput(rec.Input)
+				engineMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
+				metricsToSend = convertMetricsToProto(engineMetrics)
+			}
+			if metricsToSend != nil {
+				metricsJSON := convertMetricsToJSON(metricsToSend)
 				payload := map[string]any{"metrics": metricsJSON}
-				// Include current resource allocations (services and hosts) when available
 				if cfg, ok := s.Executor.GetRunConfiguration(runID); ok {
 					serviceResources := make([]map[string]any, 0, len(cfg.Services))
 					for _, svc := range cfg.Services {
@@ -1043,38 +1051,37 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 						// Try with empty labels
 						points := collector.GetTimeSeries(metricName, nil)
 						if len(points) > 0 {
-							// Send latest point
 							latest := points[len(points)-1]
 							labelKey := ""
 							if lastSentTimestamps[metricName] == nil {
 								lastSentTimestamps[metricName] = make(map[string]time.Time)
 							}
 							if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
+								value := metricUpdateValue(metricName, points, latest)
 								s.sendSSEEvent(w, "metric_update", map[string]any{
 									"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 									"metric":    latest.Name,
-									"value":     latest.Value,
+									"value":     value,
 									"labels":    latest.Labels,
 								})
 								lastSentTimestamps[metricName][labelKey] = latest.Timestamp
 							}
 						}
 					} else {
-						// Check each label combination
 						for _, labels := range labelCombos {
 							points := collector.GetTimeSeries(metricName, labels)
 							if len(points) > 0 {
 								latest := points[len(points)-1]
-								// Create label key for tracking
 								labelKey := createLabelKey(labels)
 								if lastSentTimestamps[metricName] == nil {
 									lastSentTimestamps[metricName] = make(map[string]time.Time)
 								}
 								if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
+									value := metricUpdateValue(metricName, points, latest)
 									s.sendSSEEvent(w, "metric_update", map[string]any{
 										"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 										"metric":    latest.Name,
-										"value":     latest.Value,
+										"value":     value,
 										"labels":    latest.Labels,
 									})
 									lastSentTimestamps[metricName][labelKey] = latest.Timestamp
@@ -1164,6 +1171,40 @@ func createLabelKey(labels map[string]string) string {
 		key += k + "=" + labels[k] + ","
 	}
 	return key
+}
+
+// metricUpdateValue returns the value to send in a metric_update event.
+// For request_count and request_error_count we send cumulative sum so the frontend can plot (timestamp, total) directly.
+// For other metrics we send the latest point value (gauges / per-observation).
+func metricUpdateValue(metricName string, points []*models.MetricPoint, latest *models.MetricPoint) float64 {
+	if metricName == metrics.MetricRequestCount || metricName == metrics.MetricRequestErrorCount {
+		sum := 0.0
+		for _, p := range points {
+			sum += p.Value
+		}
+		return sum
+	}
+	return latest.Value
+}
+
+// serviceLabelsFromInput parses scenario YAML from run input and returns service label maps for aggregation.
+// Returns nil if input is nil, scenario is missing, or parsing fails.
+func serviceLabelsFromInput(input *simulationv1.RunInput) []map[string]string {
+	if input == nil || input.ScenarioYaml == "" {
+		return nil
+	}
+	scenario, err := config.ParseScenarioYAMLString(input.ScenarioYaml)
+	if err != nil {
+		return nil
+	}
+	if len(scenario.Services) == 0 {
+		return nil
+	}
+	out := make([]map[string]string, 0, len(scenario.Services))
+	for _, svc := range scenario.Services {
+		out = append(out, metrics.CreateServiceLabels(svc.ID))
+	}
+	return out
 }
 
 // Helper functions
