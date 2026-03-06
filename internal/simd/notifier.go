@@ -28,7 +28,7 @@ type NotificationPayload struct {
 	Timestamp       int64                    `json:"timestamp"` // When notification was sent
 
 	// Optimization result fields (populated when optimization was enabled and run completed)
-	BestRunId     string   `json:"best_run_id,omitempty"`
+	BestRunID     string   `json:"best_run_id,omitempty"`
 	BestScore     float64  `json:"best_score,omitempty"`
 	Iterations    int32    `json:"iterations,omitempty"`
 	TopCandidates []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
@@ -93,7 +93,7 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 
 	// Include optimization result when available (batch optimization completed)
 	if rec.Run.BestRunId != "" {
-		payload.BestRunId = rec.Run.BestRunId
+		payload.BestRunID = rec.Run.BestRunId
 		payload.BestScore = rec.Run.BestScore
 		payload.Iterations = rec.Run.Iterations
 		// Include up to 5 top candidate run IDs (best first)

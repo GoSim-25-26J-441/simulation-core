@@ -682,7 +682,9 @@ func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32,
 		PreviousConfig: proto.Clone(prevConfig).(*simulationv1.RunConfiguration),
 		CurrentConfig:  proto.Clone(currConfig).(*simulationv1.RunConfiguration),
 	}
-	_ = e.store.AppendOptimizationStep(runID, step)
+	if err := e.store.AppendOptimizationStep(runID, step); err != nil {
+		logger.Error("failed to append optimization step", "run_id", runID, "error", err)
+	}
 }
 
 // runOnlineController implements a simple online controller that periodically inspects
