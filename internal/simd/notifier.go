@@ -28,10 +28,10 @@ type NotificationPayload struct {
 	Timestamp       int64                    `json:"timestamp"` // When notification was sent
 
 	// Optimization result fields (populated when optimization was enabled and run completed)
-	BestRunId       string   `json:"best_run_id,omitempty"`
-	BestScore       float64  `json:"best_score,omitempty"`
-	Iterations      int32    `json:"iterations,omitempty"`
-	TopCandidates   []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
+	BestRunId     string   `json:"best_run_id,omitempty"`
+	BestScore     float64  `json:"best_score,omitempty"`
+	Iterations    int32    `json:"iterations,omitempty"`
+	TopCandidates []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
 }
 
 // Notifier handles backend notifications for simulation completion

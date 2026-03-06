@@ -397,8 +397,8 @@ func TestRunStoreAppendOptimizationStep(t *testing.T) {
 	step := &simulationv1.OptimizationStep{
 		IterationIndex: 1,
 		TargetP95Ms:    100,
-		ScoreP95Ms:    125.5,
-		Reason:        "p95 above target, scaled replicas up",
+		ScoreP95Ms:     125.5,
+		Reason:         "p95 above target, scaled replicas up",
 		PreviousConfig: &simulationv1.RunConfiguration{
 			Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 2}},
 		},
