@@ -275,8 +275,12 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID 
 		return
 	}
 
+	runJSON := convertRunToJSON(rec.Run, rec.Input)
+	if len(rec.OptimizationHistory) > 0 {
+		runJSON["optimization_history"] = convertOptimizationHistoryToJSON(rec.OptimizationHistory)
+	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(rec.Run, rec.Input),
+		"run": runJSON,
 	})
 }
 
@@ -742,9 +746,13 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 		return
 	}
 
+	runJSON := convertRunToJSON(rec.Run, rec.Input)
+	if len(rec.OptimizationHistory) > 0 {
+		runJSON["optimization_history"] = convertOptimizationHistoryToJSON(rec.OptimizationHistory)
+	}
 	// Build export data
 	export := map[string]any{
-		"run": convertRunToJSON(rec.Run, rec.Input),
+		"run": runJSON,
 	}
 
 	// Include input/scenario configuration
@@ -909,6 +917,9 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	var lastOptIteration int32 = -1
 	var lastOptBestScore float64 = -1
 
+	// Track last sent optimization step count (for optimization_step SSE events)
+	lastOptStepCount := 0
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -969,6 +980,17 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 						"best_score":  rec.Run.BestScore,
 						"best_run_id": rec.Run.BestRunId,
 					})
+				}
+				// Send new optimization steps (online controller config changes)
+				stepCount := len(rec.OptimizationHistory)
+				if stepCount > lastOptStepCount {
+					for i := lastOptStepCount; i < stepCount; i++ {
+						step := rec.OptimizationHistory[i]
+						if step != nil {
+							s.sendSSEEvent(w, "optimization_step", convertOptimizationStepToJSON(step))
+						}
+					}
+					lastOptStepCount = stepCount
 				}
 			}
 
@@ -1193,6 +1215,73 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 		result["candidate_run_ids"] = run.CandidateRunIds
 	}
 
+	return result
+}
+
+func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	services := make([]map[string]any, 0, len(cfg.Services))
+	for _, srv := range cfg.Services {
+		services = append(services, map[string]any{
+			"service_id": srv.ServiceId,
+			"replicas":   srv.Replicas,
+			"cpu_cores":  srv.CpuCores,
+			"memory_mb":  srv.MemoryMb,
+		})
+	}
+	workload := make([]map[string]any, 0, len(cfg.Workload))
+	for _, w := range cfg.Workload {
+		workload = append(workload, map[string]any{
+			"pattern_key": w.PatternKey,
+			"rate_rps":    w.RateRps,
+		})
+	}
+	hosts := make([]map[string]any, 0, len(cfg.Hosts))
+	for _, h := range cfg.Hosts {
+		hosts = append(hosts, map[string]any{
+			"host_id":   h.HostId,
+			"cpu_cores": h.CpuCores,
+			"memory_gb": h.MemoryGb,
+		})
+	}
+	return map[string]any{
+		"services": services,
+		"workload": workload,
+		"hosts":    hosts,
+	}
+}
+
+func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[string]any {
+	if step == nil {
+		return nil
+	}
+	result := map[string]any{
+		"iteration_index": step.IterationIndex,
+		"target_p95_ms":   step.TargetP95Ms,
+		"score_p95_ms":    step.ScoreP95Ms,
+		"reason":          step.Reason,
+	}
+	if step.PreviousConfig != nil {
+		result["previous_config"] = convertRunConfigurationToJSON(step.PreviousConfig)
+	}
+	if step.CurrentConfig != nil {
+		result["current_config"] = convertRunConfigurationToJSON(step.CurrentConfig)
+	}
+	return result
+}
+
+func convertOptimizationHistoryToJSON(history []*simulationv1.OptimizationStep) []map[string]any {
+	if len(history) == 0 {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(history))
+	for _, step := range history {
+		if step != nil {
+			result = append(result, convertOptimizationStepToJSON(step))
+		}
+	}
 	return result
 }
 

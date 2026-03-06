@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -299,4 +300,51 @@ func TestEngineHandlerError(t *testing.T) {
 	if run.Status != models.RunStatusCompleted {
 		t.Errorf("Expected run status completed despite handler error, got %s", run.Status)
 	}
+}
+
+func TestEngineSetLogger(t *testing.T) {
+	engine := NewEngine("test-run")
+	custom := slog.Default().With("test", true)
+	engine.SetLogger(custom)
+	if engine.logger != custom {
+		t.Error("SetLogger did not set the logger")
+	}
+}
+
+func TestEngineSetRealTimeMode(t *testing.T) {
+	engine := NewEngine("test-run")
+	if engine.realTimeMode {
+		t.Error("realTimeMode should be false by default")
+	}
+	engine.SetRealTimeMode(true)
+	if !engine.realTimeMode {
+		t.Error("SetRealTimeMode(true) did not enable real-time mode")
+	}
+	engine.SetRealTimeMode(false)
+	if engine.realTimeMode {
+		t.Error("SetRealTimeMode(false) did not disable real-time mode")
+	}
+}
+
+func TestEngineGetEventQueue(t *testing.T) {
+	engine := NewEngine("test-run")
+	q := engine.GetEventQueue()
+	if q == nil {
+		t.Fatal("GetEventQueue returned nil")
+	}
+	if q != engine.eventQueue {
+		t.Error("GetEventQueue should return the engine's event queue")
+	}
+	engine.ScheduleAt(EventTypeRequestArrival, time.Now(), nil, "", nil)
+	if q.Size() != 1 {
+		t.Errorf("expected queue size 1, got %d", q.Size())
+	}
+}
+
+func TestEnginePrintStats(t *testing.T) {
+	engine := NewEngine("test-run")
+	engine.runManager.Start()
+	engine.ScheduleAt(EventTypeRequestArrival, engine.GetSimTime().Add(time.Millisecond), nil, "", nil)
+	// PrintStats should not panic; it logs and returns
+	engine.PrintStats()
 }

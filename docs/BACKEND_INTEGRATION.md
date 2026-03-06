@@ -566,7 +566,45 @@ For runs created with `optimization` config, the stream emits additional events:
 - `best_score`: Best objective score found so far (lower is better for minimization)
 - `best_run_id`: Sub-run ID with best score (populated when known; may be empty during run)
 
+**Event: `optimization_step`** (online optimization only)
+
+Emitted when the online controller applies a configuration change (replicas, CPU, hosts):
+
+```json
+{
+  "iteration_index": 1,
+  "target_p95_ms": 100,
+  "score_p95_ms": 125.5,
+  "reason": "p95 above target, scaled replicas up",
+  "previous_config": { "services": [...], "workload": [...], "hosts": [...] },
+  "current_config": { "services": [...], "workload": [...], "hosts": [...] }
+}
+```
+
+**Backend responsibility:** Append each `optimization_step` to `run.metadata.optimization_history` (or a dedicated table). Expose via `GET /simulation/runs/{id}` or `/optimization-history`. Histories survive page reloads, are visible in other UIs, and are auditable.
+
 **Integration:** Backend and frontend can subscribe to the same `/v1/runs/{id}/metrics/stream` endpoint. For optimization runs, listen for `optimization_progress` to show iteration progress and best score in real time.
+
+**Optimization history:** For online runs, `GET /v1/runs/{id}` and `GET /v1/runs/{id}/export` include `optimization_history` in the run object when the controller has applied changes.
+
+---
+
+## Completion Callback
+
+When `callback_url` is set in the run input, the simulator sends an HTTP POST to that URL when the run reaches a terminal status (completed, failed, stopped, cancelled). The payload includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `run_id` | string | The run ID |
+| `status` | string | Terminal status (e.g. `RUN_STATUS_COMPLETED`, `RUN_STATUS_STOPPED`) |
+| `status_string` | string | Human-readable status |
+| `metrics` | object | Aggregated metrics (when available) |
+| `best_run_id` | string | (Optimization only) Best candidate run ID |
+| `best_score` | float | (Optimization only) Best objective score |
+| `iterations` | int | (Optimization only) Number of iterations |
+| `top_candidates` | string[] | (Optimization only) Up to 5 candidate run IDs, best first |
+
+For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (up to 5 run IDs). The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
 
 ---
 

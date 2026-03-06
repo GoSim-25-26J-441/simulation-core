@@ -319,6 +319,7 @@ message RunEvent {
     RunStatusChanged status_changed = 3;
     MetricsSnapshot metrics_snapshot = 4;
     OptimizationProgress optimization_progress = 5;
+    OptimizationStep optimization_step = 6;
   }
 }
 
@@ -336,6 +337,17 @@ message OptimizationProgress {
   int32 iteration = 1;
   double best_score = 2;
   string best_run_id = 3;
+}
+
+// OptimizationStep is emitted when the online controller applies a configuration change.
+// Backend can append to run.metadata.optimization_history for audit and replay.
+message OptimizationStep {
+  int32 iteration_index = 1;
+  double target_p95_ms = 2;
+  double score_p95_ms = 3;
+  string reason = 4;
+  RunConfiguration previous_config = 5;
+  RunConfiguration current_config = 6;
 }
 
 

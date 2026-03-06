@@ -39,6 +39,24 @@ func TestDefaultExplorer(t *testing.T) {
 	}
 }
 
+func TestDefaultExplorerWithOptions(t *testing.T) {
+	explorer := NewDefaultExplorer().
+		WithReplicaStep(2).
+		WithPolicyStepSize(0.5)
+	base := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2},
+		},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/ep", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 10}},
+		},
+	}
+	neighbors := explorer.GenerateNeighbors(base, 1.0)
+	if len(neighbors) == 0 {
+		t.Fatal("expected neighbors from explorer with options")
+	}
+}
+
 func TestDefaultExplorerWithPolicies(t *testing.T) {
 	explorer := NewDefaultExplorer()
 

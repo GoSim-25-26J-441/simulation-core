@@ -238,6 +238,48 @@ func TestOptimizerOptimize(t *testing.T) {
 	if result.BestScore >= 1000.0 {
 		t.Fatalf("expected best score to improve, got %f", result.BestScore)
 	}
+
+	// Cover getters after optimization
+	if opt.GetBestConfig() == nil {
+		t.Error("GetBestConfig should return non-nil after Optimize")
+	}
+	if opt.GetBestScore() >= 1000.0 {
+		t.Errorf("GetBestScore should reflect improvement, got %f", opt.GetBestScore())
+	}
+	if opt.GetIteration() < 1 {
+		t.Errorf("GetIteration should be at least 1 after Optimize, got %d", opt.GetIteration())
+	}
+}
+
+func TestOptimizerWithProgressReporter(t *testing.T) {
+	obj := &P95LatencyObjective{}
+	opt := NewOptimizer(obj, 3, 1.0)
+
+	var reported []int
+	opt = opt.WithProgressReporter(func(iter int, bestScore float64) {
+		reported = append(reported, iter)
+	})
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, Endpoints: []config.Endpoint{{Path: "/", MeanCPUMs: 10, CPUSigmaMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1}}}},
+		},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 10}},
+		},
+	}
+	evaluateFunc := func(sc *config.Scenario) (float64, error) {
+		return 100.0 - float64(sc.Services[0].Replicas)*10.0, nil
+	}
+
+	_, err := opt.Optimize(scenario, evaluateFunc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reported) < 1 {
+		t.Errorf("expected progress reporter to be called at least once, got %d", len(reported))
+	}
 }
 
 func TestOptimizerOptimizeWithError(t *testing.T) {
