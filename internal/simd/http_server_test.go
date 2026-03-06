@@ -1313,6 +1313,64 @@ func TestHTTPServerExportRunWithoutCollector(t *testing.T) {
 	}
 }
 
+func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+
+	_, err := store.Create("opt-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 100})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetMetrics("opt-run", &simulationv1.RunMetrics{TotalRequests: 10}); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+
+	step := &simulationv1.OptimizationStep{
+		IterationIndex: 1,
+		TargetP95Ms:    100,
+		ScoreP95Ms:    120,
+		Reason:         "p95 above target, scaled replicas up",
+		PreviousConfig: &simulationv1.RunConfiguration{
+			Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 2}},
+		},
+		CurrentConfig: &simulationv1.RunConfiguration{
+			Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 3}},
+		},
+	}
+	if err := store.AppendOptimizationStep("opt-run", step); err != nil {
+		t.Fatalf("AppendOptimizationStep error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/opt-run/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var export map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &export); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	runData, ok := export["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run data")
+	}
+	history, ok := runData["optimization_history"].([]any)
+	if !ok || len(history) != 1 {
+		t.Fatalf("expected optimization_history with 1 step, got %T %v", runData["optimization_history"], runData["optimization_history"])
+	}
+	stepData, ok := history[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected step as map")
+	}
+	if stepData["iteration_index"].(float64) != 1 || stepData["reason"] != "p95 above target, scaled replicas up" {
+		t.Fatalf("unexpected step data: %+v", stepData)
+	}
+}
+
 func TestHTTPServerListRuns(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store))

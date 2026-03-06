@@ -14,10 +14,11 @@ import (
 )
 
 type RunRecord struct {
-	Run       *simulationv1.Run
-	Input     *simulationv1.RunInput
-	Metrics   *simulationv1.RunMetrics
-	Collector *metrics.Collector
+	Run                 *simulationv1.Run
+	Input               *simulationv1.RunInput
+	Metrics             *simulationv1.RunMetrics
+	Collector           *metrics.Collector
+	OptimizationHistory []*simulationv1.OptimizationStep // Online controller steps; backend can persist to run.metadata.optimization_history
 }
 
 type RunStore struct {
@@ -223,6 +224,35 @@ func (s *RunStore) GetCollector(runID string) (*metrics.Collector, bool) {
 	return rec.Collector, true
 }
 
+// AppendOptimizationStep appends an optimization step to the run's history.
+// Used by the online controller when it applies configuration changes.
+func (s *RunStore) AppendOptimizationStep(runID string, step *simulationv1.OptimizationStep) error {
+	if step == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	rec.OptimizationHistory = append(rec.OptimizationHistory, proto.Clone(step).(*simulationv1.OptimizationStep))
+	return nil
+}
+
+// OptimizationHistoryCount returns the number of optimization steps for a run (for SSE polling).
+func (s *RunStore) OptimizationHistoryCount(runID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return 0
+	}
+	return len(rec.OptimizationHistory)
+}
+
 // sortRunRecords sorts runs by creation time (newest first)
 func sortRunRecords(runs []*RunRecord) {
 	sort.Slice(runs, func(i, j int) bool {
@@ -235,11 +265,18 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 		return nil
 	}
 	// Note: Collector is not cloned as it's a reference that should be shared
+	history := make([]*simulationv1.OptimizationStep, len(rec.OptimizationHistory))
+	for i, step := range rec.OptimizationHistory {
+		if step != nil {
+			history[i] = proto.Clone(step).(*simulationv1.OptimizationStep)
+		}
+	}
 	return &RunRecord{
-		Run:       cloneRun(rec.Run),
-		Input:     cloneRunInput(rec.Input),
-		Metrics:   cloneRunMetrics(rec.Metrics),
-		Collector: rec.Collector,
+		Run:                 cloneRun(rec.Run),
+		Input:               cloneRunInput(rec.Input),
+		Metrics:             cloneRunMetrics(rec.Metrics),
+		Collector:           rec.Collector,
+		OptimizationHistory: history,
 	}
 }
 

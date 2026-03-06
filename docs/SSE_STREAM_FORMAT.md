@@ -46,6 +46,7 @@ data: {"status":"RUN_STATUS_COMPLETED"}
 | `metrics_snapshot`      | Aggregated snapshot: `metrics` (run/service aggregates), optional `host_metrics` (per-host `host_id`, `cpu_utilization`, `memory_utilization`), and optional `resources` (current pod/host allocations). |
 | `complete`             | Run reached a terminal state (completed/failed/cancelled). |
 | `optimization_progress` | For optimization runs; iteration and best score. |
+| `optimization_step`    | For online optimization runs; emitted when the controller applies a config change (replicas, CPU, hosts). Backend can append to `run.metadata.optimization_history`. |
 | `error`                | Stream or run error; `data.error` has the message. |
 
 ### `metrics_snapshot` payload shape
@@ -69,6 +70,19 @@ The `data` payload for `metrics_snapshot` has this high-level structure:
     - `memory_gb` (int, host capacity)
 
 These fields are populated from the simulator’s live configuration via `GetRunConfiguration`, so they reflect any dynamic updates performed by the online optimizer (horizontal/vertical pod scaling and host scaling).
+
+### `optimization_step` payload shape (online optimization)
+
+When the online controller applies a configuration change, the stream emits:
+
+- **`iteration_index`**: Step index (1-based).
+- **`target_p95_ms`**: Target p95 latency.
+- **`score_p95_ms`**: Current p95 at time of change.
+- **`reason`**: Human-readable reason (e.g. `"p95 above target, scaled replicas up"`).
+- **`previous_config`**: `{ services, workload, hosts }` before the change.
+- **`current_config`**: `{ services, workload, hosts }` after the change.
+
+**Backend integration:** Append each step to `run.metadata.optimization_history` for audit, replay, and UI visibility. Expose via `GET /simulation/runs/{id}` or `/optimization-history`.
 
 ## Frontend usage (EventSource)
 

@@ -386,3 +386,66 @@ func TestRunStoreSetOptimizationResult(t *testing.T) {
 			rec.Run.BestRunId, rec.Run.BestScore, rec.Run.Iterations)
 	}
 }
+
+func TestRunStoreAppendOptimizationStep(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	step := &simulationv1.OptimizationStep{
+		IterationIndex: 1,
+		TargetP95Ms:    100,
+		ScoreP95Ms:    125.5,
+		Reason:        "p95 above target, scaled replicas up",
+		PreviousConfig: &simulationv1.RunConfiguration{
+			Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 2}},
+		},
+		CurrentConfig: &simulationv1.RunConfiguration{
+			Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 3}},
+		},
+	}
+
+	err = store.AppendOptimizationStep("run-1", step)
+	if err != nil {
+		t.Fatalf("AppendOptimizationStep error: %v", err)
+	}
+
+	rec, ok := store.Get("run-1")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if len(rec.OptimizationHistory) != 1 {
+		t.Fatalf("expected 1 optimization step, got %d", len(rec.OptimizationHistory))
+	}
+	s := rec.OptimizationHistory[0]
+	if s.IterationIndex != 1 || s.TargetP95Ms != 100 || s.ScoreP95Ms != 125.5 || s.Reason != "p95 above target, scaled replicas up" {
+		t.Fatalf("unexpected step data: %+v", s)
+	}
+	if s.PreviousConfig == nil || len(s.PreviousConfig.Services) != 1 || s.PreviousConfig.Services[0].Replicas != 2 {
+		t.Fatalf("unexpected previous_config: %+v", s.PreviousConfig)
+	}
+	if s.CurrentConfig == nil || len(s.CurrentConfig.Services) != 1 || s.CurrentConfig.Services[0].Replicas != 3 {
+		t.Fatalf("unexpected current_config: %+v", s.CurrentConfig)
+	}
+
+	// Append second step
+	err = store.AppendOptimizationStep("run-1", &simulationv1.OptimizationStep{IterationIndex: 2, Reason: "step 2"})
+	if err != nil {
+		t.Fatalf("AppendOptimizationStep #2 error: %v", err)
+	}
+	rec, _ = store.Get("run-1")
+	if len(rec.OptimizationHistory) != 2 {
+		t.Fatalf("expected 2 optimization steps, got %d", len(rec.OptimizationHistory))
+	}
+	if store.OptimizationHistoryCount("run-1") != 2 {
+		t.Fatalf("OptimizationHistoryCount expected 2, got %d", store.OptimizationHistoryCount("run-1"))
+	}
+
+	// Non-existent run
+	err = store.AppendOptimizationStep("nonexistent", step)
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got: %v", err)
+	}
+}

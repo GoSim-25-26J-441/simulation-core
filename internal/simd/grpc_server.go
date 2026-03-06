@@ -146,8 +146,9 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 
 	var lastOptIteration int32 = -1
 	var lastOptBestScore float64 = -1
+	lastOptStepCount := 0
 
-	// Poll for status changes, optimization progress, and metrics updates
+	// Poll for status changes, optimization progress, optimization steps, and metrics updates
 	interval := 500 * time.Millisecond
 	if req.MetricsIntervalMs > 0 {
 		interval = time.Duration(req.MetricsIntervalMs) * time.Millisecond
@@ -200,6 +201,26 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 					}}); err != nil {
 						return err
 					}
+				}
+				// Send new optimization steps (online controller config changes)
+				stepCount := len(rec.OptimizationHistory)
+				if stepCount > lastOptStepCount {
+					at := time.Now().UTC().UnixMilli()
+					for i := lastOptStepCount; i < stepCount; i++ {
+						step := rec.OptimizationHistory[i]
+						if step != nil {
+							if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
+								AtUnixMs: at,
+								RunId:    req.RunId,
+								Event: &simulationv1.RunEvent_OptimizationStep{
+									OptimizationStep: step,
+								},
+							}}); err != nil {
+								return err
+							}
+						}
+					}
+					lastOptStepCount = stepCount
 				}
 			}
 

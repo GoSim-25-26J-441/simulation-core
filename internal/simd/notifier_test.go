@@ -3,6 +3,7 @@ package simd
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -254,6 +255,73 @@ func TestNotifierNotify_URLTemplateSubstitution(t *testing.T) {
 	case receivedPath := <-receivedPathCh:
 		if receivedPath != "/callback/run-abc-123" {
 			t.Errorf("expected path '/callback/run-abc-123', got '%s'", receivedPath)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
+func TestNotifierNotify_OptimizationPayloadIncludesTopCandidates(t *testing.T) {
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+
+	notifier := NewNotifier()
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "opt-run-1",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+			BestRunId:       "opt-cand-best",
+			BestScore:       12.5,
+			Iterations:      7,
+			CandidateRunIds: []string{"opt-cand-best", "opt-cand-2", "opt-cand-3", "opt-cand-4", "opt-cand-5", "opt-cand-6"},
+		},
+		Input: &simulationv1.RunInput{
+			CallbackUrl: callbackURL,
+		},
+	}
+
+	notifier.Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload["best_run_id"] != "opt-cand-best" {
+			t.Errorf("expected best_run_id opt-cand-best, got %v", payload["best_run_id"])
+		}
+		if payload["best_score"] != 12.5 {
+			t.Errorf("expected best_score 12.5, got %v", payload["best_score"])
+		}
+		if payload["iterations"] != float64(7) {
+			t.Errorf("expected iterations 7, got %v", payload["iterations"])
+		}
+		topCandidates, ok := payload["top_candidates"].([]interface{})
+		if !ok || len(topCandidates) != 5 {
+			t.Errorf("expected top_candidates with 5 elements (capped from 6), got %v", payload["top_candidates"])
+		} else {
+			expected := []string{"opt-cand-best", "opt-cand-2", "opt-cand-3", "opt-cand-4", "opt-cand-5"}
+			for i, id := range expected {
+				if topCandidates[i].(string) != id {
+					t.Errorf("top_candidates[%d] = %v, want %s", i, topCandidates[i], id)
+				}
+			}
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for notification")

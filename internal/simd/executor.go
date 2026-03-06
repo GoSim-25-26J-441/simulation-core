@@ -16,6 +16,7 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
+	"google.golang.org/protobuf/proto"
 )
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
@@ -126,7 +127,13 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	e.sendNotificationIfConfigured(updated)
+	// For online optimization runs, skip notification here: runOnlineOptimization will
+	// finalize metrics and send a single callback with metrics. Sending here would
+	// cause a duplicate callback with empty metrics.
+	isOnlineOpt := updated.Input != nil && updated.Input.Optimization != nil && updated.Input.Optimization.Online
+	if !isOnlineOpt {
+		e.sendNotificationIfConfigured(updated)
+	}
 	return updated, nil
 }
 
@@ -662,6 +669,22 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	}
 }
 
+// recordOptimizationStep appends an optimization step to the run's history for backend persistence.
+func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32, targetP95, scoreP95 float64, reason string, prevConfig, currConfig *simulationv1.RunConfiguration) {
+	if prevConfig == nil || currConfig == nil {
+		return
+	}
+	step := &simulationv1.OptimizationStep{
+		IterationIndex: iterationIndex,
+		TargetP95Ms:    targetP95,
+		ScoreP95Ms:     scoreP95,
+		Reason:         reason,
+		PreviousConfig: proto.Clone(prevConfig).(*simulationv1.RunConfiguration),
+		CurrentConfig:  proto.Clone(currConfig).(*simulationv1.RunConfiguration),
+	}
+	_ = e.store.AppendOptimizationStep(runID, step)
+}
+
 // runOnlineController implements a simple online controller that periodically inspects
 // metrics and adjusts configuration (currently service replicas) to keep p95 latency
 // near the configured target. It uses the existing dynamic configuration APIs via the
@@ -700,6 +723,7 @@ func (e *RunExecutor) runOnlineController(
 
 	bestScore := math.Inf(1)
 	var iter int32
+	var stepIndex int32
 
 	const (
 		cpuHighThreshold     = 0.8 // above this, consider service CPU "hot"
@@ -745,6 +769,7 @@ func (e *RunExecutor) runOnlineController(
 
 			if currentP95 > targetP95*1.05 && hostCount > 0 {
 				if hostCount < maxHosts && maxHostCPU >= hostCPUHighThreshold {
+					prevConfig, _ := e.GetRunConfiguration(runID)
 					if err := rm.ScaleOutHosts(hostCount + 1); err != nil {
 						logger.Error("online controller failed to scale out hosts",
 							"run_id", runID,
@@ -758,12 +783,19 @@ func (e *RunExecutor) runOnlineController(
 							"new_hosts", rm.HostCount(),
 							"max_hosts", maxHosts,
 							"max_host_cpu_utilization", maxHostCPU)
+						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+							stepIndex++
+							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+								"p95 above target, host CPU hot, scaled out hosts",
+								prevConfig, currConfig)
+						}
 					}
 				} else if hostCount >= maxHosts && maxHostCPU >= hostCPUHighThreshold {
 					hostCPUStep := int(math.Ceil(opt.StepSize))
 					if hostCPUStep < 1 {
 						hostCPUStep = 1
 					}
+					prevConfig, _ := e.GetRunConfiguration(runID)
 					rm.IncreaseHostCapacity(hostCPUStep, 0)
 					logger.Info("online controller increased host capacity",
 						"run_id", runID,
@@ -771,6 +803,12 @@ func (e *RunExecutor) runOnlineController(
 						"host_count", rm.HostCount(),
 						"max_hosts", maxHosts,
 						"max_host_cpu_utilization", maxHostCPU)
+					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+						stepIndex++
+						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+							"p95 above target, hosts at max, increased host CPU capacity",
+							prevConfig, currConfig)
+					}
 				}
 			}
 
@@ -836,6 +874,7 @@ func (e *RunExecutor) runOnlineController(
 
 				// Apply vertical scaling first if requested.
 				if scaledVertically && newCPUCores != currentCores {
+					prevConfig, _ := e.GetRunConfiguration(runID)
 					if err := e.UpdateServiceResources(runID, svc.ID, newCPUCores, 0); err != nil {
 						logger.Error("online controller failed to update service resources",
 							"run_id", runID,
@@ -857,11 +896,18 @@ func (e *RunExecutor) runOnlineController(
 							"p95_ms", currentP95,
 							"target_p95_ms", targetP95,
 							"cpu_utilization", svcCPUUtil)
+						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+							stepIndex++
+							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+								"p95 above target, service CPU hot, scaled CPU cores",
+								prevConfig, currConfig)
+						}
 						continue
 					}
 				}
 
 				if newReplicas != currentReplicas {
+					prevConfig, _ := e.GetRunConfiguration(runID)
 					if err := e.UpdateServiceReplicas(runID, svc.ID, newReplicas); err != nil {
 						logger.Error("online controller failed to update replicas",
 							"run_id", runID,
@@ -877,6 +923,15 @@ func (e *RunExecutor) runOnlineController(
 							"new", newReplicas,
 							"p95_ms", currentP95,
 							"target_p95_ms", targetP95)
+						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+							reason := "p95 above target, scaled replicas up"
+							if newReplicas < currentReplicas {
+								reason = "p95 below target, scaled replicas down"
+							}
+							stepIndex++
+							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+								reason, prevConfig, currConfig)
+						}
 					}
 				}
 			}

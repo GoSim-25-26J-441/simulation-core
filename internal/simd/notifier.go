@@ -26,6 +26,12 @@ type NotificationPayload struct {
 	Error           string                   `json:"error,omitempty"`
 	Metrics         *simulationv1.RunMetrics `json:"metrics,omitempty"`
 	Timestamp       int64                    `json:"timestamp"` // When notification was sent
+
+	// Optimization result fields (populated when optimization was enabled and run completed)
+	BestRunId       string   `json:"best_run_id,omitempty"`
+	BestScore       float64  `json:"best_score,omitempty"`
+	Iterations      int32    `json:"iterations,omitempty"`
+	TopCandidates   []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
 }
 
 // Notifier handles backend notifications for simulation completion
@@ -83,6 +89,23 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 		Error:           rec.Run.Error,
 		Metrics:         rec.Metrics,
 		Timestamp:       time.Now().UTC().UnixMilli(),
+	}
+
+	// Include optimization result when available (batch optimization completed)
+	if rec.Run.BestRunId != "" {
+		payload.BestRunId = rec.Run.BestRunId
+		payload.BestScore = rec.Run.BestScore
+		payload.Iterations = rec.Run.Iterations
+		// Include up to 5 top candidate run IDs (best first)
+		const maxCandidatesInCallback = 5
+		if len(rec.Run.CandidateRunIds) > 0 {
+			n := maxCandidatesInCallback
+			if n > len(rec.Run.CandidateRunIds) {
+				n = len(rec.Run.CandidateRunIds)
+			}
+			payload.TopCandidates = make([]string, n)
+			copy(payload.TopCandidates, rec.Run.CandidateRunIds[:n])
+		}
 	}
 
 	// Send notification asynchronously
