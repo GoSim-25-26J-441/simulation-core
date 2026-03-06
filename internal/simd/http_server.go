@@ -1005,9 +1005,25 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				metricsToSend = convertMetricsToProto(engineMetrics)
 			}
 			if metricsToSend != nil {
+				cfg, cfgOk := s.Executor.GetRunConfiguration(runID)
+				if cfgOk && cfg != nil {
+					// Populate active_replicas in metrics snapshot from run configuration (in-run snapshot from collector has no replica data)
+					for _, sm := range metricsToSend.ServiceMetrics {
+						for _, svc := range cfg.Services {
+							if svc.ServiceId == sm.ServiceName {
+								replicas := svc.Replicas
+								if replicas < 0 {
+									replicas = 0
+								}
+								sm.ActiveReplicas = replicas
+								break
+							}
+						}
+					}
+				}
 				metricsJSON := convertMetricsToJSON(metricsToSend)
 				payload := map[string]any{"metrics": metricsJSON}
-				if cfg, ok := s.Executor.GetRunConfiguration(runID); ok {
+				if cfgOk && cfg != nil {
 					serviceResources := make([]map[string]any, 0, len(cfg.Services))
 					for _, svc := range cfg.Services {
 						serviceResources = append(serviceResources, map[string]any{
