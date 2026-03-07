@@ -76,6 +76,8 @@ The `data` payload for `metrics_snapshot` has this high-level structure:
     - `cpu_cores` (int, host capacity)
     - `memory_gb` (int, host capacity)
 
+The `metrics.service_metrics[].active_replicas` field reflects the current run configuration (same source as `resources.services[].replicas`) for both in-run and post-run snapshots.
+
 These fields are populated from the simulator’s live configuration via `GetRunConfiguration`, so they reflect any dynamic updates performed by the online optimizer (horizontal/vertical pod scaling and host scaling).
 
 ### `optimization_step` payload shape (online optimization)

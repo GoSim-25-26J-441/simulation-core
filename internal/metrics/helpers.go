@@ -148,11 +148,17 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 
 	successfulRequests := totalRequests - failedRequests
 
-	// Calculate throughput
+	// Calculate throughput (use elapsed time when collector not stopped yet, so in-run snapshot has non-zero RPS)
 	summary := collector.GetSummary()
 	throughputRPS := 0.0
-	if summary.Duration > 0 {
-		throughputRPS = float64(totalRequests) / summary.Duration.Seconds()
+	if summary != nil {
+		duration := summary.Duration
+		if duration <= 0 && !summary.StartTime.IsZero() {
+			duration = time.Since(summary.StartTime)
+		}
+		if duration > 0 {
+			throughputRPS = float64(totalRequests) / duration.Seconds()
+		}
 	}
 
 	// Build service metrics (aggregate by service; handlers record with endpoint labels so we use label subset)
