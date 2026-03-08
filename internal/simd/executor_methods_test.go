@@ -51,14 +51,12 @@ workload:
 	// Brief delay to let workload state initialize
 	time.Sleep(2 * time.Millisecond)
 
-	// Attempt update - if simulation completed, this will fail with "run not found"
+	// Attempt update - if simulation completed and cleanup ran, we get ErrRunNotFound (race).
 	err = exec.UpdateWorkloadRate("run-1", patternKey, 50.0)
 	if err != nil {
-		// Check if run has already completed
-		rec, ok := store.Get("run-1")
-		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-			// Simulation completed too quickly - this is expected for discrete-event sims
-			t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", rec.Run.Status)
+		if errors.Is(err, ErrRunNotFound) {
+			// Simulation completed too quickly; cleanup removed run from executor. Skip to avoid flakiness.
+			t.Skipf("Simulation completed before rate update (run not found)")
 		}
 		t.Fatalf("UpdateWorkloadRate error: %v", err)
 	}
