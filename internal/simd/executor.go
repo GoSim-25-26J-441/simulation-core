@@ -376,7 +376,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(onlineRunDuration)
 	workloadState := NewWorkloadState(runID, eng, endTime)
-	if err := workloadState.Start(scenario, startTime); err != nil {
+	if err := workloadState.Start(scenario, startTime, true); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
@@ -604,7 +604,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(duration)
 	workloadState := NewWorkloadState(runID, eng, endTime)
-	if err := workloadState.Start(scenario, startTime); err != nil {
+	if err := workloadState.Start(scenario, startTime, rec.Input.RealTimeMode); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)

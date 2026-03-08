@@ -61,7 +61,7 @@ func TestWorkloadStateStart(t *testing.T) {
 	}
 
 	ws := NewWorkloadState("test-run", eng, endTime)
-	err := ws.Start(scenario, startTime)
+	err := ws.Start(scenario, startTime, true)
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestWorkloadStateUpdateRate(t *testing.T) {
 	}
 
 	ws := NewWorkloadState("test-run", eng, endTime)
-	err := ws.Start(scenario, startTime)
+	err := ws.Start(scenario, startTime, true)
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestWorkloadStateUpdateRateInvalidValues(t *testing.T) {
 	}
 
 	ws := NewWorkloadState("test-run", eng, endTime)
-	err := ws.Start(scenario, startTime)
+	err := ws.Start(scenario, startTime, true)
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestWorkloadStateStop(t *testing.T) {
 	}
 
 	ws := NewWorkloadState("test-run", eng, endTime)
-	err := ws.Start(scenario, startTime)
+	err := ws.Start(scenario, startTime, true)
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
@@ -302,7 +302,7 @@ func TestWorkloadStateUpdatePattern(t *testing.T) {
 	}
 
 	ws := NewWorkloadState("test-run", eng, endTime)
-	err := ws.Start(scenario, startTime)
+	err := ws.Start(scenario, startTime, true)
 	if err != nil {
 		t.Fatalf("Start() returned error: %v", err)
 	}
@@ -349,11 +349,45 @@ func TestWorkloadStateStartInvalidTarget(t *testing.T) {
 	}
 
 	ws := NewWorkloadState("test-run", eng, endTime)
-	err := ws.Start(scenario, startTime)
+	err := ws.Start(scenario, startTime, true)
 	if err == nil {
 		t.Fatal("Expected error for invalid workload target")
 	}
 	ws.Stop()
+}
+
+// TestWorkloadStatePreGenerateAllEvents verifies that when realTime is false,
+// Start pre-generates all arrival events up to endTime (so simulation-time runs
+// get full request count instead of only one lookahead batch).
+func TestWorkloadStatePreGenerateAllEvents(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	startTime := eng.GetSimTime()
+	duration := 5 * time.Second
+	endTime := startTime.Add(duration)
+
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 10.0}},
+		},
+	}
+
+	ws := NewWorkloadState("test-run", eng, endTime)
+	err := ws.Start(scenario, startTime, false)
+	if err != nil {
+		t.Fatalf("Start(..., false) returned error: %v", err)
+	}
+
+	// Pre-generation should advance each pattern's NextEventTime to at least endTime
+	patternState, ok := ws.GetPattern("client:svc1:/test")
+	if !ok {
+		t.Fatal("Pattern not found")
+	}
+	if patternState.NextEventTime.Before(endTime) {
+		t.Errorf("Pre-generate should schedule events up to endTime; NextEventTime=%v is before endTime=%v",
+			patternState.NextEventTime, endTime)
+	}
 }
 
 func TestPatternKey(t *testing.T) {
