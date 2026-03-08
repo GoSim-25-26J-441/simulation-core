@@ -957,6 +957,112 @@ func TestManagerHostScalingHelpers(t *testing.T) {
 	}
 }
 
+func TestManagerScaleInHosts(t *testing.T) {
+	// Scale out to 3 hosts (all empty except host-1 which has 1 instance), then scale in to 2.
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if err := m.ScaleOutHosts(3); err != nil {
+		t.Fatalf("ScaleOutHosts: %v", err)
+	}
+	if m.HostCount() != 3 {
+		t.Fatalf("expected 3 hosts after scale-out, got %d", m.HostCount())
+	}
+	// Scale in to 2: should remove one empty host (host-auto-2 or host-auto-3).
+	if err := m.ScaleInHosts(2); err != nil {
+		t.Fatalf("ScaleInHosts(2): %v", err)
+	}
+	if m.HostCount() != 2 {
+		t.Fatalf("expected 2 hosts after scale-in, got %d", m.HostCount())
+	}
+	// Scale in to 1: should remove the other empty auto host; host-1 must remain (has instance).
+	if err := m.ScaleInHosts(1); err != nil {
+		t.Fatalf("ScaleInHosts(1): %v", err)
+	}
+	if m.HostCount() != 1 {
+		t.Fatalf("expected 1 host after scale-in to 1, got %d", m.HostCount())
+	}
+	// Scale in when no empty host: 1 host with 1 instance, target 0 -> effectively target 1, no-op.
+	if err := m.ScaleInHosts(0); err != nil {
+		t.Fatalf("ScaleInHosts(0) should clamp to 1: %v", err)
+	}
+	if m.HostCount() != 1 {
+		t.Fatalf("expected still 1 host, got %d", m.HostCount())
+	}
+	// Two hosts both with instances: scale in to 1 should fail (no empty host).
+	m2 := NewManager()
+	scenario2 := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+			{ID: "host-2", Cores: 4},
+		},
+		Services: []config.Service{{ID: "svc1", Replicas: 2, Model: "cpu"}},
+	}
+	if err := m2.InitializeFromScenario(scenario2); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if err := m2.ScaleInHosts(1); err == nil {
+		t.Fatalf("expected error when scaling in with no empty host")
+	}
+	if m2.HostCount() != 2 {
+		t.Fatalf("expected host count unchanged, got %d", m2.HostCount())
+	}
+}
+
+func TestManagerDecreaseHostCapacity(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	m.IncreaseHostCapacity(2, 0)
+	h, _ := m.GetHost("host-1")
+	if h.CPUCores() != 6 {
+		t.Fatalf("expected 6 cores after +2, got %d", h.CPUCores())
+	}
+	if err := m.DecreaseHostCapacity(-2, 0); err != nil {
+		t.Fatalf("DecreaseHostCapacity(-2, 0): %v", err)
+	}
+	if h.CPUCores() != 4 {
+		t.Fatalf("expected 4 cores after -2, got %d", h.CPUCores())
+	}
+	// Decrease below allocation: 1 instance with 1 core default; try to set host to 1 core then decrease.
+	// Actually host has 4 cores, instance has 1. So decrease to 2 is ok. Decrease to 0 would clamp to 1.
+	// Try decreasing by 3 so we go to 1 core - should succeed (allocated 1).
+	if err := m.DecreaseHostCapacity(-3, 0); err != nil {
+		t.Fatalf("DecreaseHostCapacity(-3, 0): %v", err)
+	}
+	if h.CPUCores() != 1 {
+		t.Fatalf("expected 1 core after -3, got %d", h.CPUCores())
+	}
+	// Further decrease would go below 1; allocated is 1, so new capacity 0 -> clamp 1. So -1 is no-op on capacity.
+	m.DecreaseHostCapacity(-1, 0)
+	if h.CPUCores() != 1 {
+		t.Fatalf("expected still 1 core, got %d", h.CPUCores())
+	}
+	// Increase again then try to decrease below allocation: scale instance to 2 cores, then try to decrease host to 1.
+	m.IncreaseHostCapacity(2, 0)
+	if err := m.UpdateServiceResources("svc1", 2.0, 0); err != nil {
+		t.Fatalf("UpdateServiceResources: %v", err)
+	}
+	// Host now 3 cores, allocated 2. Decrease by 2 -> 1 core, but allocated 2 > 1 -> error.
+	if err := m.DecreaseHostCapacity(-2, 0); err == nil {
+		t.Fatalf("expected error when decreasing capacity below allocation")
+	}
+	h, _ = m.GetHost("host-1")
+	if h.CPUCores() != 3 {
+		t.Fatalf("expected host cores unchanged at 3, got %d", h.CPUCores())
+	}
+}
+
 func TestServiceInstanceCPUTimeWindowDecay(t *testing.T) {
 	instance := NewServiceInstance("inst-1", "svc1", "host-1", 2.0, 1024.0)
 

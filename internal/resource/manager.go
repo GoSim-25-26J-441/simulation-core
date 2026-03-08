@@ -3,6 +3,8 @@ package resource
 import (
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -335,6 +337,118 @@ func (m *Manager) IncreaseHostCapacity(cpuDelta, memoryGBDelta int) {
 			host.SetMemoryGB(newMem)
 		}
 	}
+}
+
+// ScaleInHosts reduces the number of hosts to targetCount by removing hosts that
+// have no service instances. Prefer removing auto-added hosts (host-auto-*)
+// first, in reverse order of creation, so scenario-defined hosts are kept.
+// Does not remove a host that has instances; returns an error if targetCount
+// cannot be reached without doing so. Does not scale below 1 host.
+func (m *Manager) ScaleInHosts(targetCount int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current := len(m.hosts)
+	if targetCount >= current {
+		return nil
+	}
+	if targetCount < 1 {
+		targetCount = 1
+	}
+	if current <= 1 {
+		return nil
+	}
+
+	// Collect empty host IDs (no instances on that host). Hosts added by ScaleOutHosts
+	// may not appear in hostToInstances, so iterate over m.hosts and check instance count.
+	var autoEmpty, otherEmpty []string
+	for hostID := range m.hosts {
+		instanceIDs := m.hostToInstances[hostID]
+		if len(instanceIDs) > 0 {
+			continue
+		}
+		if strings.HasPrefix(hostID, "host-auto-") {
+			autoEmpty = append(autoEmpty, hostID)
+		} else {
+			otherEmpty = append(otherEmpty, hostID)
+		}
+	}
+	// Sort auto-empty by N descending (remove highest host-auto-N first).
+	sort.Slice(autoEmpty, func(i, j int) bool {
+		ni, _ := strconv.Atoi(strings.TrimPrefix(autoEmpty[i], "host-auto-"))
+		nj, _ := strconv.Atoi(strings.TrimPrefix(autoEmpty[j], "host-auto-"))
+		return ni > nj
+	})
+	candidates := append(autoEmpty, otherEmpty...)
+	toRemove := current - targetCount
+	if toRemove <= 0 {
+		return nil
+	}
+	if len(candidates) < toRemove {
+		return fmt.Errorf("cannot scale in to %d hosts: only %d empty host(s) available", targetCount, len(candidates))
+	}
+	for i := 0; i < toRemove; i++ {
+		hostID := candidates[i]
+		delete(m.hosts, hostID)
+		delete(m.hostToInstances, hostID)
+	}
+	return nil
+}
+
+// DecreaseHostCapacity reduces CPU cores and/or memory (GB) for all hosts by
+// the given deltas. Negative deltas are applied; minimum 1 core and 1 GB per
+// host. Returns an error if the new capacity would be below current allocated
+// usage on any host.
+func (m *Manager) DecreaseHostCapacity(cpuDelta, memoryGBDelta int) error {
+	if cpuDelta >= 0 && memoryGBDelta >= 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for hostID, host := range m.hosts {
+		instances := m.collectInstancesForHost(hostID)
+		var allocCPU float64
+		var allocMemMB float64
+		for _, inst := range instances {
+			allocCPU += inst.CPUCores()
+			allocMemMB += inst.MemoryMB()
+		}
+		newCores := host.CPUCores() + cpuDelta
+		if newCores < 1 {
+			newCores = 1
+		}
+		newMemGB := host.MemoryGB() + memoryGBDelta
+		if newMemGB < 1 {
+			newMemGB = 1
+		}
+		if allocCPU > float64(newCores)+1e-9 {
+			return fmt.Errorf("cannot decrease host capacity: host %s allocated %.2f CPU cores would exceed new capacity %d", hostID, allocCPU, newCores)
+		}
+		capacityMB := float64(newMemGB) * 1024.0
+		if allocMemMB > capacityMB+1e-6 {
+			return fmt.Errorf("cannot decrease host capacity: host %s allocated %.2f MB would exceed new memory capacity %.2f MB", hostID, allocMemMB, capacityMB)
+		}
+	}
+
+	for _, host := range m.hosts {
+		if cpuDelta < 0 {
+			newCores := host.CPUCores() + cpuDelta
+			if newCores < 1 {
+				newCores = 1
+			}
+			host.SetCPUCores(newCores)
+		}
+		if memoryGBDelta < 0 {
+			newMem := host.MemoryGB() + memoryGBDelta
+			if newMem < 1 {
+				newMem = 1
+			}
+			host.SetMemoryGB(newMem)
+		}
+	}
+	return nil
 }
 
 // UpdateServiceResources updates per-instance CPU cores and memory (MB) for all

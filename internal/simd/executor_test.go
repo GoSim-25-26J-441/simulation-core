@@ -350,6 +350,246 @@ func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
 	}
 }
 
+// Test allowScaleDownReplicas: utilization-gated scale-down (Phase 1).
+func TestAllowScaleDownReplicas(t *testing.T) {
+	const cpuHigh = 0.8
+
+	tests := []struct {
+		name              string
+		svcCPUUtil        float64
+		svcMemUtil        float64
+		scaleDownCPUMax   float64
+		scaleDownMemMax   float64
+		wantAllowScaleDown bool
+	}{
+		{
+			name:              "both thresholds 0 uses only cpuHigh guard: low CPU allows",
+			svcCPUUtil:        0.5,
+			svcMemUtil:        0.6,
+			scaleDownCPUMax:   0,
+			scaleDownMemMax:   0,
+			wantAllowScaleDown: true,
+		},
+		{
+			name:              "both thresholds 0: CPU hot blocks",
+			svcCPUUtil:        0.9,
+			svcMemUtil:        0.3,
+			scaleDownCPUMax:   0,
+			scaleDownMemMax:   0,
+			wantAllowScaleDown: false,
+		},
+		{
+			name:              "scale_down thresholds set: CPU above threshold blocks",
+			svcCPUUtil:        0.5,
+			svcMemUtil:        0.2,
+			scaleDownCPUMax:   0.4,
+			scaleDownMemMax:   0.4,
+			wantAllowScaleDown: false,
+		},
+		{
+			name:              "scale_down thresholds set: mem above threshold blocks",
+			svcCPUUtil:        0.2,
+			svcMemUtil:        0.6,
+			scaleDownCPUMax:   0.4,
+			scaleDownMemMax:   0.4,
+			wantAllowScaleDown: false,
+		},
+		{
+			name:              "scale_down thresholds set: both below allows",
+			svcCPUUtil:        0.2,
+			svcMemUtil:        0.3,
+			scaleDownCPUMax:   0.4,
+			scaleDownMemMax:   0.4,
+			wantAllowScaleDown: true,
+		},
+		{
+			name:              "only CPU threshold set: mem ignored",
+			svcCPUUtil:        0.2,
+			svcMemUtil:        0.9,
+			scaleDownCPUMax:   0.4,
+			scaleDownMemMax:   0,
+			wantAllowScaleDown: true,
+		},
+		{
+			name:              "CPU at cpuHighThreshold blocks even with low scale-down threshold",
+			svcCPUUtil:        0.85,
+			svcMemUtil:        0.1,
+			scaleDownCPUMax:   0.9,
+			scaleDownMemMax:   0.9,
+			wantAllowScaleDown: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := allowScaleDownReplicas(tt.svcCPUUtil, tt.svcMemUtil, cpuHigh, tt.scaleDownCPUMax, tt.scaleDownMemMax)
+			if got != tt.wantAllowScaleDown {
+				t.Errorf("allowScaleDownReplicas() = %v, want %v (cpu=%.2f mem=%.2f scaleDownCPU=%.2f scaleDownMem=%.2f)",
+					got, tt.wantAllowScaleDown, tt.svcCPUUtil, tt.svcMemUtil, tt.scaleDownCPUMax, tt.scaleDownMemMax)
+			}
+		})
+	}
+}
+
+// Test that with optimization_target_primary = "cpu_utilization", high util scales up,
+// low util + low P95 scales down, and low util but high P95 does not scale down (guardrail).
+func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
+	t.Run("high_util_scales_up", func(t *testing.T) {
+		exec := NewRunExecutor(NewRunStore())
+		runID := "online-cpu-primary-scale-up"
+		scenario := &config.Scenario{
+			Hosts: []config.Host{{ID: "host-1", Cores: 8}},
+			Services: []config.Service{
+				{
+					ID: "svc1", Replicas: 1, Model: "cpu",
+					Endpoints: []config.Endpoint{
+						{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+					},
+				},
+			},
+		}
+		rm := resource.NewManager()
+		if err := rm.InitializeFromScenario(scenario); err != nil {
+			t.Fatalf("InitializeFromScenario: %v", err)
+		}
+		collector := metrics.NewCollector()
+		collector.Start()
+		svcLabels := metrics.CreateServiceLabels("svc1")
+		now := time.Now()
+		for i := 0; i < 10; i++ {
+			metrics.RecordCPUUtilization(collector, 0.85, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			metrics.RecordLatency(collector, 20.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+		}
+		exec.mu.Lock()
+		exec.resourceManagers[runID] = rm
+		exec.mu.Unlock()
+		opt := &simulationv1.OptimizationConfig{
+			Online:                   true,
+			TargetP95LatencyMs:       50.0,
+			ControlIntervalMs:        10,
+			StepSize:                 1.0,
+			OptimizationTargetPrimary: "cpu_utilization",
+			TargetUtilHigh:           0.7,
+			TargetUtilLow:            0.4,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+		time.Sleep(20 * time.Millisecond)
+		replicas := rm.ActiveReplicas("svc1")
+		instances := rm.GetInstancesForService("svc1")
+		scaledUp := replicas > 1
+		if !scaledUp && len(instances) > 0 {
+			scaledUp = instances[0].CPUCores() > resource.DefaultInstanceCPUCores
+		}
+		if !scaledUp {
+			t.Errorf("expected scale-up (replicas or CPU) when util > target_util_high, got replicas=%d", replicas)
+		}
+	})
+	t.Run("low_util_and_low_p95_scales_down", func(t *testing.T) {
+		exec := NewRunExecutor(NewRunStore())
+		runID := "online-cpu-primary-scale-down"
+		scenario := &config.Scenario{
+			Hosts: []config.Host{{ID: "host-1", Cores: 8}},
+			Services: []config.Service{
+				{
+					ID: "svc1", Replicas: 2, Model: "cpu",
+					Endpoints: []config.Endpoint{
+						{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+					},
+				},
+			},
+		}
+		rm := resource.NewManager()
+		if err := rm.InitializeFromScenario(scenario); err != nil {
+			t.Fatalf("InitializeFromScenario: %v", err)
+		}
+		collector := metrics.NewCollector()
+		collector.Start()
+		svcLabels := metrics.CreateServiceLabels("svc1")
+		now := time.Now()
+		for i := 0; i < 10; i++ {
+			metrics.RecordCPUUtilization(collector, 0.2, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			metrics.RecordLatency(collector, 5.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+		}
+		exec.mu.Lock()
+		exec.resourceManagers[runID] = rm
+		exec.mu.Unlock()
+		opt := &simulationv1.OptimizationConfig{
+			Online:                   true,
+			TargetP95LatencyMs:       100.0,
+			ControlIntervalMs:        10,
+			StepSize:                 1.0,
+			OptimizationTargetPrimary: "cpu_utilization",
+			TargetUtilHigh:           0.7,
+			TargetUtilLow:            0.4,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+		time.Sleep(20 * time.Millisecond)
+		replicas := rm.ActiveReplicas("svc1")
+		if replicas >= 2 {
+			t.Errorf("expected scale-down when util < target_util_low and P95 ok, got replicas=%d", replicas)
+		}
+		if replicas < 1 {
+			t.Errorf("expected replicas >= 1, got %d", replicas)
+		}
+	})
+	t.Run("low_util_but_high_p95_no_scale_down", func(t *testing.T) {
+		exec := NewRunExecutor(NewRunStore())
+		runID := "online-cpu-primary-guardrail"
+		scenario := &config.Scenario{
+			Hosts: []config.Host{{ID: "host-1", Cores: 8}},
+			Services: []config.Service{
+				{
+					ID: "svc1", Replicas: 2, Model: "cpu",
+					Endpoints: []config.Endpoint{
+						{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+					},
+				},
+			},
+		}
+		rm := resource.NewManager()
+		if err := rm.InitializeFromScenario(scenario); err != nil {
+			t.Fatalf("InitializeFromScenario: %v", err)
+		}
+		collector := metrics.NewCollector()
+		collector.Start()
+		svcLabels := metrics.CreateServiceLabels("svc1")
+		now := time.Now()
+		for i := 0; i < 10; i++ {
+			metrics.RecordCPUUtilization(collector, 0.2, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			metrics.RecordLatency(collector, 200.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+		}
+		exec.mu.Lock()
+		exec.resourceManagers[runID] = rm
+		exec.mu.Unlock()
+		opt := &simulationv1.OptimizationConfig{
+			Online:                   true,
+			TargetP95LatencyMs:       50.0,
+			ControlIntervalMs:        10,
+			StepSize:                 1.0,
+			OptimizationTargetPrimary: "cpu_utilization",
+			TargetUtilHigh:           0.7,
+			TargetUtilLow:            0.4,
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		time.Sleep(80 * time.Millisecond)
+		cancel()
+		time.Sleep(20 * time.Millisecond)
+		replicas := rm.ActiveReplicas("svc1")
+		if replicas < 2 {
+			t.Errorf("expected no scale-down when P95 above target (guardrail), got replicas=%d", replicas)
+		}
+	})
+}
+
 // Test that the online controller prefers vertical scaling (CPU cores per instance)
 // when latency is above target and service CPU utilization is high.
 func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T) {
@@ -502,6 +742,84 @@ func TestRunExecutorOnlineControllerScalesOutHostsBeforeVertical(t *testing.T) {
 	}
 	if hostCount > int(opt.MaxHosts) {
 		t.Fatalf("expected host count to not exceed max_hosts=%d, got %d", opt.MaxHosts, hostCount)
+	}
+}
+
+// Test that when P95 and host CPU are low and scale_down_host_cpu_util_max is set,
+// the online controller scales in empty hosts (Phase 3).
+func TestRunExecutorOnlineControllerScaleInHosts(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	runID := "online-host-scale-in"
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if err := rm.ScaleOutHosts(2); err != nil {
+		t.Fatalf("ScaleOutHosts(2): %v", err)
+	}
+	if rm.HostCount() != 2 {
+		t.Fatalf("expected 2 hosts after scale-out, got %d", rm.HostCount())
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	svcLabels := metrics.CreateServiceLabels("svc1")
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		metrics.RecordLatency(collector, 5.0, ts, svcLabels)
+		metrics.RecordCPUUtilization(collector, 0.2, ts, svcLabels)
+	}
+	for _, hid := range rm.HostIDs() {
+		if h, ok := rm.GetHost(hid); ok {
+			h.SetCPUUtilization(0.2)
+		}
+	}
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:                    true,
+		TargetP95LatencyMs:        100.0,
+		ControlIntervalMs:         10,
+		StepSize:                  1.0,
+		MinHosts:                  1,
+		MaxHosts:                  3,
+		ScaleDownHostCpuUtilMax:    0.5,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	hostCount := rm.HostCount()
+	if hostCount >= 2 {
+		t.Errorf("expected host scale-in when P95 and host CPU low, got host_count=%d", hostCount)
+	}
+	if hostCount < 1 {
+		t.Errorf("expected at least 1 host (min_hosts), got %d", hostCount)
 	}
 }
 

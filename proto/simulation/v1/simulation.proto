@@ -247,6 +247,31 @@ message OptimizationConfig {
   // greater than 0, the controller will avoid scaling below this bound.
   int32 min_hosts = 8;
   int32 max_hosts = 9;
+
+  // Optional. When > 0, online controller will scale down replicas only when
+  // service CPU utilization is below this (0.0–1.0). Ignored if 0. Default 0
+  // (current behavior: only check CPU < cpuHighThreshold).
+  double scale_down_cpu_util_max = 10;
+  // Optional. When > 0, online controller will scale down only when service
+  // memory utilization is below this (0.0–1.0). Ignored if 0.
+  double scale_down_mem_util_max = 11;
+
+  // For online optimization: primary signal for scaling. Values: "p95_latency"
+  // (default), "cpu_utilization", "memory_utilization". When cpu_utilization or
+  // memory_utilization, scale-up when utilization > target_util_high, scale-down
+  // when < target_util_low; P95 is used as guardrail (do not scale down if P95
+  // would exceed target_p95_latency_ms).
+  string optimization_target_primary = 12;
+  // When optimization_target_primary is cpu_utilization or memory_utilization:
+  // high threshold (0–1) for scale-up. Default 0.7.
+  double target_util_high = 13;
+  // When optimization_target_primary is cpu_utilization or memory_utilization:
+  // low threshold (0–1) for scale-down. Default 0.4.
+  double target_util_low = 14;
+
+  // When > 0, online controller may scale in hosts or decrease host capacity
+  // only when max host CPU utilization is below this (0.0–1.0). Default 0 (disabled).
+  double scale_down_host_cpu_util_max = 15;
 }
 
 message Run {
