@@ -45,17 +45,17 @@ type RunMetrics struct {
 
 // ServiceMetrics contains metrics for a specific service
 type ServiceMetrics struct {
-	ServiceName       string  `json:"service_name"`
-	RequestCount      int64   `json:"request_count"`
-	ErrorCount        int64   `json:"error_count"`
-	LatencyP50        float64 `json:"latency_p50_ms"`
-	LatencyP95        float64 `json:"latency_p95_ms"`
-	LatencyP99        float64 `json:"latency_p99_ms"`
-	LatencyMean       float64 `json:"latency_mean_ms"`
-	CPUUtilization       float64 `json:"cpu_utilization"`
-	MemoryUtilization    float64 `json:"memory_utilization"`
-	ActiveReplicas       int     `json:"active_replicas"`
-	ConcurrentRequests   int     `json:"concurrent_requests"`
+	ServiceName        string  `json:"service_name"`
+	RequestCount       int64   `json:"request_count"`
+	ErrorCount         int64   `json:"error_count"`
+	LatencyP50         float64 `json:"latency_p50_ms"`
+	LatencyP95         float64 `json:"latency_p95_ms"`
+	LatencyP99         float64 `json:"latency_p99_ms"`
+	LatencyMean        float64 `json:"latency_mean_ms"`
+	CPUUtilization     float64 `json:"cpu_utilization"`
+	MemoryUtilization  float64 `json:"memory_utilization"`
+	ActiveReplicas     int     `json:"active_replicas"`
+	ConcurrentRequests int     `json:"concurrent_requests"`
 }
 
 // RequestStatus represents the status of a request
