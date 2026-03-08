@@ -12,7 +12,7 @@
 //   - Workload generation and optimization
 //
 // Scenario defines:
-//   - Hosts: physical hosts with CPU cores
+//   - Hosts: physical hosts with CPU cores and optional memory_gb
 //   - Services: microservices with replicas, endpoints, downstream calls
 //   - Workload: array of workload patterns (from, to, arrival process)
 //   - Policies: autoscaling, retries

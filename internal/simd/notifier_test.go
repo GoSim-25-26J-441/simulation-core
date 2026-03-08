@@ -328,6 +328,80 @@ func TestNotifierNotify_OptimizationPayloadIncludesTopCandidates(t *testing.T) {
 	}
 }
 
+func TestNotifierNotify_OnlineOptimizationIncludesFinalConfig(t *testing.T) {
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+
+	// Online run: best_run_id is self; optimization history has one step with settled config
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "online-run-1",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+			BestRunId:       "online-run-1",
+			Iterations:      1,
+			CandidateRunIds: []string{"online-run-1"},
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+		OptimizationHistory: []*simulationv1.OptimizationStep{
+			{
+				IterationIndex: 1,
+				Reason:         "scaled up",
+				CurrentConfig: &simulationv1.RunConfiguration{
+					Services: []*simulationv1.ServiceConfigEntry{
+						{ServiceId: "svc1", Replicas: 3, CpuCores: 2, MemoryMb: 512},
+					},
+				},
+			},
+		},
+	}
+
+	notifier := NewNotifier()
+	notifier.Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		if payload["best_run_id"] != "online-run-1" {
+			t.Errorf("expected best_run_id online-run-1, got %v", payload["best_run_id"])
+		}
+		finalConfig, ok := payload["final_config"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected final_config object, got %T %v", payload["final_config"], payload["final_config"])
+		}
+		services, ok := finalConfig["services"].([]interface{})
+		if !ok || len(services) != 1 {
+			t.Fatalf("expected final_config.services with 1 entry, got %v", finalConfig["services"])
+		}
+		s0, ok := services[0].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected service as map")
+		}
+		if s0["service_id"] != "svc1" || s0["replicas"].(float64) != 3 {
+			t.Errorf("expected service_id svc1 replicas 3, got %v", s0)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
 func TestNotifierNotify_EmptyURL(t *testing.T) {
 	notifier := NewNotifier()
 	rec := &RunRecord{

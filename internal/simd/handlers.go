@@ -377,13 +377,14 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			// Process next queued request if available
 			nextRequestID, hasNext := state.rm.DequeueRequest(instanceID)
 			if hasNext {
-				// Find the request in the run manager
-				// Note: This is a simplified approach - in a real system, we'd maintain a request store
-				// Schedule a request start event for the dequeued request on this instance
-				eng.ScheduleAt(engine.EventTypeRequestStart, simTime, nil, serviceID, map[string]interface{}{
+				rm := eng.GetRunManager()
+				nextRequest, found := rm.GetRequest(nextRequestID)
+				if !found {
+					return fmt.Errorf("queued request %s not found in run manager", nextRequestID)
+				}
+				eng.ScheduleAt(engine.EventTypeRequestStart, simTime, nextRequest, serviceID, map[string]interface{}{
 					"service_id":    serviceID,
 					"endpoint_path": endpointPath,
-					"queued_id":     nextRequestID,
 					"instance_id":   instanceID,
 				})
 			}
@@ -470,6 +471,10 @@ func handleDownstreamCall(state *scenarioState, _ *engine.Engine) engine.EventHa
 
 		// Set arrival time to simulation time
 		downstreamRequest.ArrivalTime = simTime
+
+		// Record request count for the downstream service (downstream requests bypass handleRequestArrival)
+		labels := metrics.CreateEndpointLabels(downstreamServiceID, endpointPath)
+		metrics.RecordRequestCount(state.collector, 1.0, simTime, labels)
 
 		rm := eng.GetRunManager()
 		rm.AddRequest(downstreamRequest)

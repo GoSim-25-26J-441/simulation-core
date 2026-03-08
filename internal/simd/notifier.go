@@ -32,6 +32,9 @@ type NotificationPayload struct {
 	BestScore     float64  `json:"best_score,omitempty"`
 	Iterations    int32    `json:"iterations,omitempty"`
 	TopCandidates []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
+
+	// FinalConfig is the settled run configuration for online optimization (last step's current_config). Omitted if no optimization steps.
+	FinalConfig map[string]any `json:"final_config,omitempty"`
 }
 
 // Notifier handles backend notifications for simulation completion
@@ -105,6 +108,14 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 			}
 			payload.TopCandidates = make([]string, n)
 			copy(payload.TopCandidates, rec.Run.CandidateRunIds[:n])
+		}
+	}
+
+	// Include final/settled config for online optimization (last step's current_config)
+	if len(rec.OptimizationHistory) > 0 {
+		lastStep := rec.OptimizationHistory[len(rec.OptimizationHistory)-1]
+		if lastStep != nil && lastStep.CurrentConfig != nil {
+			payload.FinalConfig = convertRunConfigurationToJSON(lastStep.CurrentConfig)
 		}
 	}
 

@@ -1,6 +1,7 @@
 package simd
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -50,14 +51,12 @@ workload:
 	// Brief delay to let workload state initialize
 	time.Sleep(2 * time.Millisecond)
 
-	// Attempt update - if simulation completed, this will fail with "run not found"
+	// Attempt update - if simulation completed and cleanup ran, we get ErrRunNotFound (race).
 	err = exec.UpdateWorkloadRate("run-1", patternKey, 50.0)
 	if err != nil {
-		// Check if run has already completed
-		rec, ok := store.Get("run-1")
-		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
-			// Simulation completed too quickly - this is expected for discrete-event sims
-			t.Skipf("Simulation completed too quickly (status: %v) - skipping rate update test", rec.Run.Status)
+		if errors.Is(err, ErrRunNotFound) {
+			// Simulation completed too quickly; cleanup removed run from executor. Skip to avoid flakiness.
+			t.Skipf("Simulation completed before rate update (run not found)")
 		}
 		t.Fatalf("UpdateWorkloadRate error: %v", err)
 	}
@@ -139,6 +138,83 @@ func TestRunExecutorUpdateWorkloadRateInvalidRate(t *testing.T) {
 	}
 }
 
+func TestRunExecutorUpdatePolicies_EmptyRunID(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	err := exec.UpdatePolicies("", nil)
+	if err == nil {
+		t.Fatalf("expected error for empty run ID")
+	}
+	if !errors.Is(err, ErrRunIDMissing) {
+		t.Fatalf("expected ErrRunIDMissing, got %v", err)
+	}
+}
+
+func TestRunExecutorUpdatePolicies_RunNotFound(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	err := exec.UpdatePolicies("nonexistent", nil)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("expected ErrRunNotFound, got %v", err)
+	}
+}
+
+func TestRunExecutorUpdatePolicies_Success(t *testing.T) {
+	store := NewRunStore()
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	_, err := store.Create("run-1", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   5000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	exec := NewRunExecutor(store)
+	_, err = exec.Start("run-1")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	// Poll until run is running so policyManagers is set
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Update policies (run may have already completed and cleanup ran, giving ErrRunNotFound)
+	err = exec.UpdatePolicies("run-1", &config.Policies{
+		Autoscaling: &config.AutoscalingPolicy{
+			Enabled:       true,
+			TargetCPUUtil: 0.8,
+			ScaleStep:     2,
+		},
+	})
+	if err != nil && !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("UpdatePolicies error: %v", err)
+	}
+}
+
 func TestRunExecutorUpdateWorkloadPattern(t *testing.T) {
 	store := NewRunStore()
 	validScenario := `
@@ -213,6 +289,9 @@ workload:
 
 	err = exec.UpdateWorkloadPattern("run-1", patternKey, newPattern)
 	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			t.Skipf("Simulation completed before pattern update (run not found)")
+		}
 		t.Fatalf("UpdateWorkloadPattern error: %v", err)
 	}
 

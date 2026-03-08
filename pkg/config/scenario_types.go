@@ -11,8 +11,9 @@ type Scenario struct {
 
 // Host represents a physical host
 type Host struct {
-	ID    string `yaml:"id"`
-	Cores int    `yaml:"cores"`
+	ID       string `yaml:"id"`
+	Cores    int    `yaml:"cores"`
+	MemoryGB int    `yaml:"memory_gb,omitempty"` // Optional; 0 means use simulator default (16 GB)
 }
 
 // Service represents a microservice

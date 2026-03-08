@@ -38,6 +38,7 @@ func getTopCandidatesN() int {
 
 // buildTopCandidateRunIDs returns run IDs for candidates, optionally limited to top N by score (lower is better).
 // If n <= 0, all candidates are returned. The best run is always included when n > 0.
+// Each RunID appears at most once (duplicates from multiple history steps are removed).
 func buildTopCandidateRunIDs(r *improvement.ExperimentResult, n int) []string {
 	runs := make([]*improvement.RunContext, 0, len(r.Runs))
 	for _, rc := range r.Runs {
@@ -46,10 +47,14 @@ func buildTopCandidateRunIDs(r *improvement.ExperimentResult, n int) []string {
 		}
 	}
 	if n <= 0 || len(runs) <= n {
-		// Return all, preserving order (or take all if within limit)
+		// Return all unique RunIDs, preserving order of first occurrence
+		seen := make(map[string]bool)
 		out := make([]string, 0, len(runs))
 		for _, rc := range runs {
-			out = append(out, rc.RunID)
+			if !seen[rc.RunID] {
+				seen[rc.RunID] = true
+				out = append(out, rc.RunID)
+			}
 		}
 		return out
 	}
@@ -57,10 +62,12 @@ func buildTopCandidateRunIDs(r *improvement.ExperimentResult, n int) []string {
 	sort.Slice(runs, func(i, j int) bool { return runs[i].Score < runs[j].Score })
 	out := make([]string, 0, n+1)
 	seen := make(map[string]bool)
-	for i := 0; i < n && i < len(runs); i++ {
+	for i := 0; i < len(runs) && len(out) < n; i++ {
 		id := runs[i].RunID
-		out = append(out, id)
-		seen[id] = true
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
 	}
 	if r.BestRunID != "" && !seen[r.BestRunID] {
 		out = append(out, r.BestRunID)

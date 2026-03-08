@@ -134,6 +134,54 @@ func TestHTTPServerGetRunNotFound(t *testing.T) {
 	}
 }
 
+func TestHTTPServerStartRun(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+	rec, err := store.Create("test-run", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id, nil)
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	run, ok := resp["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run in response")
+	}
+	if run["id"] != rec.Run.Id {
+		t.Fatalf("expected run id %s, got %v", rec.Run.Id, run["id"])
+	}
+	// Run may still be RUNNING or already COMPLETED (short duration)
+	status, _ := run["status"].(string)
+	if status != "RUN_STATUS_RUNNING" && status != "RUN_STATUS_COMPLETED" {
+		t.Fatalf("expected running or completed status, got %v", run["status"])
+	}
+}
+
+func TestHTTPServerStartRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/nonexistent", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHTTPServerStopRun(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)
@@ -1368,6 +1416,23 @@ func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
 	}
 	if stepData["iteration_index"].(float64) != 1 || stepData["reason"] != "p95 above target, scaled replicas up" {
 		t.Fatalf("unexpected step data: %+v", stepData)
+	}
+
+	// Export should include top-level final_config (last step's current_config)
+	finalConfig, ok := export["final_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected top-level final_config, got %T %v", export["final_config"], export["final_config"])
+	}
+	services, ok := finalConfig["services"].([]any)
+	if !ok || len(services) != 1 {
+		t.Fatalf("expected final_config.services with 1 entry, got %v", finalConfig["services"])
+	}
+	s0, ok := services[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected service as map")
+	}
+	if s0["service_id"] != "svc1" || s0["replicas"].(float64) != 3 {
+		t.Errorf("expected final_config.services[0] service_id svc1 replicas 3, got %v", s0)
 	}
 }
 

@@ -1,6 +1,8 @@
 hosts:
+  # memory_gb is optional; omit or 0 means simulator default (16 GB)
   - id: host-1
     cores: 2
+    memory_gb: 16
 
 services:
   - id: auth
