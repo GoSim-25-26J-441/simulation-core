@@ -363,6 +363,10 @@ message OptimizationProgress {
   int32 iteration = 1;
   double best_score = 2;
   string best_run_id = 3;
+  // What best_score represents: e.g. "p95_latency", "cpu_utilization", "memory_utilization".
+  string objective = 4;
+  // Unit for best_score: e.g. "ms" for latency, "ratio" for utilization (0-1).
+  string unit = 5;
 }
 
 // OptimizationStep is emitted when the online controller applies a configuration change.

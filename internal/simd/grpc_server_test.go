@@ -361,6 +361,12 @@ workload:
 	if optProgress.BestScore != 12.5 {
 		t.Errorf("expected best_score 12.5, got %f", optProgress.BestScore)
 	}
+	if optProgress.Objective != "p95_latency" {
+		t.Errorf("expected objective p95_latency, got %q", optProgress.Objective)
+	}
+	if optProgress.Unit != "ms" {
+		t.Errorf("expected unit ms, got %q", optProgress.Unit)
+	}
 }
 
 func TestGRPCServerListRuns(t *testing.T) {

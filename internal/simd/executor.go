@@ -708,6 +708,30 @@ func allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownC
 	return true
 }
 
+// maxServiceUtilization returns the max CPU or memory utilization across non-client services.
+// Client services (id starting with "client") are skipped. Returns 0 if no services.
+func maxServiceUtilization(runMetrics *models.RunMetrics, kind string) float64 {
+	if runMetrics == nil || runMetrics.ServiceMetrics == nil {
+		return 0
+	}
+	var maxUtil float64
+	for svcID, sm := range runMetrics.ServiceMetrics {
+		if sm == nil || strings.HasPrefix(strings.ToLower(svcID), "client") {
+			continue
+		}
+		var u float64
+		if kind == "memory" {
+			u = sm.MemoryUtilization
+		} else {
+			u = sm.CPUUtilization
+		}
+		if u > maxUtil {
+			maxUtil = u
+		}
+	}
+	return maxUtil
+}
+
 // recordOptimizationStep appends an optimization step to the run's history for backend persistence.
 func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32, targetP95, scoreP95 float64, reason string, prevConfig, currConfig *simulationv1.RunConfiguration) {
 	if prevConfig == nil || currConfig == nil {
@@ -805,9 +829,23 @@ func (e *RunExecutor) runOnlineController(
 			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
 			currentP95 := runMetrics.LatencyP95
 
-			// Update best score and emit progress for SSE
-			if currentP95 < bestScore {
-				bestScore = currentP95
+			// Compute current score from primary target (same metric used for scaling decisions)
+			primaryTarget := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
+			if primaryTarget == "" {
+				primaryTarget = "p95_latency"
+			}
+			var currentScore float64
+			lowerIsBetter := true
+			switch primaryTarget {
+			case "cpu_utilization":
+				currentScore = maxServiceUtilization(runMetrics, "cpu")
+			case "memory_utilization":
+				currentScore = maxServiceUtilization(runMetrics, "memory")
+			default:
+				currentScore = currentP95
+			}
+			if lowerIsBetter && currentScore < bestScore {
+				bestScore = currentScore
 				iter++
 				e.store.SetOptimizationProgress(runID, iter, bestScore)
 			}

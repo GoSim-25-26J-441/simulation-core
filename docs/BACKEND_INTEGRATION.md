@@ -529,7 +529,7 @@ event: metric_update
 data: {"metric":"cpu_utilization","value":0.65,"timestamp":"2024-01-15T10:30:01Z","labels":{"service":"svc1"}}
 
 event: optimization_progress
-data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123"}
+data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123","objective":"p95_latency","unit":"ms"}
 
 ```
 
@@ -537,7 +537,7 @@ data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123"}
 - `status_change`: Run status changes (e.g. `RUN_STATUS_RUNNING`, `RUN_STATUS_COMPLETED`)
 - `metrics_snapshot`: Aggregated metrics updates
 - `metric_update`: Single time-series metric point
-- `optimization_progress`: (Optimization runs only) Iteration progress with `iteration`, `best_score`, `best_run_id`
+- `optimization_progress`: (Optimization runs only) Iteration progress with `iteration`, `best_score`, `best_run_id`, `objective`, and `unit` (score/iteration follow the primary target)
 - `complete`: Stream ending; run reached terminal status
 
 **Status Codes:**
@@ -559,12 +559,16 @@ For runs created with `optimization` config, the stream emits additional events:
 {
   "iteration": 2,
   "best_score": 12.5,
-  "best_run_id": "opt-1234567890-abc123"
+  "best_run_id": "opt-1234567890-abc123",
+  "objective": "p95_latency",
+  "unit": "ms"
 }
 ```
-- `iteration`: Current optimization iteration (0 = initial config)
-- `best_score`: Best objective score found so far (lower is better for minimization)
-- `best_run_id`: Sub-run ID with best score (populated when known; may be empty during run)
+- `iteration`: Number of times the primary metric has improved (0 = no improvement recorded yet).
+- `best_score`: Best value of the primary metric so far; interpretation depends on `objective`.
+- `best_run_id`: Sub-run ID with best score (populated when known; often empty for online runs).
+- `objective`: What `best_score` represents: `"p95_latency"`, `"cpu_utilization"`, or `"memory_utilization"` (from run input `optimization_target_primary`).
+- `unit`: Unit for `best_score`: `"ms"` for latency, `"ratio"` for utilization (0–1). For `cpu_utilization` or `memory_utilization` primary, score is in 0–1; lower is better.
 
 **Event: `optimization_step`** (online optimization only)
 

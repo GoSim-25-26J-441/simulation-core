@@ -588,6 +588,68 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 			t.Errorf("expected no scale-down when P95 above target (guardrail), got replicas=%d", replicas)
 		}
 	})
+	t.Run("progress_reports_cpu_score", func(t *testing.T) {
+		store := NewRunStore()
+		exec := NewRunExecutor(store)
+		runID := "online-cpu-progress"
+		input := &simulationv1.RunInput{
+			ScenarioYaml: "hosts:\n  - id: host-1\n    cores: 4\nservices:\n  - id: svc1\n    replicas: 1\n    model: cpu\n",
+			DurationMs:    0,
+			Optimization: &simulationv1.OptimizationConfig{
+				Online:                   true,
+				TargetP95LatencyMs:       50.0,
+				ControlIntervalMs:        15,
+				OptimizationTargetPrimary: "cpu_utilization",
+			},
+		}
+		_, err := store.Create(runID, input)
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+		scenario := &config.Scenario{
+			Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+			Services: []config.Service{
+				{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []config.Endpoint{{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2}}},
+			},
+		}
+		rm := resource.NewManager()
+		if err := rm.InitializeFromScenario(scenario); err != nil {
+			t.Fatalf("InitializeFromScenario: %v", err)
+		}
+		collector := metrics.NewCollector()
+		collector.Start()
+		svcLabels := metrics.CreateServiceLabels("svc1")
+		now := time.Now()
+		for i := 0; i < 20; i++ {
+			metrics.RecordCPUUtilization(collector, 0.35, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			metrics.RecordLatency(collector, 10.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+		}
+		exec.mu.Lock()
+		exec.resourceManagers[runID] = rm
+		exec.mu.Unlock()
+		opt := &simulationv1.OptimizationConfig{
+			Online:                   true,
+			TargetP95LatencyMs:       50.0,
+			ControlIntervalMs:        15,
+			OptimizationTargetPrimary: "cpu_utilization",
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+		time.Sleep(30 * time.Millisecond)
+		rec, ok := store.Get(runID)
+		if !ok {
+			t.Fatalf("run not found")
+		}
+		if rec.Run.Iterations < 1 {
+			t.Errorf("expected at least one optimization progress (iteration >= 1), got %d", rec.Run.Iterations)
+		}
+		if rec.Run.BestScore < 0 || rec.Run.BestScore > 1 {
+			t.Errorf("expected best_score in [0,1] for cpu_utilization primary, got %f", rec.Run.BestScore)
+		}
+	})
 }
 
 // Test that the online controller prefers vertical scaling (CPU cores per instance)
