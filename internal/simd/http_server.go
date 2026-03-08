@@ -1462,15 +1462,15 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		for _, sm := range metrics.ServiceMetrics {
 			serviceMetrics = append(serviceMetrics, map[string]any{
 				"service_name":        sm.ServiceName,
-				"request_count":      sm.RequestCount,
-				"error_count":        sm.ErrorCount,
-				"latency_p50_ms":     sm.LatencyP50Ms,
-				"latency_p95_ms":     sm.LatencyP95Ms,
-				"latency_p99_ms":     sm.LatencyP99Ms,
-				"latency_mean_ms":    sm.LatencyMeanMs,
-				"cpu_utilization":    sm.CpuUtilization,
-				"memory_utilization": sm.MemoryUtilization,
-				"active_replicas":    sm.ActiveReplicas,
+				"request_count":       sm.RequestCount,
+				"error_count":         sm.ErrorCount,
+				"latency_p50_ms":      sm.LatencyP50Ms,
+				"latency_p95_ms":      sm.LatencyP95Ms,
+				"latency_p99_ms":      sm.LatencyP99Ms,
+				"latency_mean_ms":     sm.LatencyMeanMs,
+				"cpu_utilization":     sm.CpuUtilization,
+				"memory_utilization":  sm.MemoryUtilization,
+				"active_replicas":     sm.ActiveReplicas,
 				"concurrent_requests": sm.ConcurrentRequests,
 			})
 		}

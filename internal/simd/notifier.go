@@ -48,7 +48,7 @@ type Notifier struct {
 func NewNotifier() *Notifier {
 	return &Notifier{
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 60 * time.Second,
 		},
 		maxRetries: 3,
 		baseDelay:  1 * time.Second,

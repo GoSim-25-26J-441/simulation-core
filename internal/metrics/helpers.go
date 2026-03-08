@@ -9,11 +9,11 @@ import (
 
 // Common metric names
 const (
-	MetricRequestLatency    = "request_latency_ms"
-	MetricRequestCount      = "request_count"
-	MetricRequestErrorCount = "request_error_count"
-	MetricCPUUtilization    = "cpu_utilization"
-	MetricMemoryUtilization = "memory_utilization"
+	MetricRequestLatency     = "request_latency_ms"
+	MetricRequestCount       = "request_count"
+	MetricRequestErrorCount  = "request_error_count"
+	MetricCPUUtilization     = "cpu_utilization"
+	MetricMemoryUtilization  = "memory_utilization"
 	MetricQueueLength        = "queue_length"
 	MetricThroughputRPS      = "throughput_rps"
 	MetricConcurrentRequests = "concurrent_requests"
