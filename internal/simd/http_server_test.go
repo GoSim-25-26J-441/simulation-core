@@ -134,6 +134,54 @@ func TestHTTPServerGetRunNotFound(t *testing.T) {
 	}
 }
 
+func TestHTTPServerStartRun(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+	rec, err := store.Create("test-run", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id, nil)
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	run, ok := resp["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run in response")
+	}
+	if run["id"] != rec.Run.Id {
+		t.Fatalf("expected run id %s, got %v", rec.Run.Id, run["id"])
+	}
+	// Run may still be RUNNING or already COMPLETED (short duration)
+	status, _ := run["status"].(string)
+	if status != "RUN_STATUS_RUNNING" && status != "RUN_STATUS_COMPLETED" {
+		t.Fatalf("expected running or completed status, got %v", run["status"])
+	}
+}
+
+func TestHTTPServerStartRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store))
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/nonexistent", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestHTTPServerStopRun(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store)

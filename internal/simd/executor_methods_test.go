@@ -1,6 +1,7 @@
 package simd
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -136,6 +137,83 @@ func TestRunExecutorUpdateWorkloadRateInvalidRate(t *testing.T) {
 	err = exec.UpdateWorkloadRate("run-1", "client:svc1:/test", 0.0)
 	if err == nil {
 		t.Error("Expected error for zero rate")
+	}
+}
+
+func TestRunExecutorUpdatePolicies_EmptyRunID(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	err := exec.UpdatePolicies("", nil)
+	if err == nil {
+		t.Fatalf("expected error for empty run ID")
+	}
+	if !errors.Is(err, ErrRunIDMissing) {
+		t.Fatalf("expected ErrRunIDMissing, got %v", err)
+	}
+}
+
+func TestRunExecutorUpdatePolicies_RunNotFound(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore())
+	err := exec.UpdatePolicies("nonexistent", nil)
+	if err == nil {
+		t.Fatalf("expected error for non-existent run")
+	}
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("expected ErrRunNotFound, got %v", err)
+	}
+}
+
+func TestRunExecutorUpdatePolicies_Success(t *testing.T) {
+	store := NewRunStore()
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	_, err := store.Create("run-1", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   5000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	exec := NewRunExecutor(store)
+	_, err = exec.Start("run-1")
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	// Poll until run is running so policyManagers is set
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-1")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Update policies (run may have already completed and cleanup ran, giving ErrRunNotFound)
+	err = exec.UpdatePolicies("run-1", &config.Policies{
+		Autoscaling: &config.AutoscalingPolicy{
+			Enabled:       true,
+			TargetCPUUtil: 0.8,
+			ScaleStep:     2,
+		},
+	})
+	if err != nil && !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("UpdatePolicies error: %v", err)
 	}
 }
 

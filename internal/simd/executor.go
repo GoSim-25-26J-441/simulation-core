@@ -432,7 +432,11 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 				}
 
 				// Set optimization result so callback includes best_run_id and top_candidates (self).
-				steps := int32(len(rec.OptimizationHistory))
+				n := len(rec.OptimizationHistory)
+				steps := int32(n)
+				if n > math.MaxInt32 {
+					steps = math.MaxInt32
+				}
 				if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
 					logger.Error("failed to set optimization result for stopped online run", "run_id", runID, "error", err)
 				}
@@ -487,7 +491,11 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
 		// Set optimization result so callback includes best_run_id and top_candidates (self).
-		steps := int32(len(rec.OptimizationHistory))
+		n := len(rec.OptimizationHistory)
+		steps := int32(n)
+		if n > math.MaxInt32 {
+			steps = math.MaxInt32
+		}
 		if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
 			logger.Error("failed to set optimization result for online run", "run_id", runID, "error", err)
 		}
