@@ -209,7 +209,7 @@ message RunInput {
 // OptimizationConfig configures an optimization run (multi-run experiment).
 message OptimizationConfig {
   // Objective function: p95_latency_ms, p99_latency_ms, mean_latency_ms,
-  // throughput_rps, error_rate, cost.
+  // throughput_rps, error_rate, cost, cpu_utilization, memory_utilization.
   string objective = 1;
 
   // Maximum optimization iterations (default 10).

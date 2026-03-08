@@ -62,6 +62,22 @@ func TestNewObjectiveFunction(t *testing.T) {
 			},
 		},
 		{
+			name:    "cpu_utilization",
+			objType: "cpu_utilization",
+			wantErr: false,
+			checkName: func(obj ObjectiveFunction) bool {
+				return obj.Name() == "cpu_utilization"
+			},
+		},
+		{
+			name:    "memory_utilization",
+			objType: "memory_utilization",
+			wantErr: false,
+			checkName: func(obj ObjectiveFunction) bool {
+				return obj.Name() == "memory_utilization"
+			},
+		},
+		{
 			name:    "unknown objective",
 			objType: "unknown",
 			wantErr: true,
@@ -332,5 +348,147 @@ func TestCostObjective(t *testing.T) {
 	}
 	if score != 0 {
 		t.Fatalf("expected score 0 for no services, got %f", score)
+	}
+}
+
+func TestCPUUtilizationObjective(t *testing.T) {
+	obj := &CPUUtilizationObjective{}
+	if obj.Name() != "cpu_utilization" {
+		t.Fatalf("expected name cpu_utilization, got %s", obj.Name())
+	}
+	if !obj.Direction() {
+		t.Fatalf("expected minimize direction")
+	}
+
+	// Test with nil metrics
+	_, err := obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
+	}
+
+	// Test with empty ServiceMetrics (no non-client services)
+	metrics := &simulationv1.RunMetrics{ServiceMetrics: []*simulationv1.ServiceMetrics{}}
+	score, err := obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty for no services, got %f", score)
+	}
+
+	// Test with one non-client service
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "svc1", CpuUtilization: 0.6},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 0.6 {
+		t.Fatalf("expected score 0.6, got %f", score)
+	}
+
+	// Test with multiple services (max is chosen)
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "svc1", CpuUtilization: 0.3},
+		{ServiceName: "svc2", CpuUtilization: 0.8},
+		{ServiceName: "svc3", CpuUtilization: 0.5},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 0.8 {
+		t.Fatalf("expected score 0.8 (max), got %f", score)
+	}
+
+	// Test that client-prefixed service is skipped (only client-one counts as client)
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "client-one", CpuUtilization: 0.9},
+		{ServiceName: "svc1", CpuUtilization: 0.4},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 0.4 {
+		t.Fatalf("expected score 0.4 (client skipped), got %f", score)
+	}
+
+	// All client services: should return high penalty
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "client-a", CpuUtilization: 0.9},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty when only client services, got %f", score)
+	}
+}
+
+func TestMemoryUtilizationObjective(t *testing.T) {
+	obj := &MemoryUtilizationObjective{}
+	if obj.Name() != "memory_utilization" {
+		t.Fatalf("expected name memory_utilization, got %s", obj.Name())
+	}
+	if !obj.Direction() {
+		t.Fatalf("expected minimize direction")
+	}
+
+	// Test with nil metrics
+	_, err := obj.Evaluate(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil metrics")
+	}
+
+	// Test with empty ServiceMetrics
+	metrics := &simulationv1.RunMetrics{ServiceMetrics: []*simulationv1.ServiceMetrics{}}
+	score, err := obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != highPenaltyScore {
+		t.Fatalf("expected high penalty for no services, got %f", score)
+	}
+
+	// Test with one non-client service
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "svc1", MemoryUtilization: 0.35},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 0.35 {
+		t.Fatalf("expected score 0.35, got %f", score)
+	}
+
+	// Test with multiple services (max is chosen)
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "svc1", MemoryUtilization: 0.2},
+		{ServiceName: "svc2", MemoryUtilization: 0.7},
+		{ServiceName: "svc3", MemoryUtilization: 0.4},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 0.7 {
+		t.Fatalf("expected score 0.7 (max), got %f", score)
+	}
+
+	// Test that client-prefixed service is skipped
+	metrics.ServiceMetrics = []*simulationv1.ServiceMetrics{
+		{ServiceName: "client-worker", MemoryUtilization: 0.95},
+		{ServiceName: "api", MemoryUtilization: 0.5},
+	}
+	score, err = obj.Evaluate(metrics)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 0.5 {
+		t.Fatalf("expected score 0.5 (client skipped), got %f", score)
 	}
 }
