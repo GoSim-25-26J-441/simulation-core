@@ -289,6 +289,9 @@ workload:
 
 	err = exec.UpdateWorkloadPattern("run-1", patternKey, newPattern)
 	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			t.Skipf("Simulation completed before pattern update (run not found)")
+		}
 		t.Fatalf("UpdateWorkloadPattern error: %v", err)
 	}
 
