@@ -54,6 +54,64 @@ func TestManagerInitializeFromScenario(t *testing.T) {
 	}
 }
 
+func TestManagerInitializeFromScenarioHostMemory(t *testing.T) {
+	// Scenario with explicit memory_gb: host gets that value
+	m := NewManager()
+	scenarioWithMem := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4, MemoryGB: 8},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2},
+				},
+			},
+		},
+	}
+	if err := m.InitializeFromScenario(scenarioWithMem); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	host, ok := m.GetHost("host-1")
+	if !ok {
+		t.Fatalf("expected host-1 to exist")
+	}
+	if host.MemoryGB() != 8 {
+		t.Fatalf("expected host-1 MemoryGB 8, got %d", host.MemoryGB())
+	}
+
+	// Scenario with MemoryGB 0 (omit): host gets default 16 GB
+	m2 := NewManager()
+	scenarioDefault := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 2},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2},
+				},
+			},
+		},
+	}
+	if err := m2.InitializeFromScenario(scenarioDefault); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	host2, ok := m2.GetHost("host-1")
+	if !ok {
+		t.Fatalf("expected host-1 to exist")
+	}
+	if host2.MemoryGB() != 16 {
+		t.Fatalf("expected host-1 default MemoryGB 16, got %d", host2.MemoryGB())
+	}
+}
+
 func TestManagerScaleService(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{

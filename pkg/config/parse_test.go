@@ -41,6 +41,44 @@ workload:
 	}
 }
 
+func TestParseScenarioYAMLHostMemoryGB(t *testing.T) {
+	yamlText := `
+hosts:
+  - id: host-1
+    cores: 2
+    memory_gb: 32
+  - id: host-2
+    cores: 4
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	scenario, err := ParseScenarioYAMLString(yamlText)
+	if err != nil {
+		t.Fatalf("ParseScenarioYAMLString failed: %v", err)
+	}
+	if len(scenario.Hosts) != 2 {
+		t.Fatalf("expected 2 hosts, got %d", len(scenario.Hosts))
+	}
+	if scenario.Hosts[0].MemoryGB != 32 {
+		t.Errorf("expected host-1 memory_gb 32, got %d", scenario.Hosts[0].MemoryGB)
+	}
+	if scenario.Hosts[1].MemoryGB != 0 {
+		t.Errorf("expected host-2 memory_gb 0 (omit), got %d", scenario.Hosts[1].MemoryGB)
+	}
+}
+
 func TestParseScenarioYAMLStringInvalid(t *testing.T) {
 	tests := []struct {
 		name     string

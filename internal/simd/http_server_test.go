@@ -1369,6 +1369,23 @@ func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
 	if stepData["iteration_index"].(float64) != 1 || stepData["reason"] != "p95 above target, scaled replicas up" {
 		t.Fatalf("unexpected step data: %+v", stepData)
 	}
+
+	// Export should include top-level final_config (last step's current_config)
+	finalConfig, ok := export["final_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected top-level final_config, got %T %v", export["final_config"], export["final_config"])
+	}
+	services, ok := finalConfig["services"].([]any)
+	if !ok || len(services) != 1 {
+		t.Fatalf("expected final_config.services with 1 entry, got %v", finalConfig["services"])
+	}
+	s0, ok := services[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected service as map")
+	}
+	if s0["service_id"] != "svc1" || s0["replicas"].(float64) != 3 {
+		t.Errorf("expected final_config.services[0] service_id svc1 replicas 3, got %v", s0)
+	}
 }
 
 func TestHTTPServerListRuns(t *testing.T) {

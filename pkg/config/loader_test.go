@@ -102,6 +102,9 @@ func TestLoadScenario(t *testing.T) {
 	if scenario.Hosts[0].Cores != 2 {
 		t.Errorf("Expected 2 cores, got %d", scenario.Hosts[0].Cores)
 	}
+	if scenario.Hosts[0].MemoryGB != 16 {
+		t.Errorf("Expected host memory_gb 16, got %d", scenario.Hosts[0].MemoryGB)
+	}
 
 	// Validate services
 	if len(scenario.Services) != 3 {
@@ -296,6 +299,17 @@ func TestScenarioValidation(t *testing.T) {
 			name: "Duplicate host id",
 			scenario: &Scenario{
 				Hosts: []Host{{ID: "h1", Cores: 4}, {ID: "h1", Cores: 2}},
+				Services: []Service{
+					{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
+		{
+			name: "Negative host memory_gb",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "h1", Cores: 4, MemoryGB: -1}},
 				Services: []Service{
 					{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
 				},

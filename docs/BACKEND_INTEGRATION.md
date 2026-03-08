@@ -603,8 +603,13 @@ When `callback_url` is set in the run input, the simulator sends an HTTP POST to
 | `best_score` | float | (Optimization only) Best objective score |
 | `iterations` | int | (Optimization only) Number of iterations |
 | `top_candidates` | string[] | (Optimization only) Up to 5 candidate run IDs, best first |
+| `final_config` | object | (Online optimization only) Final/settled run configuration (services, workload, hosts) after controller updates. Omitted if no optimization steps. |
 
 For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (up to 5 run IDs). The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
+
+For **online optimization** runs, the completion callback may include `final_config` (the config the run settled on). The same config is available in run export as top-level `final_config`, or as the last entry's `current_config` in `run.optimization_history`.
+
+**Getting the top candidate config:** For batch mode, use `best_run_id` and `GET /v1/runs/{best_run_id}/export` (e.g. `input.scenario_yaml`). For online mode, use the callback's `final_config`, or the export's top-level `final_config`, or the last step's `current_config` in `run.optimization_history`.
 
 ---
 

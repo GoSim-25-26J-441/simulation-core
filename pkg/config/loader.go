@@ -233,6 +233,9 @@ func validateScenario(s *Scenario) error {
 		if host.Cores <= 0 {
 			return fmt.Errorf("host %s: cores must be positive", host.ID)
 		}
+		if host.MemoryGB < 0 {
+			return fmt.Errorf("host %s: memory_gb cannot be negative", host.ID)
+		}
 	}
 
 	// Validate services

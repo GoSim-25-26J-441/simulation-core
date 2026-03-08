@@ -431,6 +431,12 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 					logger.Error("failed to set metrics for stopped online run", "run_id", runID, "error", err)
 				}
 
+				// Set optimization result so callback includes best_run_id and top_candidates (self).
+				steps := int32(len(rec.OptimizationHistory))
+				if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
+					logger.Error("failed to set optimization result for stopped online run", "run_id", runID, "error", err)
+				}
+
 				// Fetch updated record (with metrics) for notification.
 				if updatedRec, ok := e.store.Get(runID); ok {
 					e.sendNotificationIfConfigured(updatedRec)
@@ -480,6 +486,11 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	// Mark as completed if still running
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		// Set optimization result so callback includes best_run_id and top_candidates (self).
+		steps := int32(len(rec.OptimizationHistory))
+		if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
+			logger.Error("failed to set optimization result for online run", "run_id", runID, "error", err)
+		}
 		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 			logger.Error("failed to set completed status", "run_id", runID, "error", err)
 		} else {

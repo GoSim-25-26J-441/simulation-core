@@ -45,7 +45,11 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 
 	// Initialize hosts
 	for _, hostConfig := range scenario.Hosts {
-		host := NewHost(hostConfig.ID, hostConfig.Cores, 16*1024) // Memory not specified in config, default to 16GB (in MB units)
+		memoryGB := hostConfig.MemoryGB
+		if memoryGB <= 0 {
+			memoryGB = 16
+		}
+		host := NewHost(hostConfig.ID, hostConfig.Cores, memoryGB)
 		m.hosts[hostConfig.ID] = host
 	}
 

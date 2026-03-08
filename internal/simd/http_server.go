@@ -754,6 +754,12 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 	export := map[string]any{
 		"run": runJSON,
 	}
+	if len(rec.OptimizationHistory) > 0 {
+		lastStep := rec.OptimizationHistory[len(rec.OptimizationHistory)-1]
+		if lastStep != nil && lastStep.CurrentConfig != nil {
+			export["final_config"] = convertRunConfigurationToJSON(lastStep.CurrentConfig)
+		}
+	}
 
 	// Include input/scenario configuration
 	if rec.Input != nil {
