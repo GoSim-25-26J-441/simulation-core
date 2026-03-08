@@ -721,6 +721,10 @@ func (s *HTTPServer) handleTimeSeries(w http.ResponseWriter, r *http.Request, ru
 		allPoints = filtered
 	}
 
+	// For request_count and request_error_count, convert to cumulative values per (metric, labels)
+	// so the response matches SSE semantics and the backend can persist without client-side summing.
+	allPoints = convertTimeseriesToCumulative(allPoints)
+
 	// Convert to JSON format
 	pointsJSON := make([]map[string]any, 0, len(allPoints))
 	for _, point := range allPoints {
@@ -1193,6 +1197,46 @@ func createLabelKey(labels map[string]string) string {
 		key += k + "=" + labels[k] + ","
 	}
 	return key
+}
+
+// convertTimeseriesToCumulative returns a new slice of points where request_count and
+// request_error_count are converted to cumulative values per (metric, labels), matching
+// SSE metric_update semantics. Other metrics are returned unchanged.
+func convertTimeseriesToCumulative(points []*models.MetricPoint) []*models.MetricPoint {
+	if len(points) == 0 {
+		return points
+	}
+	type key struct {
+		name string
+		lb   string
+	}
+	groups := make(map[key][]*models.MetricPoint)
+	for _, p := range points {
+		k := key{name: p.Name, lb: createLabelKey(p.Labels)}
+		groups[k] = append(groups[k], p)
+	}
+
+	var out []*models.MetricPoint
+	for k, group := range groups {
+		if k.name != metrics.MetricRequestCount && k.name != metrics.MetricRequestErrorCount {
+			out = append(out, group...)
+			continue
+		}
+		sorted := make([]*models.MetricPoint, len(group))
+		copy(sorted, group)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Timestamp.Before(sorted[j].Timestamp) })
+		var sum float64
+		for _, p := range sorted {
+			sum += p.Value
+			out = append(out, &models.MetricPoint{
+				Timestamp: p.Timestamp,
+				Name:      p.Name,
+				Value:     sum,
+				Labels:    p.Labels,
+			})
+		}
+	}
+	return out
 }
 
 // metricUpdateValue returns the value to send in a metric_update event.

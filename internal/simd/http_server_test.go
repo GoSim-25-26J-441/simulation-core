@@ -497,6 +497,77 @@ func TestHTTPServerTimeSeriesWithFilters(t *testing.T) {
 	}
 }
 
+// TestHTTPServerTimeSeriesRequestCountCumulative verifies that the timeseries endpoint
+// returns cumulative values for request_count (and not raw increments), so the backend
+// can persist without client-side summing.
+func TestHTTPServerTimeSeriesRequestCountCumulative(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store)
+	srv := NewHTTPServer(store, executor)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	now := time.Now()
+	labels := map[string]string{"service": "svc1", "endpoint": "/test"}
+	// Record 5 request_count points (value 1 each, as the simulator does)
+	for i := 0; i < 5; i++ {
+		metrics.RecordRequestCount(collector, 1.0, now.Add(time.Duration(i)*time.Millisecond), labels)
+	}
+	collector.Stop()
+
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics/timeseries?metric=request_count", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	points, ok := body["points"].([]any)
+	if !ok {
+		t.Fatalf("expected points array, got %T", body["points"])
+	}
+	if len(points) != 5 {
+		t.Fatalf("expected 5 points, got %d", len(points))
+	}
+
+	// Values must be cumulative: 1, 2, 3, 4, 5 (non-decreasing; last = 5)
+	var prevVal float64
+	for i, p := range points {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			t.Fatalf("point %d: expected map, got %T", i, p)
+		}
+		v, _ := pm["value"].(float64)
+		if v <= prevVal && i > 0 {
+			t.Fatalf("point %d: expected cumulative (value > %f), got value %f", i, prevVal, v)
+		}
+		prevVal = v
+	}
+	if prevVal != 5 {
+		t.Fatalf("expected last cumulative value 5, got %f", prevVal)
+	}
+}
+
 func TestHTTPServerTimeSeriesNotFound(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store))
