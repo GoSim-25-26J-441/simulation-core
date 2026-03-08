@@ -52,9 +52,10 @@ type ServiceMetrics struct {
 	LatencyP95        float64 `json:"latency_p95_ms"`
 	LatencyP99        float64 `json:"latency_p99_ms"`
 	LatencyMean       float64 `json:"latency_mean_ms"`
-	CPUUtilization    float64 `json:"cpu_utilization"`
-	MemoryUtilization float64 `json:"memory_utilization"`
-	ActiveReplicas    int     `json:"active_replicas"`
+	CPUUtilization       float64 `json:"cpu_utilization"`
+	MemoryUtilization    float64 `json:"memory_utilization"`
+	ActiveReplicas       int     `json:"active_replicas"`
+	ConcurrentRequests   int     `json:"concurrent_requests"`
 }
 
 // RequestStatus represents the status of a request

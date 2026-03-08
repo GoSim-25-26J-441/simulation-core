@@ -986,17 +986,27 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 			default:
 				activeReplicas = int32(svcMetrics.ActiveReplicas)
 			}
+			var concurrentReqs int32
+			switch {
+			case svcMetrics.ConcurrentRequests < 0:
+				concurrentReqs = 0
+			case svcMetrics.ConcurrentRequests > math.MaxInt32:
+				concurrentReqs = math.MaxInt32
+			default:
+				concurrentReqs = int32(svcMetrics.ConcurrentRequests)
+			}
 			pbSvcMetrics := &simulationv1.ServiceMetrics{
-				ServiceName:       serviceName,
-				RequestCount:      svcMetrics.RequestCount,
-				ErrorCount:        svcMetrics.ErrorCount,
-				LatencyP50Ms:      svcMetrics.LatencyP50,
-				LatencyP95Ms:      svcMetrics.LatencyP95,
-				LatencyP99Ms:      svcMetrics.LatencyP99,
-				LatencyMeanMs:     svcMetrics.LatencyMean,
-				CpuUtilization:    svcMetrics.CPUUtilization,
-				MemoryUtilization: svcMetrics.MemoryUtilization,
-				ActiveReplicas:    activeReplicas,
+				ServiceName:        serviceName,
+				RequestCount:       svcMetrics.RequestCount,
+				ErrorCount:         svcMetrics.ErrorCount,
+				LatencyP50Ms:       svcMetrics.LatencyP50,
+				LatencyP95Ms:       svcMetrics.LatencyP95,
+				LatencyP99Ms:       svcMetrics.LatencyP99,
+				LatencyMeanMs:      svcMetrics.LatencyMean,
+				CpuUtilization:     svcMetrics.CPUUtilization,
+				MemoryUtilization:  svcMetrics.MemoryUtilization,
+				ActiveReplicas:     activeReplicas,
+				ConcurrentRequests: concurrentReqs,
 			}
 			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
 		}

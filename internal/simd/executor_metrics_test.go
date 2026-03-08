@@ -20,28 +20,30 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 		ThroughputRPS:      10.0,
 		ServiceMetrics: map[string]*models.ServiceMetrics{
 			"service1": {
-				ServiceName:       "service1",
+				ServiceName:        "service1",
 				RequestCount:      50,
 				ErrorCount:        2,
 				LatencyP50:        8.0,
 				LatencyP95:        20.0,
 				LatencyP99:        40.0,
-				LatencyMean:       12.0,
+				LatencyMean:        12.0,
 				CPUUtilization:    0.75,
 				MemoryUtilization: 0.60,
 				ActiveReplicas:    3,
+				ConcurrentRequests: 5,
 			},
 			"service2": {
-				ServiceName:       "service2",
+				ServiceName:        "service2",
 				RequestCount:      50,
 				ErrorCount:        3,
 				LatencyP50:        12.0,
 				LatencyP95:        30.0,
 				LatencyP99:        60.0,
-				LatencyMean:       18.0,
+				LatencyMean:        18.0,
 				CPUUtilization:    0.80,
 				MemoryUtilization: 0.70,
 				ActiveReplicas:    2,
+				ConcurrentRequests: 2,
 			},
 		},
 	}
@@ -78,6 +80,9 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 			}
 			if svc.ActiveReplicas != 3 {
 				t.Fatalf("expected service1 ActiveReplicas 3, got %d", svc.ActiveReplicas)
+			}
+			if svc.ConcurrentRequests != 5 {
+				t.Fatalf("expected service1 ConcurrentRequests 5, got %d", svc.ConcurrentRequests)
 			}
 			if svc.CpuUtilization != 0.75 {
 				t.Fatalf("expected service1 CpuUtilization 0.75, got %f", svc.CpuUtilization)

@@ -296,6 +296,10 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			queueLength := instance.QueueLength()
 			metrics.RecordQueueLength(state.collector, float64(queueLength), simTime, instanceLabels)
 
+			// Record concurrent requests (in-flight) per instance (gauge)
+			activeReqs := instance.ActiveRequests()
+			metrics.RecordConcurrentRequests(state.collector, float64(activeReqs), simTime, instanceLabels)
+
 			// Record host-level metrics so SSE stream includes node-level data
 			hostID := instance.HostID()
 			if host, hostOk := state.rm.GetHost(hostID); hostOk {

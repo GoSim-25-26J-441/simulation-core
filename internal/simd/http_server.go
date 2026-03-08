@@ -1417,7 +1417,7 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		serviceMetrics := make([]map[string]any, 0, len(metrics.ServiceMetrics))
 		for _, sm := range metrics.ServiceMetrics {
 			serviceMetrics = append(serviceMetrics, map[string]any{
-				"service_name":       sm.ServiceName,
+				"service_name":        sm.ServiceName,
 				"request_count":      sm.RequestCount,
 				"error_count":        sm.ErrorCount,
 				"latency_p50_ms":     sm.LatencyP50Ms,
@@ -1427,6 +1427,7 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 				"cpu_utilization":    sm.CpuUtilization,
 				"memory_utilization": sm.MemoryUtilization,
 				"active_replicas":    sm.ActiveReplicas,
+				"concurrent_requests": sm.ConcurrentRequests,
 			})
 		}
 		result["service_metrics"] = serviceMetrics

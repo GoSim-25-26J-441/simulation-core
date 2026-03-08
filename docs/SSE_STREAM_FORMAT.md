@@ -52,7 +52,7 @@ data: {"status":"RUN_STATUS_COMPLETED"}
 ### `metric_update` value semantics
 
 - **`request_count`** and **`request_error_count`**: `data.value` is the **cumulative total** so far for that (metric, labels). You can plot `(timestamp, value)` directly for “total requests over time” without client-side accumulation.
-- **All other metrics** (e.g. `request_latency_ms`, `cpu_utilization`, `memory_utilization`, `queue_length`): `data.value` is the **latest reading** (one observation or current gauge value).
+- **All other metrics** (e.g. `request_latency_ms`, `cpu_utilization`, `memory_utilization`, `queue_length`, `concurrent_requests`): `data.value` is the **latest reading** (one observation or current gauge value). **`concurrent_requests`** is the current in-flight request count per instance (gauge).
 
 ### `metrics_snapshot` payload shape
 

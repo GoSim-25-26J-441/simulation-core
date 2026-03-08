@@ -430,3 +430,51 @@ func TestConvertToRunMetricsWithEndpointLabels(t *testing.T) {
 		t.Fatalf("expected user latency mean 30, got %f", userMetrics.LatencyMean)
 	}
 }
+
+// TestConvertToRunMetricsConcurrentRequests verifies that per-service ConcurrentRequests
+// is the sum of the latest value per instance (gauge-style aggregation).
+func TestConvertToRunMetricsConcurrentRequests(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+
+	// Record concurrent_requests per instance (as handlers do)
+	RecordConcurrentRequests(c, 2.0, now, CreateInstanceLabels("svc1", "inst1"))
+	RecordConcurrentRequests(c, 1.0, now, CreateInstanceLabels("svc1", "inst2"))
+	RecordConcurrentRequests(c, 3.0, now, CreateInstanceLabels("svc2", "inst1"))
+
+	// Later gauge updates: only latest per instance should be summed
+	later := now.Add(time.Second)
+	RecordConcurrentRequests(c, 1.0, later, CreateInstanceLabels("svc1", "inst1"))
+	RecordConcurrentRequests(c, 2.0, later, CreateInstanceLabels("svc1", "inst2"))
+
+	c.Stop()
+
+	serviceLabels := []map[string]string{
+		{"service": "svc1"},
+		{"service": "svc2"},
+	}
+	runMetrics := ConvertToRunMetrics(c, serviceLabels)
+	if runMetrics == nil {
+		t.Fatalf("expected non-nil RunMetrics")
+	}
+	if len(runMetrics.ServiceMetrics) != 2 {
+		t.Fatalf("expected 2 service metrics, got %d", len(runMetrics.ServiceMetrics))
+	}
+	// svc1: latest per instance = 1 (inst1) + 2 (inst2) = 3
+	svc1 := runMetrics.ServiceMetrics["svc1"]
+	if svc1 == nil {
+		t.Fatalf("expected svc1 metrics")
+	}
+	if svc1.ConcurrentRequests != 3 {
+		t.Fatalf("expected svc1 ConcurrentRequests 3 (sum of latest per instance), got %d", svc1.ConcurrentRequests)
+	}
+	// svc2: single instance latest = 3
+	svc2 := runMetrics.ServiceMetrics["svc2"]
+	if svc2 == nil {
+		t.Fatalf("expected svc2 metrics")
+	}
+	if svc2.ConcurrentRequests != 3 {
+		t.Fatalf("expected svc2 ConcurrentRequests 3, got %d", svc2.ConcurrentRequests)
+	}
+}

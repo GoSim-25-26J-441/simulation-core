@@ -308,6 +308,7 @@ message ServiceMetrics {
   double cpu_utilization = 8;
   double memory_utilization = 9;
   int32 active_replicas = 10;
+  int32 concurrent_requests = 11;
 }
 
 message RunEvent {

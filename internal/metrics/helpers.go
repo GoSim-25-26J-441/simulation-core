@@ -14,8 +14,9 @@ const (
 	MetricRequestErrorCount = "request_error_count"
 	MetricCPUUtilization    = "cpu_utilization"
 	MetricMemoryUtilization = "memory_utilization"
-	MetricQueueLength       = "queue_length"
-	MetricThroughputRPS     = "throughput_rps"
+	MetricQueueLength        = "queue_length"
+	MetricThroughputRPS      = "throughput_rps"
+	MetricConcurrentRequests = "concurrent_requests"
 )
 
 // RecordLatency records a request latency metric
@@ -51,6 +52,11 @@ func RecordQueueLength(collector *Collector, length float64, timestamp time.Time
 // RecordThroughput records throughput metric
 func RecordThroughput(collector *Collector, rps float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricThroughputRPS, rps, timestamp, labels)
+}
+
+// RecordConcurrentRequests records the current in-flight request count (gauge) per instance.
+func RecordConcurrentRequests(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricConcurrentRequests, count, timestamp, labels)
 }
 
 // CreateServiceLabels creates a labels map for a service
@@ -203,6 +209,18 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		}
 		if svcMemAgg != nil {
 			svcMetrics.MemoryUtilization = svcMemAgg.Mean
+		}
+
+		// Concurrent requests: sum of latest value per instance (gauge-style, not sum over time)
+		labelCombos := collector.GetLabelsForMetric(MetricConcurrentRequests)
+		for _, l := range labelCombos {
+			if l["service"] != serviceName {
+				continue
+			}
+			points := collector.GetTimeSeries(MetricConcurrentRequests, l)
+			if len(points) > 0 {
+				svcMetrics.ConcurrentRequests += int(points[len(points)-1].Value)
+			}
 		}
 
 		serviceMetrics[serviceName] = svcMetrics
