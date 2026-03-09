@@ -24,7 +24,7 @@ type testOptimizationAdapter struct {
 }
 
 func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (string, float64, int32, []string, error) {
-	objective, err := improvement.NewObjectiveFunction(params.Objective)
+	objective, err := improvement.NewObjectiveFunction(params.Objective, nil)
 	if err != nil {
 		return "", 0, 0, nil, err
 	}

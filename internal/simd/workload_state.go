@@ -64,8 +64,9 @@ func NewWorkloadState(runID string, eng *engine.Engine, endTime time.Time) *Work
 	}
 }
 
-// Start initializes workload patterns and begins continuous event generation
-func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time) error {
+// Start initializes workload patterns and either pre-generates all arrival events (non-real-time)
+// or starts continuous event generation (real-time mode).
+func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, realTime bool) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 
@@ -90,10 +91,47 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time) e
 		}
 	}
 
-	// Start continuous event generation
-	go ws.generateEventsLoop()
+	if realTime {
+		// Start continuous event generation (ticker-based loop)
+		go ws.generateEventsLoop()
+		return nil
+	}
 
+	// Non-real-time: pre-generate all arrival events up to endTime so the engine
+	// processes them before hitting the simulation end event.
+	ws.generateAllEventsUpToEndTime()
 	return nil
+}
+
+// generateAllEventsUpToEndTime schedules all arrival events from each pattern's
+// NextEventTime up to ws.endTime. Used when not in real-time mode.
+func (ws *WorkloadState) generateAllEventsUpToEndTime() {
+	for _, patternState := range ws.patterns {
+		patternState.mu.Lock()
+		if !patternState.Active {
+			patternState.mu.Unlock()
+			continue
+		}
+		for patternState.NextEventTime.Before(ws.endTime) {
+			ws.engine.ScheduleAt(
+				engine.EventTypeRequestArrival,
+				patternState.NextEventTime,
+				nil,
+				patternState.ServiceID,
+				map[string]interface{}{
+					"service_id":    patternState.ServiceID,
+					"endpoint_path": patternState.EndpointPath,
+				},
+			)
+			nextTime := ws.calculateNextArrivalTime(
+				patternState.Pattern.Arrival,
+				patternState.NextEventTime,
+			)
+			patternState.LastEventTime = patternState.NextEventTime
+			patternState.NextEventTime = nextTime
+		}
+		patternState.mu.Unlock()
+	}
 }
 
 // Stop stops the workload state manager

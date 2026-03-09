@@ -253,8 +253,8 @@ func (s *BalancedStrategy) calculateWeightedScore(candidate *ConfigurationCandid
 			continue // Skip primary objective
 		}
 
-		// Try to evaluate this objective
-		obj, err := NewObjectiveFunction(objName)
+		// Try to evaluate this objective (no utilization band for secondary objectives)
+		obj, err := NewObjectiveFunction(objName, nil)
 		if err != nil {
 			continue // Skip if objective not found
 		}

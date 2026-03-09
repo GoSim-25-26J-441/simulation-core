@@ -985,10 +985,14 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				if rec.Run.Iterations != lastOptIteration || rec.Run.BestScore != lastOptBestScore {
 					lastOptIteration = rec.Run.Iterations
 					lastOptBestScore = rec.Run.BestScore
+					opt := rec.Input.Optimization
+					objective, unit := ObjectiveAndUnitForProgress(opt)
 					s.sendSSEEvent(w, "optimization_progress", map[string]any{
 						"iteration":   rec.Run.Iterations,
 						"best_score":  rec.Run.BestScore,
 						"best_run_id": rec.Run.BestRunId,
+						"objective":   objective,
+						"unit":        unit,
 					})
 				}
 				// Send new optimization steps (online controller config changes)

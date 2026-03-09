@@ -914,6 +914,13 @@ func TestHTTPServerMetricsStreamOptimizationProgress(t *testing.T) {
 	if !strings.Contains(body, "12.5") && !strings.Contains(body, "1.25e+01") {
 		t.Fatalf("expected best_score 12.5 in optimization_progress, got: %s", body)
 	}
+	// Default objective/unit when not set
+	if !strings.Contains(body, `"objective":"p95_latency"`) && !strings.Contains(body, `"objective": "p95_latency"`) {
+		t.Errorf("expected objective p95_latency in optimization_progress, got: %s", body)
+	}
+	if !strings.Contains(body, `"unit":"ms"`) && !strings.Contains(body, `"unit": "ms"`) {
+		t.Errorf("expected unit ms in optimization_progress, got: %s", body)
+	}
 }
 
 func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {

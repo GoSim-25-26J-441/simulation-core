@@ -209,7 +209,7 @@ message RunInput {
 // OptimizationConfig configures an optimization run (multi-run experiment).
 message OptimizationConfig {
   // Objective function: p95_latency_ms, p99_latency_ms, mean_latency_ms,
-  // throughput_rps, error_rate, cost.
+  // throughput_rps, error_rate, cost, cpu_utilization, memory_utilization.
   string objective = 1;
 
   // Maximum optimization iterations (default 10).
@@ -247,6 +247,41 @@ message OptimizationConfig {
   // greater than 0, the controller will avoid scaling below this bound.
   int32 min_hosts = 8;
   int32 max_hosts = 9;
+
+  // Optional. When > 0, online controller will scale down replicas only when
+  // service CPU utilization is below this (0.0–1.0). Ignored if 0. Default 0
+  // (current behavior: only check CPU < cpuHighThreshold).
+  double scale_down_cpu_util_max = 10;
+  // Optional. When > 0, online controller will scale down only when service
+  // memory utilization is below this (0.0–1.0). Ignored if 0.
+  double scale_down_mem_util_max = 11;
+
+  // For online optimization: primary signal for scaling. Values: "p95_latency"
+  // (default), "cpu_utilization", "memory_utilization". When cpu_utilization or
+  // memory_utilization, scale-up when utilization > target_util_high, scale-down
+  // when < target_util_low; P95 is used as guardrail (do not scale down if P95
+  // would exceed target_p95_latency_ms).
+  string optimization_target_primary = 12;
+  // When optimization_target_primary is cpu_utilization or memory_utilization:
+  // high threshold (0–1) for scale-up. Default 0.7.
+  // For batch optimization with objective cpu_utilization or memory_utilization,
+  // target_util_low and target_util_high define the desired utilization band (0–1);
+  // the optimizer minimizes distance from this band (score 0 inside band).
+  double target_util_high = 13;
+  // When optimization_target_primary is cpu_utilization or memory_utilization:
+  // low threshold (0–1) for scale-down. Default 0.4.
+  // For batch optimization with objective cpu_utilization or memory_utilization,
+  // see target_util_high: together they define the target utilization band.
+  double target_util_low = 14;
+
+  // When > 0, online controller may scale in hosts or decrease host capacity
+  // only when max host CPU utilization is below this (0.0–1.0). Default 0 (disabled).
+  double scale_down_host_cpu_util_max = 15;
+
+  // Optional cap on total evaluation runs for batch optimization. When > 0, the
+  // optimizer stops after this many simulation runs (initial + neighbor evaluations).
+  // Ignored for online optimization. When 0, only max_iterations (improvement steps) applies.
+  int32 max_evaluations = 16;
 }
 
 message Run {
@@ -338,6 +373,10 @@ message OptimizationProgress {
   int32 iteration = 1;
   double best_score = 2;
   string best_run_id = 3;
+  // What best_score represents: e.g. "p95_latency", "cpu_utilization", "memory_utilization".
+  string objective = 4;
+  // Unit for best_score: e.g. "ms" for latency, "ratio" for utilization (0-1).
+  string unit = 5;
 }
 
 // OptimizationStep is emitted when the online controller applies a configuration change.

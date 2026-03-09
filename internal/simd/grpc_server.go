@@ -188,6 +188,8 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 				if rec.Run.Iterations != lastOptIteration || rec.Run.BestScore != lastOptBestScore {
 					lastOptIteration = rec.Run.Iterations
 					lastOptBestScore = rec.Run.BestScore
+					opt := rec.Input.Optimization
+					objective, unit := ObjectiveAndUnitForProgress(opt)
 					if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
 						AtUnixMs: time.Now().UTC().UnixMilli(),
 						RunId:    req.RunId,
@@ -196,6 +198,8 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 								Iteration: rec.Run.Iterations,
 								BestScore: rec.Run.BestScore,
 								BestRunId: rec.Run.BestRunId,
+								Objective: objective,
+								Unit:      unit,
 							},
 						},
 					}}); err != nil {
