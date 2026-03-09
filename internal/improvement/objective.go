@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
 const (
@@ -14,6 +15,9 @@ const (
 	cpuCostWeight     = 0.4
 	memoryCostWeight  = 0.3
 	replicaCostWeight = 0.3
+
+	defaultServiceCPUCores = 1.0
+	defaultServiceMemoryMB = 512.0
 )
 
 // ObjectiveFunction evaluates a run's metrics and returns a score.
@@ -225,8 +229,9 @@ func (o *ErrorRateObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64
 	return errorRate, nil
 }
 
-// CostObjective minimizes cost (weighted combination of resources)
-// Cost = 0.4 * average CPU utilization + 0.3 * average Memory utilization + 0.3 * total replicas
+// CostObjective minimizes cost (weighted combination of resources).
+// Evaluate() retains metrics-based behavior for compatibility, while optimization
+// candidate ranking uses EvaluateInfrastructureCost() for allocation-aware scoring.
 type CostObjective struct{}
 
 func (o *CostObjective) Name() string {
@@ -262,6 +267,47 @@ func (o *CostObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64, err
 	memoryCost := avgMemory * memoryCostWeight
 	replicaCost := float64(totalReplicas) * replicaCostWeight
 	return cpuCost + memoryCost + replicaCost, nil
+}
+
+// EvaluateInfrastructureCost computes infra-aware cost from scenario allocations:
+//   - sum(replicas * cpu_cores)
+//   - sum(replicas * memory_gb)
+//   - sum(replicas)
+// and applies the objective weights. Missing/zero cpu_cores or memory_mb use defaults.
+func EvaluateInfrastructureCost(scenario *config.Scenario) float64 {
+	if scenario == nil || len(scenario.Services) == 0 {
+		return highPenaltyScore
+	}
+
+	totalCPU := 0.0
+	totalMemoryGB := 0.0
+	totalReplicas := 0.0
+
+	for _, svc := range scenario.Services {
+		replicas := float64(svc.Replicas)
+		if replicas < 1 {
+			replicas = 1
+		}
+
+		cpuCores := svc.CPUCores
+		if cpuCores <= 0 {
+			cpuCores = defaultServiceCPUCores
+		}
+
+		memoryMB := svc.MemoryMB
+		if memoryMB <= 0 {
+			memoryMB = defaultServiceMemoryMB
+		}
+
+		totalCPU += replicas * cpuCores
+		totalMemoryGB += replicas * (memoryMB / 1024.0)
+		totalReplicas += replicas
+	}
+
+	cpuCost := totalCPU * cpuCostWeight
+	memoryCost := totalMemoryGB * memoryCostWeight
+	replicaCost := totalReplicas * replicaCostWeight
+	return cpuCost + memoryCost + replicaCost
 }
 
 // maxServiceUtilFromProto returns the max CPU or memory utilization across

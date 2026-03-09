@@ -3,9 +3,25 @@ package improvement
 import (
 	"testing"
 
+	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/simd"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
+
+type stubObjective struct {
+	name       string
+	score      float64
+	evaluateCt int
+}
+
+func (s *stubObjective) Name() string { return s.name }
+func (s *stubObjective) Direction() bool {
+	return true
+}
+func (s *stubObjective) Evaluate(_ *simulationv1.RunMetrics) (float64, error) {
+	s.evaluateCt++
+	return s.score, nil
+}
 
 func TestNewOrchestrator(t *testing.T) {
 	store := simd.NewRunStore()
@@ -170,6 +186,40 @@ func TestOrchestratorGetRunContext(t *testing.T) {
 	_, ok := orch.GetRunContext("nonexistent")
 	if ok {
 		t.Fatalf("expected false for non-existent run")
+	}
+}
+
+func TestEvaluateRunScoreUsesInfrastructureCostForCostObjective(t *testing.T) {
+	orch := &Orchestrator{objective: &CostObjective{}}
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1.0, MemoryMB: 1024},
+		},
+	}
+
+	score, err := orch.evaluateRunScore(scenario, &simulationv1.RunMetrics{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := EvaluateInfrastructureCost(scenario)
+	if score != expected {
+		t.Fatalf("expected infra cost score %f, got %f", expected, score)
+	}
+}
+
+func TestEvaluateRunScoreKeepsNonCostObjectivesUnchanged(t *testing.T) {
+	stub := &stubObjective{name: "p95_latency_ms", score: 123.45}
+	orch := &Orchestrator{objective: stub}
+
+	score, err := orch.evaluateRunScore(&config.Scenario{}, &simulationv1.RunMetrics{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if score != 123.45 {
+		t.Fatalf("expected stub score 123.45, got %f", score)
+	}
+	if stub.evaluateCt != 1 {
+		t.Fatalf("expected non-cost path to call objective.Evaluate once, got %d", stub.evaluateCt)
 	}
 }
 

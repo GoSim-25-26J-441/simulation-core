@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
 func floatEqual(a, b float64) bool {
@@ -354,6 +355,62 @@ func TestCostObjective(t *testing.T) {
 	}
 	if score != 0 {
 		t.Fatalf("expected score 0 for no services, got %f", score)
+	}
+}
+
+func TestEvaluateInfrastructureCostSensitivity(t *testing.T) {
+	base := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1.0, MemoryMB: 1024},
+		},
+	}
+	baseScore := EvaluateInfrastructureCost(base)
+
+	// Lower memory should reduce cost (all else equal)
+	lowerMemory := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1.0, MemoryMB: 512},
+		},
+	}
+	if score := EvaluateInfrastructureCost(lowerMemory); score >= baseScore {
+		t.Fatalf("expected lower memory to reduce cost: base=%f lowerMemory=%f", baseScore, score)
+	}
+
+	// Lower CPU should reduce cost (all else equal)
+	lowerCPU := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 0.5, MemoryMB: 1024},
+		},
+	}
+	if score := EvaluateInfrastructureCost(lowerCPU); score >= baseScore {
+		t.Fatalf("expected lower CPU to reduce cost: base=%f lowerCPU=%f", baseScore, score)
+	}
+
+	// Lower replicas should reduce cost (all else equal)
+	lowerReplicas := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, CPUCores: 1.0, MemoryMB: 1024},
+		},
+	}
+	if score := EvaluateInfrastructureCost(lowerReplicas); score >= baseScore {
+		t.Fatalf("expected lower replicas to reduce cost: base=%f lowerReplicas=%f", baseScore, score)
+	}
+}
+
+func TestEvaluateInfrastructureCostDefaults(t *testing.T) {
+	// Missing/zero fields should fall back to defaults and still produce finite cost.
+	cfg := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 0, CPUCores: 0, MemoryMB: 0},
+		},
+	}
+	score := EvaluateInfrastructureCost(cfg)
+	if score <= 0 || math.IsNaN(score) || math.IsInf(score, 0) {
+		t.Fatalf("expected positive finite score with defaults, got %f", score)
+	}
+
+	if EvaluateInfrastructureCost(nil) != highPenaltyScore {
+		t.Fatalf("expected high penalty for nil scenario")
 	}
 }
 
