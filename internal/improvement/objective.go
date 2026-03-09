@@ -52,8 +52,37 @@ const (
 	ObjectiveMinimizeMemoryUtilization ObjectiveType = "memory_utilization"
 )
 
-// NewObjectiveFunction creates an objective function from a type string
-func NewObjectiveFunction(objType string) (ObjectiveFunction, error) {
+// UtilizationTarget represents a desired utilization band (0-1). Valid when 0 <= Low < High <= 1.
+// When set for batch cpu_utilization or memory_utilization, the optimizer minimizes distance from this band.
+type UtilizationTarget struct {
+	Low  float64
+	High float64
+}
+
+// Valid returns true if the band is valid (0 <= Low < High <= 1).
+func (u *UtilizationTarget) Valid() bool {
+	if u == nil {
+		return false
+	}
+	return u.Low >= 0 && u.High <= 1 && u.Low < u.High
+}
+
+// scoreForUtilBand returns 0 if u is in [low, high], else distance to nearest bound. Minimize this score.
+func scoreForUtilBand(u, low, high float64) float64 {
+	if u >= low && u <= high {
+		return 0
+	}
+	if u < low {
+		return low - u
+	}
+	return u - high
+}
+
+// NewObjectiveFunction creates an objective function from a type string and optional utilization target band.
+// When utilTarget is nil or invalid, behavior is unchanged. When objType is cpu_utilization or
+// memory_utilization and utilTarget is valid, the returned objective minimizes distance from the band.
+func NewObjectiveFunction(objType string, utilTarget *UtilizationTarget) (ObjectiveFunction, error) {
+	useBand := utilTarget != nil && utilTarget.Valid()
 	switch ObjectiveType(objType) {
 	case ObjectiveMinimizeP95Latency:
 		return &P95LatencyObjective{}, nil
@@ -68,9 +97,17 @@ func NewObjectiveFunction(objType string) (ObjectiveFunction, error) {
 	case ObjectiveMinimizeCost:
 		return &CostObjective{}, nil
 	case ObjectiveMinimizeCPUUtilization:
-		return &CPUUtilizationObjective{}, nil
+		o := &CPUUtilizationObjective{}
+		if useBand {
+			o.TargetLow, o.TargetHigh = utilTarget.Low, utilTarget.High
+		}
+		return o, nil
 	case ObjectiveMinimizeMemoryUtilization:
-		return &MemoryUtilizationObjective{}, nil
+		o := &MemoryUtilizationObjective{}
+		if useBand {
+			o.TargetLow, o.TargetHigh = utilTarget.Low, utilTarget.High
+		}
+		return o, nil
 	default:
 		return nil, &UnknownObjectiveError{ObjectiveType: objType}
 	}
@@ -253,8 +290,12 @@ func maxServiceUtilFromProto(metrics *simulationv1.RunMetrics, kind string) (max
 	return maxUtil, nonClientCount
 }
 
-// CPUUtilizationObjective minimizes max CPU utilization across services
-type CPUUtilizationObjective struct{}
+// CPUUtilizationObjective minimizes max CPU utilization across services, or (when TargetLow < TargetHigh)
+// minimizes distance from the target band [TargetLow, TargetHigh].
+type CPUUtilizationObjective struct {
+	TargetLow  float64 // 0 = band not set
+	TargetHigh float64
+}
 
 func (o *CPUUtilizationObjective) Name() string {
 	return string(ObjectiveMinimizeCPUUtilization)
@@ -272,11 +313,18 @@ func (o *CPUUtilizationObjective) Evaluate(metrics *simulationv1.RunMetrics) (fl
 	if nonClientCount == 0 {
 		return highPenaltyScore, nil
 	}
+	if o.TargetLow < o.TargetHigh && o.TargetLow >= 0 && o.TargetHigh <= 1 {
+		return scoreForUtilBand(maxUtil, o.TargetLow, o.TargetHigh), nil
+	}
 	return maxUtil, nil
 }
 
-// MemoryUtilizationObjective minimizes max memory utilization across services
-type MemoryUtilizationObjective struct{}
+// MemoryUtilizationObjective minimizes max memory utilization across services, or (when TargetLow < TargetHigh)
+// minimizes distance from the target band [TargetLow, TargetHigh].
+type MemoryUtilizationObjective struct {
+	TargetLow  float64
+	TargetHigh float64
+}
 
 func (o *MemoryUtilizationObjective) Name() string {
 	return string(ObjectiveMinimizeMemoryUtilization)
@@ -293,6 +341,9 @@ func (o *MemoryUtilizationObjective) Evaluate(metrics *simulationv1.RunMetrics) 
 	maxUtil, nonClientCount := maxServiceUtilFromProto(metrics, "memory")
 	if nonClientCount == 0 {
 		return highPenaltyScore, nil
+	}
+	if o.TargetLow < o.TargetHigh && o.TargetLow >= 0 && o.TargetHigh <= 1 {
+		return scoreForUtilBand(maxUtil, o.TargetLow, o.TargetHigh), nil
 	}
 	return maxUtil, nil
 }

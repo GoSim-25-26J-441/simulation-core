@@ -17,6 +17,7 @@ type ProgressReporter func(iteration int, bestScore float64)
 type Optimizer struct {
 	objective           ObjectiveFunction
 	maxIterations       int
+	maxEvaluations      int                 // optional cap on total evaluateFunc calls (0 = no cap)
 	stepSize            float64             // Step size for parameter adjustments
 	explorer            ParameterExplorer   // Parameter space exploration strategy
 	convergenceStrategy ConvergenceStrategy // Convergence detection strategy
@@ -79,6 +80,17 @@ func (o *Optimizer) WithProgressReporter(reporter ProgressReporter) *Optimizer {
 	return o
 }
 
+// WithMaxEvaluations sets an optional cap on total evaluation runs. When > 0,
+// Optimize stops after this many evaluateFunc calls (initial config + neighbors).
+// When 0, only maxIterations limits the number of improvement steps.
+func (o *Optimizer) WithMaxEvaluations(n int) *Optimizer {
+	if n < 0 {
+		n = 0
+	}
+	o.maxEvaluations = n
+	return o
+}
+
 // Optimize runs the hill-climbing optimization algorithm
 func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*config.Scenario) (float64, error)) (*OptimizationResult, error) {
 	if initialConfig == nil {
@@ -119,6 +131,8 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 		rep(0, initialScore)
 	}
 
+	evaluations := 1 // initial config already evaluated
+
 	// Hill-climbing iterations
 	for iteration := 1; iteration <= o.maxIterations; iteration++ {
 		o.mu.Lock()
@@ -132,11 +146,17 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 			return o.buildResult(true, "no valid neighbors"), nil
 		}
 
-		// Evaluate all neighbors and find the best one
+		// Evaluate all neighbors and find the best one (respect maxEvaluations cap)
 		bestNeighbor := neighbors[0]
 		bestNeighborScore := math.MaxFloat64
+		hitEvalCap := false
 
 		for _, neighbor := range neighbors {
+			if o.maxEvaluations > 0 && evaluations >= o.maxEvaluations {
+				hitEvalCap = true
+				break
+			}
+			evaluations++
 			score, err := evaluateFunc(neighbor)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
@@ -150,6 +170,9 @@ func (o *Optimizer) Optimize(initialConfig *config.Scenario, evaluateFunc func(*
 				bestNeighborScore = score
 				bestNeighbor = neighbor
 			}
+		}
+		if hitEvalCap {
+			return o.buildResult(false, "max evaluations reached"), nil
 		}
 
 		// Check if we found a better configuration

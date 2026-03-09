@@ -282,6 +282,48 @@ func TestOptimizerWithProgressReporter(t *testing.T) {
 	}
 }
 
+func TestOptimizerWithMaxEvaluations(t *testing.T) {
+	obj := &P95LatencyObjective{}
+	// Cap at 5 evaluations: 1 initial + up to 4 neighbors in first iteration
+	opt := NewOptimizer(obj, 10, 1.0).WithMaxEvaluations(5)
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 2,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1}},
+				},
+			},
+		},
+	}
+
+	var evalCount int
+	evaluateFunc := func(*config.Scenario) (float64, error) {
+		evalCount++
+		return float64(evalCount), nil // arbitrary scores
+	}
+
+	result, err := opt.Optimize(scenario, evaluateFunc)
+	if err != nil {
+		t.Fatalf("Optimize error: %v", err)
+	}
+	if result == nil {
+		t.Fatalf("expected non-nil result")
+	}
+	if evalCount > 5 {
+		t.Errorf("expected at most 5 evaluations with max_evaluations=5, got %d", evalCount)
+	}
+	if result.ConvergenceReason != "max evaluations reached" {
+		t.Errorf("expected convergence reason 'max evaluations reached', got %q", result.ConvergenceReason)
+	}
+}
+
 func TestOptimizerOptimizeWithError(t *testing.T) {
 	obj := &P95LatencyObjective{}
 	opt := NewOptimizer(obj, 5, 1.0)

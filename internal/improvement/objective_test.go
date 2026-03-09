@@ -1,10 +1,16 @@
 package improvement
 
 import (
+	"math"
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 )
+
+func floatEqual(a, b float64) bool {
+	const eps = 1e-9
+	return math.Abs(a-b) < eps
+}
 
 func TestNewObjectiveFunction(t *testing.T) {
 	tests := []struct {
@@ -86,7 +92,7 @@ func TestNewObjectiveFunction(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			obj, err := NewObjectiveFunction(tt.objType)
+			obj, err := NewObjectiveFunction(tt.objType, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for unknown objective type")
@@ -425,6 +431,85 @@ func TestCPUUtilizationObjective(t *testing.T) {
 	}
 	if score != highPenaltyScore {
 		t.Fatalf("expected high penalty when only client services, got %f", score)
+	}
+}
+
+func TestCPUUtilizationObjectiveWithBand(t *testing.T) {
+	// Band [0.4, 0.7]: score 0 inside, else distance to nearest bound
+	band := &UtilizationTarget{Low: 0.4, High: 0.7}
+	if !band.Valid() {
+		t.Fatalf("expected valid band")
+	}
+	obj, err := NewObjectiveFunction("cpu_utilization", band)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cpuObj := obj.(*CPUUtilizationObjective)
+	if cpuObj.TargetLow != 0.4 || cpuObj.TargetHigh != 0.7 {
+		t.Fatalf("expected band 0.4-0.7, got %f-%f", cpuObj.TargetLow, cpuObj.TargetHigh)
+	}
+
+	metricsWith := func(u float64) *simulationv1.RunMetrics {
+		return &simulationv1.RunMetrics{
+			ServiceMetrics: []*simulationv1.ServiceMetrics{
+				{ServiceName: "svc1", CpuUtilization: u},
+			},
+		}
+	}
+
+	// Inside band: score 0
+	for _, u := range []float64{0.4, 0.5, 0.7} {
+		score, err := obj.Evaluate(metricsWith(u))
+		if err != nil {
+			t.Fatalf("unexpected error for util %f: %v", u, err)
+		}
+		if !floatEqual(score, 0) {
+			t.Errorf("util %f: expected score 0 (in band), got %f", u, score)
+		}
+	}
+
+	// Below band: score = target_low - u
+	score, _ := obj.Evaluate(metricsWith(0.3))
+	if !floatEqual(score, 0.1) {
+		t.Errorf("util 0.3: expected score 0.1, got %f", score)
+	}
+	score, _ = obj.Evaluate(metricsWith(0.0))
+	if !floatEqual(score, 0.4) {
+		t.Errorf("util 0.0: expected score 0.4, got %f", score)
+	}
+
+	// Above band: score = u - target_high
+	score, _ = obj.Evaluate(metricsWith(0.8))
+	if !floatEqual(score, 0.1) {
+		t.Errorf("util 0.8: expected score 0.1, got %f", score)
+	}
+	score, _ = obj.Evaluate(metricsWith(1.0))
+	if !floatEqual(score, 0.3) {
+		t.Errorf("util 1.0: expected score 0.3, got %f", score)
+	}
+}
+
+func TestUtilizationTargetValid(t *testing.T) {
+	if (&UtilizationTarget{Low: 0.4, High: 0.7}).Valid() != true {
+		t.Error("expected valid for 0.4-0.7")
+	}
+	if (&UtilizationTarget{Low: 0, High: 1}).Valid() != true {
+		t.Error("expected valid for 0-1")
+	}
+	if (*UtilizationTarget)(nil).Valid() != false {
+		t.Error("nil should be invalid")
+	}
+	if (&UtilizationTarget{}).Valid() != false {
+		t.Error("zero value: Low >= High should be invalid")
+	}
+	if (&UtilizationTarget{Low: 0.7, High: 0.4}).Valid() != false {
+		t.Error("Low >= High should be invalid")
+	}
+	if (&UtilizationTarget{Low: -0.1, High: 0.5}).Valid() != false {
+		t.Error("Low < 0 should be invalid")
+	}
+	if (&UtilizationTarget{Low: 0.5, High: 1.1}).Valid() != false {
+		t.Error("High > 1 should be invalid")
 	}
 }
 

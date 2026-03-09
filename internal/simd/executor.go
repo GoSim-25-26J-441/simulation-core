@@ -208,9 +208,10 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 
 	opt := rec.Input.Optimization
 	params := &OptimizationParams{
-		Objective:     "p95_latency_ms",
-		MaxIterations: 10,
-		StepSize:      1.0,
+		Objective:      "p95_latency_ms",
+		MaxIterations:  10,
+		StepSize:       1.0,
+		MaxEvaluations: 0,
 	}
 	if opt != nil {
 		if opt.Objective != "" {
@@ -222,6 +223,11 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if opt.StepSize > 0 {
 			params.StepSize = opt.StepSize
 		}
+		if opt.MaxEvaluations > 0 {
+			params.MaxEvaluations = opt.MaxEvaluations
+		}
+		params.TargetUtilLow = opt.GetTargetUtilLow()
+		params.TargetUtilHigh = opt.GetTargetUtilHigh()
 	}
 
 	// Determine evaluation duration for each candidate run in the optimization.

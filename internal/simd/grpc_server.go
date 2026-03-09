@@ -3,7 +3,6 @@ package simd
 import (
 	"context"
 	"errors"
-	"strings"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -190,14 +189,7 @@ func (s *SimulationGRPCServer) StreamRunEvents(req *simulationv1.StreamRunEvents
 					lastOptIteration = rec.Run.Iterations
 					lastOptBestScore = rec.Run.BestScore
 					opt := rec.Input.Optimization
-					objective := strings.TrimSpace(strings.ToLower(opt.GetOptimizationTargetPrimary()))
-					if objective == "" {
-						objective = "p95_latency"
-					}
-					unit := "ms"
-					if objective == "cpu_utilization" || objective == "memory_utilization" {
-						unit = "ratio"
-					}
+					objective, unit := ObjectiveAndUnitForProgress(opt)
 					if err := stream.Send(&simulationv1.StreamRunEventsResponse{Event: &simulationv1.RunEvent{
 						AtUnixMs: time.Now().UTC().UnixMilli(),
 						RunId:    req.RunId,

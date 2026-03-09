@@ -986,14 +986,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					lastOptIteration = rec.Run.Iterations
 					lastOptBestScore = rec.Run.BestScore
 					opt := rec.Input.Optimization
-					objective := strings.TrimSpace(strings.ToLower(opt.GetOptimizationTargetPrimary()))
-					if objective == "" {
-						objective = "p95_latency"
-					}
-					unit := "ms"
-					if objective == "cpu_utilization" || objective == "memory_utilization" {
-						unit = "ratio"
-					}
+					objective, unit := ObjectiveAndUnitForProgress(opt)
 					s.sendSSEEvent(w, "optimization_progress", map[string]any{
 						"iteration":   rec.Run.Iterations,
 						"best_score":  rec.Run.BestScore,
