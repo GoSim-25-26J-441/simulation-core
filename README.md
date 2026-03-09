@@ -410,7 +410,7 @@ import (
 func main() {
     // Initialize components
     store := simd.NewRunStore()
-    executor := simd.NewRunExecutor(store)
+    executor := simd.NewRunExecutor(store, nil)
     
     // Create optimizer with P95 latency objective
     objective := &improvement.P95LatencyObjective{}

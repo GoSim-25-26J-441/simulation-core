@@ -48,10 +48,10 @@ var (
 	ErrRunIDMissing = errors.New("run_id is required")
 )
 
-func NewRunExecutor(store *RunStore) *RunExecutor {
+func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 	return &RunExecutor{
 		store:            store,
-		notifier:         NewNotifier(),
+		notifier:         NewNotifierWithWhitelist(callbackWhitelist),
 		cancels:          make(map[string]context.CancelFunc),
 		workloadStates:   make(map[string]*WorkloadState),
 		resourceManagers: make(map[string]*resource.Manager),

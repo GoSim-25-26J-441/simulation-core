@@ -12,7 +12,7 @@ import (
 
 func TestOrchestratorWithMaxParallelRuns(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -36,7 +36,7 @@ func TestOrchestratorWithMaxParallelRuns(t *testing.T) {
 
 func TestOrchestratorGetActiveRunCount(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -48,7 +48,7 @@ func TestOrchestratorGetActiveRunCount(t *testing.T) {
 
 func TestOrchestratorCleanupCompletedRuns(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -73,7 +73,7 @@ func TestOrchestratorCleanupCompletedRuns(t *testing.T) {
 
 func TestOrchestratorCancelActiveRuns(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -115,7 +115,7 @@ func TestOrchestratorCancelActiveRuns(t *testing.T) {
 
 func TestEvaluateConfigurationsParallel(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{}).
 		WithMaxParallelRuns(2)

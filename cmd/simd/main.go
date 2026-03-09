@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +24,27 @@ import (
 
 // Env name for limiting candidate_run_ids to top N by score (0 or unset = all).
 const envTopCandidates = "SIMD_OPTIMIZATION_TOP_CANDIDATES"
+
+// Env name for optional comma-separated hostnames or IPs allowed for callback URL (even if private).
+const envCallbackWhitelist = "SIMULATION_CALLBACK_WHITELIST"
+
+func getCallbackWhitelist() []string {
+	s := os.Getenv(envCallbackWhitelist)
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 func getTopCandidatesN() int {
 	s := os.Getenv(envTopCandidates)
@@ -162,7 +184,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, getCallbackWhitelist())
 	executor.SetOptimizationRunner(&optimizationRunnerAdapter{store: store, executor: executor})
 
 	// TODO: Configure gRPC server security (e.g., TLS, authentication, rate limiting)

@@ -9,7 +9,7 @@ import (
 
 func TestNewOrchestrator(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	objective := &P95LatencyObjective{}
 
@@ -145,7 +145,7 @@ func TestConfigsMatch(t *testing.T) {
 
 func TestOrchestratorGetActiveRuns(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	objective := &P95LatencyObjective{}
 
@@ -160,7 +160,7 @@ func TestOrchestratorGetActiveRuns(t *testing.T) {
 
 func TestOrchestratorGetRunContext(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	objective := &P95LatencyObjective{}
 

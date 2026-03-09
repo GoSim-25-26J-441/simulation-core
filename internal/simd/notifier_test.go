@@ -76,7 +76,7 @@ func TestValidateCallbackURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateCallbackURL(tt.url)
+			err := validateCallbackURL(tt.url, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("validateCallbackURL() expected error but got nil")
@@ -94,6 +94,41 @@ func TestValidateCallbackURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateCallbackURL_Whitelist(t *testing.T) {
+	// Hostname in whitelist allows even loopback IP
+	t.Run("hostname in whitelist allows 127.0.0.1", func(t *testing.T) {
+		err := validateCallbackURL("http://127.0.0.1:8000/callback", []string{"127.0.0.1"})
+		if err != nil {
+			t.Errorf("validateCallbackURL with 127.0.0.1 in whitelist: expected nil, got %v", err)
+		}
+	})
+	// Resolved IP in whitelist allows (e.g. hostname resolves to private IP)
+	t.Run("resolved IP in whitelist allows private", func(t *testing.T) {
+		// localhost resolves to 127.0.0.1; whitelist the IP
+		err := validateCallbackURL("http://localhost:8000/callback", []string{"127.0.0.1"})
+		if err != nil {
+			t.Errorf("validateCallbackURL localhost with 127.0.0.1 in whitelist: expected nil, got %v", err)
+		}
+	})
+	// Not in whitelist, private IP still rejected
+	t.Run("private IP not in whitelist still rejected", func(t *testing.T) {
+		err := validateCallbackURL("http://127.0.0.1:8000/callback", []string{"10.0.0.1"})
+		if err == nil {
+			t.Error("validateCallbackURL with 127.0.0.1 not in whitelist: expected error, got nil")
+		}
+		if err != nil && !isErrorType(err, ErrInternalHost) {
+			t.Errorf("validateCallbackURL: expected ErrInternalHost, got %v", err)
+		}
+	})
+	// Empty/nil whitelist unchanged behavior
+	t.Run("nil whitelist rejects loopback IP", func(t *testing.T) {
+		err := validateCallbackURL("http://127.0.0.1:8000/callback", nil)
+		if err == nil {
+			t.Error("validateCallbackURL with nil whitelist: expected error for 127.0.0.1, got nil")
+		}
+	})
 }
 
 func isErrorType(err error, target error) bool {

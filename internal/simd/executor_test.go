@@ -48,7 +48,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	rec, err := exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -77,7 +77,7 @@ workload:
 
 func TestRunExecutorSetOptimizationRunner(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	mock := &mockOptimizationRunner{}
 	exec.SetOptimizationRunner(mock)
 	// No assertion needed - just ensure it doesn't panic
@@ -85,7 +85,7 @@ func TestRunExecutorSetOptimizationRunner(t *testing.T) {
 
 func TestRunExecutorStartEmptyRunID(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err := exec.Start("")
 	if err == nil {
 		t.Fatalf("expected error for empty run ID")
@@ -97,7 +97,7 @@ func TestRunExecutorStartEmptyRunID(t *testing.T) {
 
 func TestRunExecutorStopEmptyRunID(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err := exec.Stop("")
 	if err == nil {
 		t.Fatalf("expected error for empty run ID")
@@ -109,7 +109,7 @@ func TestRunExecutorStopEmptyRunID(t *testing.T) {
 
 func TestRunExecutorStartOptimizationWithoutRunner(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	optScenario := `
 hosts:
   - id: host-1
@@ -163,7 +163,7 @@ workload:
 // Test that online optimization mode selects the online path without panicking.
 func TestRunExecutorStartOnlineOptimizationWithoutRunner(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	optScenario := `
 hosts:
   - id: host-1
@@ -214,7 +214,7 @@ workload:
 
 // Test that the online controller scales replicas up when p95 latency is above target.
 func TestRunExecutorOnlineControllerScalesUp(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	runID := "online-scale-up"
 
 	scenario := &config.Scenario{
@@ -280,7 +280,7 @@ func TestRunExecutorOnlineControllerScalesUp(t *testing.T) {
 
 // Test that the online controller scales replicas down when p95 latency is well below target.
 func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	runID := "online-scale-down"
 
 	scenario := &config.Scenario{
@@ -355,67 +355,67 @@ func TestAllowScaleDownReplicas(t *testing.T) {
 	const cpuHigh = 0.8
 
 	tests := []struct {
-		name              string
-		svcCPUUtil        float64
-		svcMemUtil        float64
-		scaleDownCPUMax   float64
-		scaleDownMemMax   float64
+		name               string
+		svcCPUUtil         float64
+		svcMemUtil         float64
+		scaleDownCPUMax    float64
+		scaleDownMemMax    float64
 		wantAllowScaleDown bool
 	}{
 		{
-			name:              "both thresholds 0 uses only cpuHigh guard: low CPU allows",
-			svcCPUUtil:        0.5,
-			svcMemUtil:        0.6,
-			scaleDownCPUMax:   0,
-			scaleDownMemMax:   0,
+			name:               "both thresholds 0 uses only cpuHigh guard: low CPU allows",
+			svcCPUUtil:         0.5,
+			svcMemUtil:         0.6,
+			scaleDownCPUMax:    0,
+			scaleDownMemMax:    0,
 			wantAllowScaleDown: true,
 		},
 		{
-			name:              "both thresholds 0: CPU hot blocks",
-			svcCPUUtil:        0.9,
-			svcMemUtil:        0.3,
-			scaleDownCPUMax:   0,
-			scaleDownMemMax:   0,
+			name:               "both thresholds 0: CPU hot blocks",
+			svcCPUUtil:         0.9,
+			svcMemUtil:         0.3,
+			scaleDownCPUMax:    0,
+			scaleDownMemMax:    0,
 			wantAllowScaleDown: false,
 		},
 		{
-			name:              "scale_down thresholds set: CPU above threshold blocks",
-			svcCPUUtil:        0.5,
-			svcMemUtil:        0.2,
-			scaleDownCPUMax:   0.4,
-			scaleDownMemMax:   0.4,
+			name:               "scale_down thresholds set: CPU above threshold blocks",
+			svcCPUUtil:         0.5,
+			svcMemUtil:         0.2,
+			scaleDownCPUMax:    0.4,
+			scaleDownMemMax:    0.4,
 			wantAllowScaleDown: false,
 		},
 		{
-			name:              "scale_down thresholds set: mem above threshold blocks",
-			svcCPUUtil:        0.2,
-			svcMemUtil:        0.6,
-			scaleDownCPUMax:   0.4,
-			scaleDownMemMax:   0.4,
+			name:               "scale_down thresholds set: mem above threshold blocks",
+			svcCPUUtil:         0.2,
+			svcMemUtil:         0.6,
+			scaleDownCPUMax:    0.4,
+			scaleDownMemMax:    0.4,
 			wantAllowScaleDown: false,
 		},
 		{
-			name:              "scale_down thresholds set: both below allows",
-			svcCPUUtil:        0.2,
-			svcMemUtil:        0.3,
-			scaleDownCPUMax:   0.4,
-			scaleDownMemMax:   0.4,
+			name:               "scale_down thresholds set: both below allows",
+			svcCPUUtil:         0.2,
+			svcMemUtil:         0.3,
+			scaleDownCPUMax:    0.4,
+			scaleDownMemMax:    0.4,
 			wantAllowScaleDown: true,
 		},
 		{
-			name:              "only CPU threshold set: mem ignored",
-			svcCPUUtil:        0.2,
-			svcMemUtil:        0.9,
-			scaleDownCPUMax:   0.4,
-			scaleDownMemMax:   0,
+			name:               "only CPU threshold set: mem ignored",
+			svcCPUUtil:         0.2,
+			svcMemUtil:         0.9,
+			scaleDownCPUMax:    0.4,
+			scaleDownMemMax:    0,
 			wantAllowScaleDown: true,
 		},
 		{
-			name:              "CPU at cpuHighThreshold blocks even with low scale-down threshold",
-			svcCPUUtil:        0.85,
-			svcMemUtil:        0.1,
-			scaleDownCPUMax:   0.9,
-			scaleDownMemMax:   0.9,
+			name:               "CPU at cpuHighThreshold blocks even with low scale-down threshold",
+			svcCPUUtil:         0.85,
+			svcMemUtil:         0.1,
+			scaleDownCPUMax:    0.9,
+			scaleDownMemMax:    0.9,
 			wantAllowScaleDown: false,
 		},
 	}
@@ -434,7 +434,7 @@ func TestAllowScaleDownReplicas(t *testing.T) {
 // low util + low P95 scales down, and low util but high P95 does not scale down (guardrail).
 func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 	t.Run("high_util_scales_up", func(t *testing.T) {
-		exec := NewRunExecutor(NewRunStore())
+		exec := NewRunExecutor(NewRunStore(), nil)
 		runID := "online-cpu-primary-scale-up"
 		scenario := &config.Scenario{
 			Hosts: []config.Host{{ID: "host-1", Cores: 8}},
@@ -463,13 +463,13 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		exec.resourceManagers[runID] = rm
 		exec.mu.Unlock()
 		opt := &simulationv1.OptimizationConfig{
-			Online:                   true,
-			TargetP95LatencyMs:       50.0,
-			ControlIntervalMs:        10,
-			StepSize:                 1.0,
+			Online:                    true,
+			TargetP95LatencyMs:        50.0,
+			ControlIntervalMs:         10,
+			StepSize:                  1.0,
 			OptimizationTargetPrimary: "cpu_utilization",
-			TargetUtilHigh:           0.7,
-			TargetUtilLow:            0.4,
+			TargetUtilHigh:            0.7,
+			TargetUtilLow:             0.4,
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -488,7 +488,7 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		}
 	})
 	t.Run("low_util_and_low_p95_scales_down", func(t *testing.T) {
-		exec := NewRunExecutor(NewRunStore())
+		exec := NewRunExecutor(NewRunStore(), nil)
 		runID := "online-cpu-primary-scale-down"
 		scenario := &config.Scenario{
 			Hosts: []config.Host{{ID: "host-1", Cores: 8}},
@@ -517,13 +517,13 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		exec.resourceManagers[runID] = rm
 		exec.mu.Unlock()
 		opt := &simulationv1.OptimizationConfig{
-			Online:                   true,
-			TargetP95LatencyMs:       100.0,
-			ControlIntervalMs:        10,
-			StepSize:                 1.0,
+			Online:                    true,
+			TargetP95LatencyMs:        100.0,
+			ControlIntervalMs:         10,
+			StepSize:                  1.0,
 			OptimizationTargetPrimary: "cpu_utilization",
-			TargetUtilHigh:           0.7,
-			TargetUtilLow:            0.4,
+			TargetUtilHigh:            0.7,
+			TargetUtilLow:             0.4,
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -540,7 +540,7 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		}
 	})
 	t.Run("low_util_but_high_p95_no_scale_down", func(t *testing.T) {
-		exec := NewRunExecutor(NewRunStore())
+		exec := NewRunExecutor(NewRunStore(), nil)
 		runID := "online-cpu-primary-guardrail"
 		scenario := &config.Scenario{
 			Hosts: []config.Host{{ID: "host-1", Cores: 8}},
@@ -569,13 +569,13 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		exec.resourceManagers[runID] = rm
 		exec.mu.Unlock()
 		opt := &simulationv1.OptimizationConfig{
-			Online:                   true,
-			TargetP95LatencyMs:       50.0,
-			ControlIntervalMs:        10,
-			StepSize:                 1.0,
+			Online:                    true,
+			TargetP95LatencyMs:        50.0,
+			ControlIntervalMs:         10,
+			StepSize:                  1.0,
 			OptimizationTargetPrimary: "cpu_utilization",
-			TargetUtilHigh:           0.7,
-			TargetUtilLow:            0.4,
+			TargetUtilHigh:            0.7,
+			TargetUtilLow:             0.4,
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -590,15 +590,15 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 	})
 	t.Run("progress_reports_cpu_score", func(t *testing.T) {
 		store := NewRunStore()
-		exec := NewRunExecutor(store)
+		exec := NewRunExecutor(store, nil)
 		runID := "online-cpu-progress"
 		input := &simulationv1.RunInput{
 			ScenarioYaml: "hosts:\n  - id: host-1\n    cores: 4\nservices:\n  - id: svc1\n    replicas: 1\n    model: cpu\n",
-			DurationMs:    0,
+			DurationMs:   0,
 			Optimization: &simulationv1.OptimizationConfig{
-				Online:                   true,
-				TargetP95LatencyMs:       50.0,
-				ControlIntervalMs:        15,
+				Online:                    true,
+				TargetP95LatencyMs:        50.0,
+				ControlIntervalMs:         15,
 				OptimizationTargetPrimary: "cpu_utilization",
 			},
 		}
@@ -628,9 +628,9 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		exec.resourceManagers[runID] = rm
 		exec.mu.Unlock()
 		opt := &simulationv1.OptimizationConfig{
-			Online:                   true,
-			TargetP95LatencyMs:       50.0,
-			ControlIntervalMs:        15,
+			Online:                    true,
+			TargetP95LatencyMs:        50.0,
+			ControlIntervalMs:         15,
 			OptimizationTargetPrimary: "cpu_utilization",
 		}
 		ctx, cancel := context.WithCancel(context.Background())
@@ -655,7 +655,7 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 // Test that the online controller prefers vertical scaling (CPU cores per instance)
 // when latency is above target and service CPU utilization is high.
 func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	runID := "online-vertical-scale-up"
 
 	scenario := &config.Scenario{
@@ -728,7 +728,7 @@ func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T
 // Test that the online controller scales out hosts up to max_hosts when hosts are hot
 // and latency is above target, before resorting to vertical host capacity increases.
 func TestRunExecutorOnlineControllerScalesOutHostsBeforeVertical(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	runID := "online-host-scale-out"
 
 	scenario := &config.Scenario{
@@ -810,7 +810,7 @@ func TestRunExecutorOnlineControllerScalesOutHostsBeforeVertical(t *testing.T) {
 // Test that when P95 and host CPU are low and scale_down_host_cpu_util_max is set,
 // the online controller scales in empty hosts (Phase 3).
 func TestRunExecutorOnlineControllerScaleInHosts(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	runID := "online-host-scale-in"
 
 	scenario := &config.Scenario{
@@ -858,13 +858,13 @@ func TestRunExecutorOnlineControllerScaleInHosts(t *testing.T) {
 	exec.mu.Unlock()
 
 	opt := &simulationv1.OptimizationConfig{
-		Online:                    true,
-		TargetP95LatencyMs:        100.0,
-		ControlIntervalMs:         10,
-		StepSize:                  1.0,
-		MinHosts:                  1,
-		MaxHosts:                  3,
-		ScaleDownHostCpuUtilMax:    0.5,
+		Online:                  true,
+		TargetP95LatencyMs:      100.0,
+		ControlIntervalMs:       10,
+		StepSize:                1.0,
+		MinHosts:                1,
+		MaxHosts:                3,
+		ScaleDownHostCpuUtilMax: 0.5,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -888,7 +888,7 @@ func TestRunExecutorOnlineControllerScaleInHosts(t *testing.T) {
 // Test that when already at max_hosts and hosts are hot, the controller increases
 // host CPU capacity instead of adding more hosts.
 func TestRunExecutorOnlineControllerIncreasesHostCapacityAtMaxHosts(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	runID := "online-host-vertical-scale"
 
 	scenario := &config.Scenario{
@@ -982,7 +982,7 @@ func TestRunExecutorOnlineControllerIncreasesHostCapacityAtMaxHosts(t *testing.T
 
 func TestRunExecutorCallbackWithInvalidURL(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	scenario := `
 hosts:
   - id: host-1
@@ -1026,7 +1026,7 @@ workload:
 }
 
 func TestRunExecutorStartOnMissingRun(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	_, err := exec.Start("nope")
 	if err == nil {
 		t.Fatalf("expected error")
@@ -1034,7 +1034,7 @@ func TestRunExecutorStartOnMissingRun(t *testing.T) {
 }
 
 func TestRunExecutorStartOnEmptyRunID(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	_, err := exec.Start("")
 	if err == nil {
 		t.Fatalf("expected error")
@@ -1055,7 +1055,7 @@ func TestRunExecutorStartOnTerminalStatus(t *testing.T) {
 		t.Fatalf("SetStatus error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err == nil {
 		t.Fatalf("expected error for terminal status")
@@ -1091,7 +1091,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -1116,7 +1116,7 @@ workload:
 }
 
 func TestRunExecutorStopOnEmptyRunID(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	_, err := exec.Stop("")
 	if err == nil {
 		t.Fatalf("expected error")
@@ -1127,7 +1127,7 @@ func TestRunExecutorStopOnEmptyRunID(t *testing.T) {
 }
 
 func TestRunExecutorStopOnNonExistentRun(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	_, err := exec.Stop("nope")
 	// Stop will error because SetStatus will fail on non-existent run
 	if err == nil {
@@ -1164,7 +1164,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	rec1, err := exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -1193,7 +1193,7 @@ func TestRunExecutorInvalidScenarioYAML(t *testing.T) {
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -1250,7 +1250,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -1296,7 +1296,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)

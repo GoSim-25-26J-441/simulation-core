@@ -91,7 +91,7 @@ func (a *testOptimizationAdapter) RunExperiment(ctx context.Context, runID strin
 
 func TestIntegration_Optimization_CreateStartAndComplete(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	executor.SetOptimizationRunner(&testOptimizationAdapter{store: store, executor: executor})
 	srv := simd.NewHTTPServer(store, executor)
 

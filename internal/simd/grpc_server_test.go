@@ -12,7 +12,7 @@ import (
 
 func TestGRPCServerCreateStartGetMetricsLifecycle(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 
 	ctx := context.Background()
 	validScenario := `
@@ -112,7 +112,7 @@ func (s *fakeRunEventsStream) RecvMsg(m any) error             { return nil }
 
 func TestGRPCServerStreamRunEventsEmptyRunId(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 	stream := &fakeRunEventsStream{ctx: ctx}
 
@@ -124,7 +124,7 @@ func TestGRPCServerStreamRunEventsEmptyRunId(t *testing.T) {
 
 func TestGRPCServerStreamRunEventsRunNotFound(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	stream := &fakeRunEventsStream{ctx: ctx}
@@ -137,7 +137,7 @@ func TestGRPCServerStreamRunEventsRunNotFound(t *testing.T) {
 
 func TestGRPCServerStreamRunEventsSendsInitialEvent(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	validScenario := `
@@ -192,7 +192,7 @@ workload:
 
 func TestGRPCServerStreamRunEventsTracksStatusChanges(t *testing.T) {
 	store := NewRunStore()
-	executor := NewRunExecutor(store)
+	executor := NewRunExecutor(store, nil)
 	srv := NewSimulationGRPCServer(store, executor)
 	ctx := context.Background()
 
@@ -292,7 +292,7 @@ workload:
 
 func TestGRPCServerStreamRunEventsOptimizationProgress(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	validScenario := `
@@ -371,7 +371,7 @@ workload:
 
 func TestGRPCServerListRuns(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	// Create multiple runs
@@ -408,7 +408,7 @@ func TestGRPCServerListRuns(t *testing.T) {
 
 func TestGRPCServerCreateRunWithNilRequest(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.CreateRun(ctx, nil)
@@ -419,7 +419,7 @@ func TestGRPCServerCreateRunWithNilRequest(t *testing.T) {
 
 func TestGRPCServerStartRunWithEmptyRunId(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: ""})
@@ -430,7 +430,7 @@ func TestGRPCServerStartRunWithEmptyRunId(t *testing.T) {
 
 func TestGRPCServerGetRunWithEmptyRunId(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: ""})
@@ -441,7 +441,7 @@ func TestGRPCServerGetRunWithEmptyRunId(t *testing.T) {
 
 func TestGRPCServerGetRunMetricsWithEmptyRunId(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.GetRunMetrics(ctx, &simulationv1.GetRunMetricsRequest{RunId: ""})
@@ -452,7 +452,7 @@ func TestGRPCServerGetRunMetricsWithEmptyRunId(t *testing.T) {
 
 func TestGRPCServerCreateRunWithNilInput(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{Input: nil})
@@ -463,7 +463,7 @@ func TestGRPCServerCreateRunWithNilInput(t *testing.T) {
 
 func TestGRPCServerGetRunOnNonExistent(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.GetRun(ctx, &simulationv1.GetRunRequest{RunId: "nope"})
@@ -474,7 +474,7 @@ func TestGRPCServerGetRunOnNonExistent(t *testing.T) {
 
 func TestGRPCServerStartRunOnNonExistent(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: "nope"})
@@ -485,7 +485,7 @@ func TestGRPCServerStartRunOnNonExistent(t *testing.T) {
 
 func TestGRPCServerStopRunWithEmptyRunId(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: ""})
@@ -496,7 +496,7 @@ func TestGRPCServerStopRunWithEmptyRunId(t *testing.T) {
 
 func TestGRPCServerStopRunOnNonExistent(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: "nope"})
@@ -507,7 +507,7 @@ func TestGRPCServerStopRunOnNonExistent(t *testing.T) {
 
 func TestGRPCServerUpdateWorkloadRate(t *testing.T) {
 	store := NewRunStore()
-	executor := NewRunExecutor(store)
+	executor := NewRunExecutor(store, nil)
 	srv := NewSimulationGRPCServer(store, executor)
 	ctx := context.Background()
 
@@ -575,7 +575,7 @@ workload:
 
 func TestGRPCServerUpdateWorkloadRateValidation(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	// Test nil request
@@ -635,7 +635,7 @@ func TestGRPCServerUpdateWorkloadRateValidation(t *testing.T) {
 
 func TestGRPCServerUpdateWorkloadRateNotRunning(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	validScenario := `
@@ -682,7 +682,7 @@ workload:
 
 func TestGRPCServerUpdateRunConfigurationVerticalScaling(t *testing.T) {
 	store := NewRunStore()
-	executor := NewRunExecutor(store)
+	executor := NewRunExecutor(store, nil)
 	srv := NewSimulationGRPCServer(store, executor)
 	ctx := context.Background()
 
@@ -775,7 +775,7 @@ workload:
 
 func TestGRPCServerUpdateRunConfiguration(t *testing.T) {
 	store := NewRunStore()
-	executor := NewRunExecutor(store)
+	executor := NewRunExecutor(store, nil)
 	srv := NewSimulationGRPCServer(store, executor)
 	ctx := context.Background()
 
@@ -838,7 +838,7 @@ workload:
 
 func TestGRPCServerUpdateRunConfigurationValidation(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.UpdateRunConfiguration(ctx, nil)
@@ -877,7 +877,7 @@ func TestGRPCServerUpdateRunConfigurationValidation(t *testing.T) {
 
 func TestGRPCServerGetRunConfiguration(t *testing.T) {
 	store := NewRunStore()
-	executor := NewRunExecutor(store)
+	executor := NewRunExecutor(store, nil)
 	srv := NewSimulationGRPCServer(store, executor)
 	ctx := context.Background()
 
@@ -940,7 +940,7 @@ workload:
 
 func TestGRPCServerGetRunConfigurationValidation(t *testing.T) {
 	store := NewRunStore()
-	srv := NewSimulationGRPCServer(store, NewRunExecutor(store))
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
 	ctx := context.Background()
 
 	_, err := srv.GetRunConfiguration(ctx, nil)

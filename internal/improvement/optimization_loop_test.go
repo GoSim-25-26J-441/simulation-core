@@ -51,7 +51,7 @@ func createValidTestScenario(replicas int) *config.Scenario {
 // TestOptimizationLoopEndToEnd tests the complete optimization loop with actual simulations
 func TestOptimizationLoopEndToEnd(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 3, 1.0)
 
 	// Use early convergence to keep test fast
@@ -191,7 +191,7 @@ func TestOptimizerWithExplorer(t *testing.T) {
 // TestOrchestratorWithParallelExecution tests parallel execution
 func TestOrchestratorWithParallelExecution(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 5, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{}).
 		WithMaxParallelRuns(3)
@@ -473,7 +473,7 @@ func TestOptimizationWithDifferentObjectives(t *testing.T) {
 // TestOptimizationResourceCleanup tests that resources are cleaned up properly
 func TestOptimizationResourceCleanup(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 5, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -529,7 +529,7 @@ func TestOptimizationWithDifferentObjectivesIntegration(t *testing.T) {
 	for _, tc := range objectives {
 		t.Run(tc.name, func(t *testing.T) {
 			store := simd.NewRunStore()
-			executor := simd.NewRunExecutor(store)
+			executor := simd.NewRunExecutor(store, nil)
 			optimizer := NewOptimizer(tc.objective, 2, 1.0)
 
 			// Use early convergence
@@ -566,7 +566,7 @@ func TestOptimizationWithDifferentObjectivesIntegration(t *testing.T) {
 // TestOptimizationWithPolicies tests optimization with policies enabled
 func TestOptimizationWithPolicies(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 2, 1.0)
 
 	convergenceConfig := &ConvergenceConfig{
@@ -618,7 +618,7 @@ func TestOptimizationWithPolicies(t *testing.T) {
 // TestOptimizationWithMultipleServices tests optimization with multiple services
 func TestOptimizationWithMultipleServices(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 2, 1.0)
 
 	convergenceConfig := &ConvergenceConfig{
@@ -713,7 +713,7 @@ func TestOptimizationWithMultipleServices(t *testing.T) {
 // TestOptimizationCancellation tests that optimization can be cancelled
 func TestOptimizationCancellation(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 10, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -750,7 +750,7 @@ func TestOptimizationCancellation(t *testing.T) {
 // TestOptimizationOrchestratorErrorHandling tests error handling in orchestrator
 func TestOptimizationOrchestratorErrorHandling(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 2, 1.0)
 	orchestrator := NewOrchestrator(store, executor, optimizer, &P95LatencyObjective{})
 
@@ -780,7 +780,7 @@ func TestOptimizationOrchestratorErrorHandling(t *testing.T) {
 // TestOptimizationHistoryAndMetrics tests that optimization history and metrics are tracked correctly
 func TestOptimizationHistoryAndMetrics(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 3, 1.0)
 
 	convergenceConfig := &ConvergenceConfig{
@@ -839,7 +839,7 @@ func TestOptimizationHistoryAndMetrics(t *testing.T) {
 // TestOptimizationWithConservativeExplorer tests optimization with conservative explorer
 func TestOptimizationWithConservativeExplorer(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	optimizer := NewOptimizer(&P95LatencyObjective{}, 2, 1.0)
 	optimizer.WithExplorer(NewConservativeExplorer())
 

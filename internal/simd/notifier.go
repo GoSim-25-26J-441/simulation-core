@@ -39,19 +39,32 @@ type NotificationPayload struct {
 
 // Notifier handles backend notifications for simulation completion
 type Notifier struct {
-	httpClient *http.Client
-	maxRetries int
-	baseDelay  time.Duration
+	httpClient            *http.Client
+	maxRetries            int
+	baseDelay             time.Duration
+	CallbackHostWhitelist []string // optional; hostnames or IPs allowed for callbacks even if private
 }
 
-// NewNotifier creates a new notification service
+// NewNotifier creates a new notification service (no callback host whitelist)
 func NewNotifier() *Notifier {
+	return NewNotifierWithWhitelist(nil)
+}
+
+// NewNotifierWithWhitelist creates a notifier with an optional list of hostnames or IPs
+// that are allowed for callback URLs even when they resolve to private IPs (e.g. same-VPC backend).
+func NewNotifierWithWhitelist(whitelist []string) *Notifier {
+	var copyList []string
+	if len(whitelist) > 0 {
+		copyList = make([]string, len(whitelist))
+		copy(copyList, whitelist)
+	}
 	return &Notifier{
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
-		maxRetries: 3,
-		baseDelay:  1 * time.Second,
+		maxRetries:            3,
+		baseDelay:             1 * time.Second,
+		CallbackHostWhitelist: copyList,
 	}
 }
 
@@ -73,7 +86,7 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 	finalURL := strings.ReplaceAll(callbackURL, "{run_id}", rec.Run.Id)
 
 	// Validate callback URL to prevent SSRF attacks
-	if err := validateCallbackURL(finalURL); err != nil {
+	if err := validateCallbackURL(finalURL, n.CallbackHostWhitelist); err != nil {
 		logger.Error("invalid callback URL, blocking request",
 			"run_id", rec.Run.Id,
 			"callback_url", finalURL,
@@ -229,8 +242,9 @@ var (
 	ErrMetadataEndpoint = fmt.Errorf("callback URL cannot target metadata endpoints")
 )
 
-// validateCallbackURL validates the callback URL to prevent SSRF attacks
-func validateCallbackURL(callbackURL string) error {
+// validateCallbackURL validates the callback URL to prevent SSRF attacks.
+// If whitelist is non-nil and non-empty, hostnames or resolved IPs in the whitelist are allowed even when private.
+func validateCallbackURL(callbackURL string, whitelist []string) error {
 	// Parse URL
 	parsedURL, err := url.Parse(callbackURL)
 	if err != nil {
@@ -247,16 +261,34 @@ func validateCallbackURL(callbackURL string) error {
 		return fmt.Errorf("%w: missing hostname", ErrInvalidURL)
 	}
 
-	// Block metadata endpoints (AWS, GCP, Azure, etc.)
+	hostLower := strings.ToLower(host)
+
+	// Build normalized whitelist set (trim, lowercase) for quick lookup
+	whitelistSet := make(map[string]struct{})
+	for _, e := range whitelist {
+		s := strings.TrimSpace(strings.ToLower(e))
+		if s != "" {
+			whitelistSet[s] = struct{}{}
+		}
+	}
+	whitelistActive := len(whitelistSet) > 0
+
+	// Block metadata endpoints (AWS, GCP, Azure, etc.) — never whitelist
 	metadataHosts := []string{
 		"169.254.169.254", // AWS, GCP, Azure metadata
 		"metadata.google.internal",
 		"metadata", // Common metadata hostname
 	}
-	hostLower := strings.ToLower(host)
 	for _, blocked := range metadataHosts {
 		if hostLower == blocked || strings.HasPrefix(hostLower, blocked+".") {
 			return fmt.Errorf("%w: metadata endpoint blocked", ErrMetadataEndpoint)
+		}
+	}
+
+	// If hostname is whitelisted, allow without further checks (e.g. private IP or loopback)
+	if whitelistActive {
+		if _, allowed := whitelistSet[hostLower]; allowed {
+			return nil
 		}
 	}
 
@@ -266,7 +298,6 @@ func validateCallbackURL(callbackURL string) error {
 	}
 
 	// Block direct IP access to loopback (127.0.0.1, ::1)
-	// Allow localhost hostname as it may be valid in containerized environments
 	if hostLower == "127.0.0.1" || hostLower == "::1" {
 		return fmt.Errorf("%w: direct loopback IP addresses are not allowed (use localhost hostname for development)", ErrInternalHost)
 	}
@@ -274,14 +305,19 @@ func validateCallbackURL(callbackURL string) error {
 	// Resolve hostname to check if it's a private IP
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// If DNS resolution fails, we can't verify - be conservative and block
-		// In production, you might want to allow configured domains
 		return fmt.Errorf("%w: failed to resolve hostname: %v", ErrInternalHost, err)
 	}
 
+	// If any resolved IP is in whitelist, allow (e.g. private IP explicitly whitelisted)
+	if whitelistActive {
+		for _, ip := range ips {
+			if _, allowed := whitelistSet[ip.String()]; allowed {
+				return nil
+			}
+		}
+	}
+
 	// Check all resolved IPs for private/internal ranges
-	// Allow loopback IPs (for localhost in development/containerized environments)
-	// Block all other private IP ranges (RFC 1918, link-local, etc.)
 	for _, ip := range ips {
 		if isPrivateIP(ip) && !ip.IsLoopback() {
 			return fmt.Errorf("%w: hostname resolves to private IP: %s", ErrInternalHost, ip.String())
