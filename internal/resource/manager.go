@@ -375,11 +375,18 @@ func (m *Manager) ScaleInHosts(targetCount int) error {
 	}
 	// Sort auto-empty by N descending (remove highest host-auto-N first).
 	sort.Slice(autoEmpty, func(i, j int) bool {
-		ni, _ := strconv.Atoi(strings.TrimPrefix(autoEmpty[i], "host-auto-"))
-		nj, _ := strconv.Atoi(strings.TrimPrefix(autoEmpty[j], "host-auto-"))
+		ni, errI := strconv.Atoi(strings.TrimPrefix(autoEmpty[i], "host-auto-"))
+		nj, errJ := strconv.Atoi(strings.TrimPrefix(autoEmpty[j], "host-auto-"))
+		if errI != nil {
+			ni = 0
+		}
+		if errJ != nil {
+			nj = 0
+		}
 		return ni > nj
 	})
-	candidates := append(autoEmpty, otherEmpty...)
+	autoEmpty = append(autoEmpty, otherEmpty...)
+	candidates := autoEmpty
 	toRemove := current - targetCount
 	if toRemove <= 0 {
 		return nil

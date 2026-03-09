@@ -595,7 +595,7 @@ Emitted when the online controller applies a configuration change (replicas, CPU
 
 ## Completion Callback
 
-When `callback_url` is set in the run input, the simulator sends an HTTP POST to that URL when the run reaches a terminal status (completed, failed, stopped, cancelled). The payload includes:
+When `callback_url` is set in the run input, the simulator sends an HTTP POST to that URL when the run reaches a terminal status (completed, failed, stopped, cancelled). By default, callback URLs that resolve to private or internal IPs are rejected (SSRF protection). To allow specific hostnames or IPs (e.g. a same-VPC backend), set the **`SIMULATION_CALLBACK_WHITELIST`** environment variable to a comma-separated list (e.g. `172.31.34.246,api.microsim.dev`). Use sparingly; prefer public URLs when possible. The payload includes:
 
 | Field | Type | Description |
 |-------|------|-------------|

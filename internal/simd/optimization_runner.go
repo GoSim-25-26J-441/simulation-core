@@ -8,12 +8,12 @@ import (
 
 // OptimizationParams configures an optimization run (objective, iterations, step size).
 type OptimizationParams struct {
-	Objective       string  // e.g. "p95_latency_ms", "throughput_rps"
-	MaxIterations   int32   // default 10 (number of improvement steps; each step may evaluate many configs)
-	StepSize        float64 // default 1.0
-	MaxEvaluations  int32   // optional cap on total simulation runs (0 = no cap)
-	TargetUtilLow   float64 // for cpu_utilization/memory_utilization: desired band low (0 = not set)
-	TargetUtilHigh  float64 // for cpu_utilization/memory_utilization: desired band high
+	Objective      string  // e.g. "p95_latency_ms", "throughput_rps"
+	MaxIterations  int32   // default 10 (number of improvement steps; each step may evaluate many configs)
+	StepSize       float64 // default 1.0
+	MaxEvaluations int32   // optional cap on total simulation runs (0 = no cap)
+	TargetUtilLow  float64 // for cpu_utilization/memory_utilization: desired band low (0 = not set)
+	TargetUtilHigh float64 // for cpu_utilization/memory_utilization: desired band high
 }
 
 // OptimizationRunner runs a multi-run optimization experiment.

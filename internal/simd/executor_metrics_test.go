@@ -136,7 +136,7 @@ services:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start should not error immediately: %v", err)
@@ -192,7 +192,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -264,7 +264,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	if _, err := exec.Start(rec.Run.Id); err != nil {
 		t.Fatalf("Start error: %v", err)
 	}

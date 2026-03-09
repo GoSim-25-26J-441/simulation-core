@@ -15,7 +15,7 @@ import (
 
 func TestHTTPServerHandleRunsMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	// Test PUT /v1/runs (should be method not allowed)
 	rr := httptest.NewRecorder()
@@ -29,7 +29,7 @@ func TestHTTPServerHandleRunsMethodNotAllowed(t *testing.T) {
 
 func TestHTTPServerHandleRunByIDMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	// Create a run first
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
@@ -51,7 +51,7 @@ func TestHTTPServerHandleRunByIDMethodNotAllowed(t *testing.T) {
 
 func TestHTTPServerHandleRunByIDStopMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	// Create a run first
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
@@ -73,7 +73,7 @@ func TestHTTPServerHandleRunByIDStopMethodNotAllowed(t *testing.T) {
 
 func TestHTTPServerHandleRunByIDMetricsMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	// Create a run first
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
@@ -95,7 +95,7 @@ func TestHTTPServerHandleRunByIDMetricsMethodNotAllowed(t *testing.T) {
 
 func TestHTTPServerHandleRunByIDEmptyPath(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	// Test /v1/runs/ (empty run ID)
 	rr := httptest.NewRecorder()
@@ -109,7 +109,7 @@ func TestHTTPServerHandleRunByIDEmptyPath(t *testing.T) {
 
 func TestHTTPServerWriteError(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	srv.writeError(rr, http.StatusInternalServerError, "test error")
@@ -129,7 +129,7 @@ func TestHTTPServerWriteError(t *testing.T) {
 
 func TestHTTPServerWriteJSON(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	testData := map[string]string{"key": "value"}
@@ -150,7 +150,7 @@ func TestHTTPServerWriteJSON(t *testing.T) {
 
 func TestHTTPServerCreateRunInvalidJSON(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{invalid json`))
@@ -164,7 +164,7 @@ func TestHTTPServerCreateRunInvalidJSON(t *testing.T) {
 
 func TestHTTPServerCreateRunInputRequired(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(`{"run_id": "test"}`))
@@ -178,7 +178,7 @@ func TestHTTPServerCreateRunInputRequired(t *testing.T) {
 
 func TestHTTPServerListRunsLimitCap(t *testing.T) {
 	store := NewRunStore()
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs?limit=2000", nil)
@@ -203,7 +203,7 @@ func TestHTTPServerListRunsLimitCap(t *testing.T) {
 func TestHTTPServerListRunsStatusFilter(t *testing.T) {
 	store := NewRunStore()
 	_, _ = store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "hosts: []"})
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs?status=cancelled", nil)
@@ -219,7 +219,7 @@ func TestHTTPServerListRunsWithOffset(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		_, _ = store.Create("", &simulationv1.RunInput{ScenarioYaml: "hosts: []"})
 	}
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs?limit=2&offset=2", nil)
@@ -248,7 +248,7 @@ func TestHTTPServerListRunsWithOffset(t *testing.T) {
 func TestHTTPServerHandleRunByIDExportMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id+"/export", nil)
@@ -262,7 +262,7 @@ func TestHTTPServerHandleRunByIDExportMethodNotAllowed(t *testing.T) {
 func TestHTTPServerHandleRunByIDMetricsStreamMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id+"/metrics/stream", nil)
@@ -276,7 +276,7 @@ func TestHTTPServerHandleRunByIDMetricsStreamMethodNotAllowed(t *testing.T) {
 func TestHTTPServerHandleRunByIDTimeseriesMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id+"/metrics/timeseries", nil)
@@ -290,7 +290,7 @@ func TestHTTPServerHandleRunByIDTimeseriesMethodNotAllowed(t *testing.T) {
 func TestHTTPServerHandleRunByIDWorkloadMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	rec, _ := store.Create("test-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+rec.Run.Id+"/workload", nil)
@@ -308,7 +308,7 @@ func TestHTTPServerTimeSeriesInvalidStartTime(t *testing.T) {
 	collector.Start()
 	collector.Stop()
 	_ = store.SetCollector(rec.Run.Id, collector)
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics/timeseries?start_time=invalid", nil)
@@ -326,7 +326,7 @@ func TestHTTPServerTimeSeriesInvalidEndTime(t *testing.T) {
 	collector.Start()
 	collector.Stop()
 	_ = store.SetCollector(rec.Run.Id, collector)
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics/timeseries?end_time=bad-time", nil)
@@ -348,7 +348,7 @@ func TestHTTPServerGetRunMetricsWithServiceMetrics(t *testing.T) {
 	}
 	_ = store.SetMetrics(rec.Run.Id, metrics)
 	_, _ = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run/metrics", nil)
@@ -380,7 +380,7 @@ func TestHTTPServerTimeSeriesWithValidTimeFormats(t *testing.T) {
 	collector.Record("cpu_utilization", 0.5, now, map[string]string{"service": "svc1"})
 	collector.Stop()
 	_ = store.SetCollector(rec.Run.Id, collector)
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	// Test with Unix milliseconds
 	startMs := now.Add(-time.Minute).UnixMilli()
@@ -398,7 +398,7 @@ func TestHTTPServerGetRunWithOptimizationResult(t *testing.T) {
 	rec, _ := store.Create("opt-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML})
 	_, _ = store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
 	_ = store.SetOptimizationResult(rec.Run.Id, "best-123", 42.5, 10, nil)
-	srv := NewHTTPServer(store, NewRunExecutor(store))
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/runs/opt-run", nil)

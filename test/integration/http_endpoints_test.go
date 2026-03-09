@@ -38,7 +38,7 @@ workload:
 // TestIntegration_HTTPEndpoints_ListRuns tests the GET /v1/runs endpoint
 func TestIntegration_HTTPEndpoints_ListRuns(t *testing.T) {
 	store := simd.NewRunStore()
-	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store))
+	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store, nil))
 
 	// Create multiple runs
 	runIDs := make([]string, 0, 5)
@@ -144,7 +144,7 @@ func TestIntegration_HTTPEndpoints_ListRuns(t *testing.T) {
 // TestIntegration_HTTPEndpoints_TimeSeries tests the GET /v1/runs/{id}/metrics/timeseries endpoint
 func TestIntegration_HTTPEndpoints_TimeSeries(t *testing.T) {
 	store := simd.NewRunStore()
-	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store))
+	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store, nil))
 
 	// Create a run
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
@@ -225,7 +225,7 @@ func TestIntegration_HTTPEndpoints_TimeSeries(t *testing.T) {
 // TestIntegration_HTTPEndpoints_ExportRun tests the GET /v1/runs/{id}/export endpoint
 func TestIntegration_HTTPEndpoints_ExportRun(t *testing.T) {
 	store := simd.NewRunStore()
-	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store))
+	srv := simd.NewHTTPServer(store, simd.NewRunExecutor(store, nil))
 
 	// Create a run
 	rec, err := store.Create("test-run", &simulationv1.RunInput{
@@ -305,7 +305,7 @@ func TestIntegration_HTTPEndpoints_ExportRun(t *testing.T) {
 // TestIntegration_HTTPEndpoints_FullLifecycle tests the complete lifecycle with all endpoints
 func TestIntegration_HTTPEndpoints_FullLifecycle(t *testing.T) {
 	store := simd.NewRunStore()
-	executor := simd.NewRunExecutor(store)
+	executor := simd.NewRunExecutor(store, nil)
 	srv := simd.NewHTTPServer(store, executor)
 
 	// 1. Create a run (using direct store.Create for simplicity in integration test)

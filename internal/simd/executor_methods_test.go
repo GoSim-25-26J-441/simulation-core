@@ -38,7 +38,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -72,7 +72,7 @@ workload:
 }
 
 func TestRunExecutorUpdateWorkloadRateNotFound(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 
 	// Try to update rate for non-existent run
 	err := exec.UpdateWorkloadRate("nonexistent", "client:svc1:/test", 50.0)
@@ -83,7 +83,7 @@ func TestRunExecutorUpdateWorkloadRateNotFound(t *testing.T) {
 
 func TestRunExecutorUpdateWorkloadPatternEmptyRunID(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	pattern := config.WorkloadPattern{
 		From:    "client",
 		To:      "svc1:/test",
@@ -97,7 +97,7 @@ func TestRunExecutorUpdateWorkloadPatternEmptyRunID(t *testing.T) {
 
 func TestRunExecutorUpdateWorkloadPatternRunNotFound(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	pattern := config.WorkloadPattern{
 		From:    "client",
 		To:      "svc1:/test",
@@ -111,7 +111,7 @@ func TestRunExecutorUpdateWorkloadPatternRunNotFound(t *testing.T) {
 
 func TestRunExecutorGetWorkloadPattern(t *testing.T) {
 	store := NewRunStore()
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, ok := exec.GetWorkloadPattern("nope", "client:svc1:/test")
 	if ok {
 		t.Fatalf("expected false for non-existent run")
@@ -123,7 +123,7 @@ func TestRunExecutorGetWorkloadPattern(t *testing.T) {
 }
 
 func TestRunExecutorUpdateWorkloadRateInvalidRate(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 
 	// Test negative rate
 	err := exec.UpdateWorkloadRate("run-1", "client:svc1:/test", -10.0)
@@ -139,7 +139,7 @@ func TestRunExecutorUpdateWorkloadRateInvalidRate(t *testing.T) {
 }
 
 func TestRunExecutorUpdatePolicies_EmptyRunID(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	err := exec.UpdatePolicies("", nil)
 	if err == nil {
 		t.Fatalf("expected error for empty run ID")
@@ -150,7 +150,7 @@ func TestRunExecutorUpdatePolicies_EmptyRunID(t *testing.T) {
 }
 
 func TestRunExecutorUpdatePolicies_RunNotFound(t *testing.T) {
-	exec := NewRunExecutor(NewRunStore())
+	exec := NewRunExecutor(NewRunStore(), nil)
 	err := exec.UpdatePolicies("nonexistent", nil)
 	if err == nil {
 		t.Fatalf("expected error for non-existent run")
@@ -188,7 +188,7 @@ workload:
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
 	}
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -244,7 +244,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -355,7 +355,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	_, err = exec.Start("run-1")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
@@ -422,7 +422,7 @@ workload:
 		t.Fatalf("Create error: %v", err)
 	}
 
-	exec := NewRunExecutor(store)
+	exec := NewRunExecutor(store, nil)
 	if _, err := exec.Start("run-1"); err != nil {
 		t.Fatalf("Start error: %v", err)
 	}
