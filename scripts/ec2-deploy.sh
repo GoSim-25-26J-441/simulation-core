@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Deploy simulation-core binary from S3 to this host and restart the service.
+# Same pattern as go-sim-backend: invoked by GitHub Actions via SSM Run Command
+# with: /tmp/deploy.sh BUCKET REGION
+#
 # Usage: ./ec2-deploy.sh BUCKET REGION
-# Optional env: HTTP_PORT (default 8080), GRPC_PORT (default 50051)
+# Optional env: HTTP_PORT (default 8080), GRPC_PORT (default 50051),
+#               INSTALL_DIR (default /opt/simulation-core)
 
 set -euo pipefail
 
@@ -15,18 +19,18 @@ BINARY_URL="s3://${BUCKET}/simulation-core/simd"
 TARGET="${INSTALL_DIR}/simd"
 TMP="/tmp/simd.new"
 
-echo "Downloading binary from ${BINARY_URL}..."
+echo "[1/3] Downloading binary from ${BINARY_URL}..."
 aws s3 cp "${BINARY_URL}" "${TMP}" --region "${REGION}"
 chmod +x "${TMP}"
 
-echo "Installing to ${TARGET}..."
+echo "[2/3] Installing to ${TARGET}..."
 mkdir -p "${INSTALL_DIR}"
 if [ -f "${TARGET}" ]; then
   cp -a "${TARGET}" "${TARGET}.bak"
 fi
 mv "${TMP}" "${TARGET}"
 
-echo "Restarting simulation-core (http :${HTTP_PORT}, grpc :${GRPC_PORT})..."
+echo "[3/3] Restarting simulation-core (http :${HTTP_PORT}, grpc :${GRPC_PORT})..."
 if command -v systemctl &>/dev/null && systemctl is-active --quiet simulation-core 2>/dev/null; then
   systemctl restart simulation-core
   echo "systemctl restart simulation-core done."

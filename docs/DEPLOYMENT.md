@@ -18,7 +18,7 @@ Simulation-core is deployed via **GitHub Actions** on push to `main`. No applica
 
 ## Deploy script (EC2)
 
-The script [scripts/ec2-deploy.sh](../scripts/ec2-deploy.sh) is uploaded to S3 and executed on the instance via SSM. It:
+The script [scripts/ec2-deploy.sh](../scripts/ec2-deploy.sh) follows the same pattern as go-sim-backend: it is uploaded to S3 and triggered on the instance via **SSM Run Command** (document `AWS-RunShellScript`). The workflow downloads it to `/tmp/deploy.sh`, makes it executable, and runs `/tmp/deploy.sh BUCKET REGION`. The script:
 
 1. Downloads the `simd` binary from S3.
 2. Installs it to a fixed path (default `/opt/simulation-core/simd`).

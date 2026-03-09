@@ -71,7 +71,7 @@ jobs:
           BUCKET: ${{ secrets.DEPLOY_BUCKET }}
           REGION: ${{ env.AWS_REGION }}
         run: |
-          cmd="aws s3 cp s3://${BUCKET}/simulation-core/scripts/deploy.sh /tmp/deploy-sim.sh --region ${REGION} && chmod +x /tmp/deploy-sim.sh && /tmp/deploy-sim.sh ${BUCKET} ${REGION}"
+          cmd="aws s3 cp s3://${BUCKET}/simulation-core/scripts/deploy.sh /tmp/deploy.sh --region ${REGION} && chmod +x /tmp/deploy.sh && /tmp/deploy.sh ${BUCKET} ${REGION}"
           json_commands=$(echo -n "$cmd" | jq -Rs .)
           cmd_id=$(aws ssm send-command \
             --region "${REGION}" \
