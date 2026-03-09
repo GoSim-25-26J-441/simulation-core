@@ -19,6 +19,13 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
+      - name: Generate protobuf stubs
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.62.1
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          "$(go env GOPATH)/bin/buf" generate
+
       - name: Build
         run: go build ./...
 
@@ -49,6 +56,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
+
+      - name: Generate protobuf stubs
+        run: |
+          go install github.com/bufbuild/buf/cmd/buf@v1.62.1
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          "$(go env GOPATH)/bin/buf" generate
 
       - name: Build Linux binary
         run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o simd ./cmd/simd
