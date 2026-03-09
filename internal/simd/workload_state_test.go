@@ -390,6 +390,43 @@ func TestWorkloadStatePreGenerateAllEvents(t *testing.T) {
 	}
 }
 
+// TestWorkloadStateStartRealTimeSeedsInitialWindow verifies that Start(..., true)
+// schedules an initial lookahead window synchronously before returning.
+func TestWorkloadStateStartRealTimeSeedsInitialWindow(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	startTime := eng.GetSimTime()
+	duration := 30 * time.Second
+	endTime := startTime.Add(duration)
+
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 10.0}},
+		},
+	}
+
+	ws := NewWorkloadState("test-run", eng, endTime)
+	if err := ws.Start(scenario, startTime, true); err != nil {
+		t.Fatalf("Start(..., true) returned error: %v", err)
+	}
+	defer ws.Stop()
+
+	patternState, ok := ws.GetPattern("client:svc1:/test")
+	if !ok {
+		t.Fatal("Pattern not found")
+	}
+
+	expectedMinNext := startTime.Add(EventGenerationLookaheadWindow)
+	if expectedMinNext.After(endTime) {
+		expectedMinNext = endTime
+	}
+	if patternState.NextEventTime.Before(expectedMinNext) {
+		t.Fatalf("real-time Start should seed initial lookahead before return; NextEventTime=%v expected at least %v",
+			patternState.NextEventTime, expectedMinNext)
+	}
+}
+
 func TestPatternKey(t *testing.T) {
 	key := patternKey("client", "svc1:/test")
 	expected := "client:svc1:/test"
