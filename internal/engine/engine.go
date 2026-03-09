@@ -250,7 +250,20 @@ func (e *Engine) Run(duration time.Duration) error {
 						"elapsed_sim_time", elapsedSimTime,
 						"elapsed_real_time", elapsedRealTime,
 						"wait_time", waitTime)
-					time.Sleep(waitTime)
+					remaining := waitTime
+					for remaining > 0 {
+						sleepStep := remaining
+						if sleepStep > 200*time.Millisecond {
+							sleepStep = 200 * time.Millisecond
+						}
+						select {
+						case <-e.runManager.Context().Done():
+							e.logger.Info("Simulation cancelled during real-time end wait")
+							return fmt.Errorf("simulation cancelled")
+						case <-time.After(sleepStep):
+							remaining -= sleepStep
+						}
+					}
 				}
 			}
 

@@ -68,13 +68,13 @@ func NewWorkloadState(runID string, eng *engine.Engine, endTime time.Time) *Work
 // or starts continuous event generation (real-time mode).
 func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, realTime bool) error {
 	ws.mu.Lock()
-	defer ws.mu.Unlock()
 
 	// Initialize patterns from scenario
 	for _, workloadPattern := range scenario.Workload {
 		// Parse target: "serviceID:path"
 		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {
+			ws.mu.Unlock()
 			return fmt.Errorf("invalid workload target %s: %w", workloadPattern.To, err)
 		}
 
@@ -90,8 +90,12 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 			Active:        true,
 		}
 	}
+	ws.mu.Unlock()
 
 	if realTime {
+		// Seed initial events synchronously to avoid startup races where the
+		// simulation end event is processed before workload arrivals are queued.
+		ws.generateNextEvents()
 		// Start continuous event generation (ticker-based loop)
 		go ws.generateEventsLoop()
 		return nil
@@ -106,7 +110,14 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 // generateAllEventsUpToEndTime schedules all arrival events from each pattern's
 // NextEventTime up to ws.endTime. Used when not in real-time mode.
 func (ws *WorkloadState) generateAllEventsUpToEndTime() {
+	ws.mu.RLock()
+	patterns := make([]*WorkloadPatternState, 0, len(ws.patterns))
 	for _, patternState := range ws.patterns {
+		patterns = append(patterns, patternState)
+	}
+	ws.mu.RUnlock()
+
+	for _, patternState := range patterns {
 		patternState.mu.Lock()
 		if !patternState.Active {
 			patternState.mu.Unlock()
