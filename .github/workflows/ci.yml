@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, ci]
+  pull_request:
+    branches: [main, dev, ci]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -v -race -count=1 ./...
+
+  deploy:
+    needs: [test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+    concurrency:
+      group: deploy-main
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build Linux binary
+        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o simd ./cmd/simd
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload binary to S3
+        run: aws s3 cp simd s3://${{ secrets.DEPLOY_BUCKET }}/simulation-core/simd
+
+      - name: Upload deploy script to S3
+        run: aws s3 cp scripts/ec2-deploy.sh s3://${{ secrets.DEPLOY_BUCKET }}/simulation-core/scripts/deploy.sh
+
+      - name: Deploy via SSM Run Command
+        env:
+          BUCKET: ${{ secrets.DEPLOY_BUCKET }}
+          REGION: ${{ env.AWS_REGION }}
+        run: |
+          cmd="aws s3 cp s3://${BUCKET}/simulation-core/scripts/deploy.sh /tmp/deploy.sh --region ${REGION} && chmod +x /tmp/deploy.sh && /tmp/deploy.sh ${BUCKET} ${REGION}"
+          json_commands=$(echo -n "$cmd" | jq -Rs .)
+          cmd_id=$(aws ssm send-command \
+            --region "${REGION}" \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --parameters "{\"commands\":[$json_commands]}" \
+            --query "Command.CommandId" \
+            --output text)
+          echo "SSM command sent (ID: $cmd_id). Deployment verified by health check below."
+
+      - name: Wait for app to be ready
+        run: sleep 60
+
+      - name: Health check
+        run: |
+          HEALTH_URL="${{ secrets.HEALTH_CHECK_URL }}"
+          if [ -z "$HEALTH_URL" ]; then
+            echo "HEALTH_CHECK_URL secret not set; skipping health check"
+            exit 0
+          fi
+          for i in $(seq 1 12); do
+            if curl -sf -o /dev/null "$HEALTH_URL"; then
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Health check attempt $i failed, retrying in 10s..."
+            sleep 10
+          done
+          echo "Health check failed after 12 attempts"
+          exit 1
