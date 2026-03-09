@@ -529,7 +529,7 @@ event: metric_update
 data: {"metric":"cpu_utilization","value":0.65,"timestamp":"2024-01-15T10:30:01Z","labels":{"service":"svc1"}}
 
 event: optimization_progress
-data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123"}
+data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123","objective":"p95_latency","unit":"ms"}
 
 ```
 
@@ -537,7 +537,7 @@ data: {"iteration":2,"best_score":12.5,"best_run_id":"opt-1234567890-abc123"}
 - `status_change`: Run status changes (e.g. `RUN_STATUS_RUNNING`, `RUN_STATUS_COMPLETED`)
 - `metrics_snapshot`: Aggregated metrics updates
 - `metric_update`: Single time-series metric point
-- `optimization_progress`: (Optimization runs only) Iteration progress with `iteration`, `best_score`, `best_run_id`
+- `optimization_progress`: (Optimization runs only) Iteration progress with `iteration`, `best_score`, `best_run_id`, `objective`, and `unit` (score/iteration follow the primary target)
 - `complete`: Stream ending; run reached terminal status
 
 **Status Codes:**
@@ -559,12 +559,16 @@ For runs created with `optimization` config, the stream emits additional events:
 {
   "iteration": 2,
   "best_score": 12.5,
-  "best_run_id": "opt-1234567890-abc123"
+  "best_run_id": "opt-1234567890-abc123",
+  "objective": "p95_latency",
+  "unit": "ms"
 }
 ```
-- `iteration`: Current optimization iteration (0 = initial config)
-- `best_score`: Best objective score found so far (lower is better for minimization)
-- `best_run_id`: Sub-run ID with best score (populated when known; may be empty during run)
+- `iteration`: Number of times the primary metric has improved (0 = no improvement recorded yet).
+- `best_score`: Best value of the primary metric so far; interpretation depends on `objective`.
+- `best_run_id`: Sub-run ID with best score (populated when known; often empty for online runs).
+- `objective`: What `best_score` represents: `"p95_latency"`, `"cpu_utilization"`, or `"memory_utilization"` (from run input `optimization_target_primary`).
+- `unit`: Unit for `best_score`: `"ms"` for latency, `"ratio"` for utilization (0–1). For `cpu_utilization` or `memory_utilization` primary, score is in 0–1; lower is better.
 
 **Event: `optimization_step`** (online optimization only)
 
@@ -605,7 +609,7 @@ When `callback_url` is set in the run input, the simulator sends an HTTP POST to
 | `top_candidates` | string[] | (Optimization only) Up to 5 candidate run IDs, best first |
 | `final_config` | object | (Online optimization only) Final/settled run configuration (services, workload, hosts) after controller updates. Omitted if no optimization steps. |
 
-For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (up to 5 run IDs). The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
+For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (up to 5 run IDs). Batch runs support `optimization.objective` values: `p95_latency_ms`, `p99_latency_ms`, `mean_latency_ms`, `throughput_rps`, `error_rate`, `cost`, `cpu_utilization`, `memory_utilization`. For `cpu_utilization` and `memory_utilization`, setting `optimization.target_util_low` and `optimization.target_util_high` (e.g. 0.4 and 0.7) makes the optimizer favor configs whose max utilization lies in that band; if omitted, the optimizer minimizes utilization (current behavior). `max_iterations` limits the number of improvement steps (each step may evaluate many neighbor configs). To cap total simulation runs, set `optimization.max_evaluations` to a positive value (e.g. 20); when reached, optimization stops. The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
 
 For **online optimization** runs, the completion callback may include `final_config` (the config the run settled on). The same config is available in run export as top-level `final_config`, or as the last entry's `current_config` in `run.optimization_history`.
 

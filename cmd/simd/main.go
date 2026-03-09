@@ -83,7 +83,12 @@ type optimizationRunnerAdapter struct {
 }
 
 func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (bestRunID string, bestScore float64, iterations int32, candidateRunIDs []string, err error) {
-	objective, err := improvement.NewObjectiveFunction(params.Objective)
+	var utilTarget *improvement.UtilizationTarget
+	if (params.Objective == "cpu_utilization" || params.Objective == "memory_utilization") &&
+		params.TargetUtilLow >= 0 && params.TargetUtilHigh <= 1 && params.TargetUtilLow < params.TargetUtilHigh {
+		utilTarget = &improvement.UtilizationTarget{Low: params.TargetUtilLow, High: params.TargetUtilHigh}
+	}
+	objective, err := improvement.NewObjectiveFunction(params.Objective, utilTarget)
 	if err != nil {
 		return "", 0, 0, nil, err
 	}
@@ -102,6 +107,9 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 			iterClamped := int32(math.Max(0, math.Min(float64(iter), float64(math.MaxInt32))))
 			a.store.SetOptimizationProgress(runID, iterClamped, score)
 		})
+	if params.MaxEvaluations > 0 {
+		optimizer = optimizer.WithMaxEvaluations(int(params.MaxEvaluations))
+	}
 	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
 
 	// Run in goroutine so we can cancel active sub-runs when ctx is done

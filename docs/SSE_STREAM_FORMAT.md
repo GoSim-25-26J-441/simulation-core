@@ -45,7 +45,7 @@ data: {"status":"RUN_STATUS_COMPLETED"}
 | `metric_update`        | One metric data point; `data` has `metric`, `labels`, `value`, and often `timestamp`. Labels may include `host` (node-level), `service`, `instance`, or `endpoint`. |
 | `metrics_snapshot`      | Aggregated snapshot: `metrics` (run/service aggregates), optional `host_metrics` (per-host `host_id`, `cpu_utilization`, `memory_utilization`), and optional `resources` (current pod/host allocations). |
 | `complete`             | Run reached a terminal state (completed/failed/cancelled). |
-| `optimization_progress` | For optimization runs; iteration and best score. |
+| `optimization_progress` | For optimization runs; iteration, best score, and what they represent (`objective`, `unit`). Score and iteration follow the configured primary target (e.g. P95 latency or CPU utilization). |
 | `optimization_step`    | For online optimization runs; emitted when the controller applies a config change (replicas, CPU, hosts). Backend can append to `run.metadata.optimization_history`. |
 | `error`                | Stream or run error; `data.error` has the message. |
 
@@ -79,6 +79,24 @@ The `data` payload for `metrics_snapshot` has this high-level structure:
 The `metrics.service_metrics[].active_replicas` field reflects the current run configuration (same source as `resources.services[].replicas`) for both in-run and post-run snapshots.
 
 These fields are populated from the simulator’s live configuration via `GetRunConfiguration`, so they reflect any dynamic updates performed by the online optimizer (horizontal/vertical pod scaling and host scaling).
+
+### `optimization_progress` payload shape
+
+Emitted when the run has optimization config and iteration or best score changes. The reported score and iteration follow the **primary target** configured in the run input (`optimization_target_primary`), so the same event can represent P95 latency or CPU/memory utilization.
+
+- **`iteration`**: Number of times the primary metric has improved (0 = no improvement recorded yet).
+- **`best_score`**: Best value of the primary metric so far. Interpretation depends on **`objective`**.
+- **`best_run_id`**: Best run ID (batch mode); often empty for online runs (same run).
+- **`objective`**: What `best_score` represents: `"p95_latency"` (default), `"cpu_utilization"`, or `"memory_utilization"`.
+- **`unit`**: Unit for `best_score`: `"ms"` for latency, `"ratio"` for utilization (0–1).
+
+| Primary target        | `best_score` meaning              | `unit`  | Improvement      |
+|-----------------------|-----------------------------------|---------|------------------|
+| p95_latency (default) | Best P95 latency seen (ms)        | ms      | lower is better  |
+| cpu_utilization       | Max service CPU utilization (0–1)  | ratio   | lower is better  |
+| memory_utilization    | Max service memory utilization    | ratio   | lower is better  |
+
+Use `objective` and `unit` in the UI (e.g. "Best P95: 18 ms" or "Best CPU util: 7%").
 
 ### `optimization_step` payload shape (online optimization)
 

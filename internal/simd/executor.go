@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -207,9 +208,10 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 
 	opt := rec.Input.Optimization
 	params := &OptimizationParams{
-		Objective:     "p95_latency_ms",
-		MaxIterations: 10,
-		StepSize:      1.0,
+		Objective:      "p95_latency_ms",
+		MaxIterations:  10,
+		StepSize:       1.0,
+		MaxEvaluations: 0,
 	}
 	if opt != nil {
 		if opt.Objective != "" {
@@ -221,6 +223,11 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if opt.StepSize > 0 {
 			params.StepSize = opt.StepSize
 		}
+		if opt.MaxEvaluations > 0 {
+			params.MaxEvaluations = opt.MaxEvaluations
+		}
+		params.TargetUtilLow = opt.GetTargetUtilLow()
+		params.TargetUtilHigh = opt.GetTargetUtilHigh()
 	}
 
 	// Determine evaluation duration for each candidate run in the optimization.
@@ -376,7 +383,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(onlineRunDuration)
 	workloadState := NewWorkloadState(runID, eng, endTime)
-	if err := workloadState.Start(scenario, startTime); err != nil {
+	if err := workloadState.Start(scenario, startTime, true); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
@@ -604,7 +611,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(duration)
 	workloadState := NewWorkloadState(runID, eng, endTime)
-	if err := workloadState.Start(scenario, startTime); err != nil {
+	if err := workloadState.Start(scenario, startTime, rec.Input.RealTimeMode); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
@@ -688,6 +695,49 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	}
 }
 
+// allowScaleDownReplicas returns true if the controller may scale down replicas given
+// current CPU/memory utilization and optional scale-down thresholds. When both
+// scaleDownCPUMax and scaleDownMemMax are 0, only the cpuHighThreshold guard applies.
+func allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownCPUMax, scaleDownMemMax float64) bool {
+	if svcCPUUtil >= cpuHighThreshold {
+		return false
+	}
+	if scaleDownCPUMax <= 0 && scaleDownMemMax <= 0 {
+		return true
+	}
+	if scaleDownCPUMax > 0 && svcCPUUtil >= scaleDownCPUMax {
+		return false
+	}
+	if scaleDownMemMax > 0 && svcMemUtil >= scaleDownMemMax {
+		return false
+	}
+	return true
+}
+
+// maxServiceUtilization returns the max CPU or memory utilization across non-client services.
+// Client services (id starting with "client") are skipped. Returns 0 if no services.
+func maxServiceUtilization(runMetrics *models.RunMetrics, kind string) float64 {
+	if runMetrics == nil || runMetrics.ServiceMetrics == nil {
+		return 0
+	}
+	var maxUtil float64
+	for svcID, sm := range runMetrics.ServiceMetrics {
+		if sm == nil || strings.HasPrefix(strings.ToLower(svcID), "client") {
+			continue
+		}
+		var u float64
+		if kind == "memory" {
+			u = sm.MemoryUtilization
+		} else {
+			u = sm.CPUUtilization
+		}
+		if u > maxUtil {
+			maxUtil = u
+		}
+	}
+	return maxUtil
+}
+
 // recordOptimizationStep appends an optimization step to the run's history for backend persistence.
 func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32, targetP95, scoreP95 float64, reason string, prevConfig, currConfig *simulationv1.RunConfiguration) {
 	if prevConfig == nil || currConfig == nil {
@@ -750,6 +800,8 @@ func (e *RunExecutor) runOnlineController(
 		cpuHighThreshold     = 0.8 // above this, consider service CPU "hot"
 		hostCPUHighThreshold = 0.8 // above this, consider host CPU "hot"
 	)
+	scaleDownCPUMax := opt.GetScaleDownCpuUtilMax()
+	scaleDownMemMax := opt.GetScaleDownMemUtilMax()
 
 	// Host scaling bounds. Defaults: use the initial scenario host count as both
 	// the minimum and maximum when not explicitly configured.
@@ -765,6 +817,14 @@ func (e *RunExecutor) runOnlineController(
 	if maxHosts < minHosts {
 		maxHosts = minHosts
 	}
+	scaleDownHostCPUMax := opt.GetScaleDownHostCpuUtilMax()
+	initialHostCores := 0
+	if len(scenario.Hosts) > 0 {
+		initialHostCores = scenario.Hosts[0].Cores
+	}
+	if initialHostCores < 1 {
+		initialHostCores = 1
+	}
 
 	for {
 		select {
@@ -775,9 +835,23 @@ func (e *RunExecutor) runOnlineController(
 			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
 			currentP95 := runMetrics.LatencyP95
 
-			// Update best score and emit progress for SSE
-			if currentP95 < bestScore {
-				bestScore = currentP95
+			// Compute current score from primary target (same metric used for scaling decisions)
+			primaryTarget := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
+			if primaryTarget == "" {
+				primaryTarget = "p95_latency"
+			}
+			var currentScore float64
+			lowerIsBetter := true
+			switch primaryTarget {
+			case "cpu_utilization":
+				currentScore = maxServiceUtilization(runMetrics, "cpu")
+			case "memory_utilization":
+				currentScore = maxServiceUtilization(runMetrics, "memory")
+			default:
+				currentScore = currentP95
+			}
+			if lowerIsBetter && currentScore < bestScore {
+				bestScore = currentScore
 				iter++
 				e.store.SetOptimizationProgress(runID, iter, bestScore)
 			}
@@ -833,6 +907,63 @@ func (e *RunExecutor) runOnlineController(
 				}
 			}
 
+			// Host-level scale-in: when P95 and host CPU are low, remove empty hosts down to min_hosts.
+			if scaleDownHostCPUMax > 0 && currentP95 < targetP95*0.7 && hostCount > minHosts && maxHostCPU < scaleDownHostCPUMax {
+				prevConfig, _ := e.GetRunConfiguration(runID)
+				if err := rm.ScaleInHosts(hostCount - 1); err != nil {
+					logger.Debug("online controller scale-in hosts skipped",
+						"run_id", runID,
+						"host_count", hostCount,
+						"error", err)
+				} else if rm.HostCount() < hostCount {
+					logger.Info("online controller scaled in hosts",
+						"run_id", runID,
+						"previous_hosts", hostCount,
+						"new_hosts", rm.HostCount(),
+						"min_hosts", minHosts)
+					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+						stepIndex++
+						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+							"p95 and host utilization low, scaled in hosts",
+							prevConfig, currConfig)
+					}
+				}
+			}
+
+			// Decrease host capacity when host CPU is low and we are above initial scenario capacity.
+			if scaleDownHostCPUMax > 0 && hostCount >= minHosts && maxHostCPU < scaleDownHostCPUMax {
+				var currentHostCores int
+				for _, hid := range rm.HostIDs() {
+					if h, ok := rm.GetHost(hid); ok {
+						currentHostCores = h.CPUCores()
+						break
+					}
+				}
+				if currentHostCores > initialHostCores {
+					hostCPUStep := int(math.Ceil(opt.StepSize))
+					if hostCPUStep < 1 {
+						hostCPUStep = 1
+					}
+					prevConfig, _ := e.GetRunConfiguration(runID)
+					if err := rm.DecreaseHostCapacity(-hostCPUStep, 0); err != nil {
+						logger.Debug("online controller decrease host capacity skipped",
+							"run_id", runID,
+							"error", err)
+					} else {
+						logger.Info("online controller decreased host capacity",
+							"run_id", runID,
+							"cpu_step", hostCPUStep,
+							"host_count", rm.HostCount())
+						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+							stepIndex++
+							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+								"host utilization low, decreased host CPU capacity",
+								prevConfig, currConfig)
+						}
+					}
+				}
+			}
+
 			// Service-level controller: use p95 latency as the primary target, and CPU
 			// utilization as a guardrail to choose between horizontal scaling (replicas)
 			// and vertical scaling (CPU cores per instance). For now, we treat all
@@ -863,34 +994,65 @@ func (e *RunExecutor) runOnlineController(
 				}
 				newCPUCores := currentCores
 
-				// Service-level CPU utilization (if available).
-				var svcCPUUtil float64
+				// Service-level CPU and memory utilization (if available).
+				var svcCPUUtil, svcMemUtil float64
 				if runMetrics.ServiceMetrics != nil {
 					if sm := runMetrics.ServiceMetrics[svc.ID]; sm != nil {
 						svcCPUUtil = sm.CPUUtilization
+						svcMemUtil = sm.MemoryUtilization
 					}
+				}
+
+				primaryTarget := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
+				if primaryTarget == "" {
+					primaryTarget = "p95_latency"
+				}
+				targetUtilHigh := opt.GetTargetUtilHigh()
+				if targetUtilHigh <= 0 {
+					targetUtilHigh = 0.7
+				}
+				targetUtilLow := opt.GetTargetUtilLow()
+				if targetUtilLow <= 0 {
+					targetUtilLow = 0.4
 				}
 
 				scaledVertically := false
 
-				switch {
-				case currentP95 > targetP95*1.05:
-					// Above target: add capacity. If CPU is already hot, prefer vertical scaling
-					// (more cores per instance); otherwise, scale replicas.
-					if svcCPUUtil >= cpuHighThreshold {
-						newCPUCores = currentCores + cpuStep
-						scaledVertically = true
-					} else {
-						newReplicas = currentReplicas + step
+				if primaryTarget == "cpu_utilization" || primaryTarget == "memory_utilization" {
+					util := svcCPUUtil
+					if primaryTarget == "memory_utilization" {
+						util = svcMemUtil
 					}
-				case currentP95 < targetP95*0.7 && currentReplicas > 1:
-					// Well below target: scale replicas down, but only if CPU is not already hot;
-					// CPU acts as a guardrail to avoid over-consolidation under high load.
-					if svcCPUUtil < cpuHighThreshold {
-						newReplicas = currentReplicas - 1
+					// Utilization-driven: scale up when util > targetHigh, scale down when
+					// util < targetLow and P95 guardrail allows (do not scale down if P95 would exceed target).
+					switch {
+					case util > targetUtilHigh:
+						if svcCPUUtil >= cpuHighThreshold {
+							newCPUCores = currentCores + cpuStep
+							scaledVertically = true
+						} else {
+							newReplicas = currentReplicas + step
+						}
+					case util < targetUtilLow && currentReplicas > 1 && currentP95 <= targetP95*1.05:
+						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownCPUMax, scaleDownMemMax) {
+							newReplicas = currentReplicas - 1
+						}
 					}
-				default:
-					// Within band; no change
+				} else {
+					// P95-primary (default): scale up on P95 above target, scale down on P95 below target with utilization gates.
+					switch {
+					case currentP95 > targetP95*1.05:
+						if svcCPUUtil >= cpuHighThreshold {
+							newCPUCores = currentCores + cpuStep
+							scaledVertically = true
+						} else {
+							newReplicas = currentReplicas + step
+						}
+					case currentP95 < targetP95*0.7 && currentReplicas > 1:
+						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownCPUMax, scaleDownMemMax) {
+							newReplicas = currentReplicas - 1
+						}
+					}
 				}
 
 				// Apply vertical scaling first if requested.
@@ -943,11 +1105,18 @@ func (e *RunExecutor) runOnlineController(
 							"old", currentReplicas,
 							"new", newReplicas,
 							"p95_ms", currentP95,
-							"target_p95_ms", targetP95)
+							"target_p95_ms", targetP95,
+							"cpu_utilization", svcCPUUtil,
+							"memory_utilization", svcMemUtil)
 						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
 							reason := "p95 above target, scaled replicas up"
 							if newReplicas < currentReplicas {
-								reason = "p95 below target, scaled replicas down"
+								reason = "p95 below target and utilization low, scaled replicas down"
+								if primaryTarget == "cpu_utilization" || primaryTarget == "memory_utilization" {
+									reason = "utilization below target and P95 ok, scaled replicas down"
+								}
+							} else if primaryTarget == "cpu_utilization" || primaryTarget == "memory_utilization" {
+								reason = "utilization above target, scaled replicas up"
 							}
 							stepIndex++
 							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,

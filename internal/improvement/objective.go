@@ -1,6 +1,8 @@
 package improvement
 
 import (
+	"strings"
+
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 )
 
@@ -44,10 +46,43 @@ const (
 	ObjectiveMinimizeErrorRate ObjectiveType = "error_rate"
 	// ObjectiveMinimizeCost minimizes cost (weighted combination of resources)
 	ObjectiveMinimizeCost ObjectiveType = "cost"
+	// ObjectiveMinimizeCPUUtilization minimizes max CPU utilization across services
+	ObjectiveMinimizeCPUUtilization ObjectiveType = "cpu_utilization"
+	// ObjectiveMinimizeMemoryUtilization minimizes max memory utilization across services
+	ObjectiveMinimizeMemoryUtilization ObjectiveType = "memory_utilization"
 )
 
-// NewObjectiveFunction creates an objective function from a type string
-func NewObjectiveFunction(objType string) (ObjectiveFunction, error) {
+// UtilizationTarget represents a desired utilization band (0-1). Valid when 0 <= Low < High <= 1.
+// When set for batch cpu_utilization or memory_utilization, the optimizer minimizes distance from this band.
+type UtilizationTarget struct {
+	Low  float64
+	High float64
+}
+
+// Valid returns true if the band is valid (0 <= Low < High <= 1).
+func (u *UtilizationTarget) Valid() bool {
+	if u == nil {
+		return false
+	}
+	return u.Low >= 0 && u.High <= 1 && u.Low < u.High
+}
+
+// scoreForUtilBand returns 0 if u is in [low, high], else distance to nearest bound. Minimize this score.
+func scoreForUtilBand(u, low, high float64) float64 {
+	if u >= low && u <= high {
+		return 0
+	}
+	if u < low {
+		return low - u
+	}
+	return u - high
+}
+
+// NewObjectiveFunction creates an objective function from a type string and optional utilization target band.
+// When utilTarget is nil or invalid, behavior is unchanged. When objType is cpu_utilization or
+// memory_utilization and utilTarget is valid, the returned objective minimizes distance from the band.
+func NewObjectiveFunction(objType string, utilTarget *UtilizationTarget) (ObjectiveFunction, error) {
+	useBand := utilTarget != nil && utilTarget.Valid()
 	switch ObjectiveType(objType) {
 	case ObjectiveMinimizeP95Latency:
 		return &P95LatencyObjective{}, nil
@@ -61,6 +96,18 @@ func NewObjectiveFunction(objType string) (ObjectiveFunction, error) {
 		return &ErrorRateObjective{}, nil
 	case ObjectiveMinimizeCost:
 		return &CostObjective{}, nil
+	case ObjectiveMinimizeCPUUtilization:
+		o := &CPUUtilizationObjective{}
+		if useBand {
+			o.TargetLow, o.TargetHigh = utilTarget.Low, utilTarget.High
+		}
+		return o, nil
+	case ObjectiveMinimizeMemoryUtilization:
+		o := &MemoryUtilizationObjective{}
+		if useBand {
+			o.TargetLow, o.TargetHigh = utilTarget.Low, utilTarget.High
+		}
+		return o, nil
 	default:
 		return nil, &UnknownObjectiveError{ObjectiveType: objType}
 	}
@@ -215,6 +262,90 @@ func (o *CostObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64, err
 	memoryCost := avgMemory * memoryCostWeight
 	replicaCost := float64(totalReplicas) * replicaCostWeight
 	return cpuCost + memoryCost + replicaCost, nil
+}
+
+// maxServiceUtilFromProto returns the max CPU or memory utilization across
+// non-client services (service name starting with "client" are skipped, for
+// parity with online optimization). Also returns the count of non-client
+// services; if 0, caller should use highPenaltyScore.
+func maxServiceUtilFromProto(metrics *simulationv1.RunMetrics, kind string) (maxUtil float64, nonClientCount int) {
+	if metrics == nil || metrics.ServiceMetrics == nil {
+		return 0, 0
+	}
+	for _, svc := range metrics.ServiceMetrics {
+		if strings.HasPrefix(svc.GetServiceName(), "client") {
+			continue
+		}
+		nonClientCount++
+		var u float64
+		if kind == "memory" {
+			u = svc.GetMemoryUtilization()
+		} else {
+			u = svc.GetCpuUtilization()
+		}
+		if u > maxUtil {
+			maxUtil = u
+		}
+	}
+	return maxUtil, nonClientCount
+}
+
+// CPUUtilizationObjective minimizes max CPU utilization across services, or (when TargetLow < TargetHigh)
+// minimizes distance from the target band [TargetLow, TargetHigh].
+type CPUUtilizationObjective struct {
+	TargetLow  float64 // 0 = band not set
+	TargetHigh float64
+}
+
+func (o *CPUUtilizationObjective) Name() string {
+	return string(ObjectiveMinimizeCPUUtilization)
+}
+
+func (o *CPUUtilizationObjective) Direction() bool {
+	return true // minimize
+}
+
+func (o *CPUUtilizationObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64, error) {
+	if metrics == nil {
+		return 0, &InvalidMetricsError{Reason: "metrics is nil"}
+	}
+	maxUtil, nonClientCount := maxServiceUtilFromProto(metrics, "cpu")
+	if nonClientCount == 0 {
+		return highPenaltyScore, nil
+	}
+	if o.TargetLow < o.TargetHigh && o.TargetLow >= 0 && o.TargetHigh <= 1 {
+		return scoreForUtilBand(maxUtil, o.TargetLow, o.TargetHigh), nil
+	}
+	return maxUtil, nil
+}
+
+// MemoryUtilizationObjective minimizes max memory utilization across services, or (when TargetLow < TargetHigh)
+// minimizes distance from the target band [TargetLow, TargetHigh].
+type MemoryUtilizationObjective struct {
+	TargetLow  float64
+	TargetHigh float64
+}
+
+func (o *MemoryUtilizationObjective) Name() string {
+	return string(ObjectiveMinimizeMemoryUtilization)
+}
+
+func (o *MemoryUtilizationObjective) Direction() bool {
+	return true // minimize
+}
+
+func (o *MemoryUtilizationObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64, error) {
+	if metrics == nil {
+		return 0, &InvalidMetricsError{Reason: "metrics is nil"}
+	}
+	maxUtil, nonClientCount := maxServiceUtilFromProto(metrics, "memory")
+	if nonClientCount == 0 {
+		return highPenaltyScore, nil
+	}
+	if o.TargetLow < o.TargetHigh && o.TargetLow >= 0 && o.TargetHigh <= 1 {
+		return scoreForUtilBand(maxUtil, o.TargetLow, o.TargetHigh), nil
+	}
+	return maxUtil, nil
 }
 
 // UnknownObjectiveError indicates an unknown objective type
