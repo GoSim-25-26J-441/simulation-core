@@ -273,6 +273,7 @@ func (o *CostObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64, err
 //   - sum(replicas * cpu_cores)
 //   - sum(replicas * memory_gb)
 //   - sum(replicas)
+//
 // and applies the objective weights. Missing/zero cpu_cores or memory_mb use defaults.
 func EvaluateInfrastructureCost(scenario *config.Scenario) float64 {
 	if scenario == nil || len(scenario.Services) == 0 {
