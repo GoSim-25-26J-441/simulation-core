@@ -75,6 +75,59 @@ workload:
 	}
 }
 
+func TestRunExecutorCompletedThroughputUsesSimulationDuration(t *testing.T) {
+	store := NewRunStore()
+	const durationMs int64 = 1000
+	scenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: constant, rate_rps: 20}
+`
+	_, err := store.Create("run-throughput-sim-duration", &simulationv1.RunInput{
+		ScenarioYaml: scenario,
+		DurationMs:   durationMs,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	exec := NewRunExecutor(store, nil)
+	if _, err := exec.Start("run-throughput-sim-duration"); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("run-throughput-sim-duration")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			if rec.Metrics == nil {
+				t.Fatalf("expected metrics to be stored on completion")
+			}
+			expected := float64(rec.Metrics.TotalRequests) / (float64(durationMs) / 1000.0)
+			if rec.Metrics.ThroughputRps != expected {
+				t.Fatalf("expected throughput %f based on simulation duration, got %f", expected, rec.Metrics.ThroughputRps)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected run to complete within timeout")
+}
+
 func TestRunExecutorSetOptimizationRunner(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store, nil)

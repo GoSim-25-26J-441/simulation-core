@@ -266,17 +266,17 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 					return 0, runCtx.Error
 				}
 
-				// Evaluate objective
-				score, err := o.objective.Evaluate(metrics)
-				if err != nil {
+				// Evaluate objective. For cost objective, use configuration-based
+				// infrastructure cost so ranking reflects allocated vCPU/memory/replicas.
+				score, evalErr := o.evaluateRunScore(scenario, metrics)
+				if evalErr != nil {
 					o.mu.Lock()
 					runCtx.Status = RunStatusFailed
-					runCtx.Error = fmt.Errorf("failed to evaluate objective: %w", err)
+					runCtx.Error = fmt.Errorf("failed to evaluate objective: %w", evalErr)
 					runCtx.CompletedAt = time.Now()
 					o.mu.Unlock()
 					return 0, runCtx.Error
 				}
-
 				o.mu.Lock()
 				runCtx.Status = RunStatusCompleted
 				runCtx.Score = score
@@ -305,6 +305,16 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 			}
 		}
 	}
+}
+
+func (o *Orchestrator) evaluateRunScore(scenario *config.Scenario, metrics *simulationv1.RunMetrics) (float64, error) {
+	if o.objective == nil {
+		return 0, fmt.Errorf("objective function is nil")
+	}
+	if o.objective.Name() == string(ObjectiveMinimizeCost) {
+		return EvaluateInfrastructureCost(scenario), nil
+	}
+	return o.objective.Evaluate(metrics)
 }
 
 // findRunContextForConfig finds a run context that matches the given configuration
