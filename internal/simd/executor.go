@@ -344,6 +344,9 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 		}
 		return
 	}
+	if opt.GetDrainTimeoutMs() > 0 {
+		rm.SetScaleDownDrainTimeout(time.Duration(opt.GetDrainTimeoutMs()) * time.Millisecond)
+	}
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
@@ -429,7 +432,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 				engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
 				for _, svc := range scenario.Services {
 					if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
-						sm.ActiveReplicas = svc.Replicas
+						sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 					}
 				}
 
@@ -485,7 +488,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
 	for _, svc := range scenario.Services {
 		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
-			sm.ActiveReplicas = svc.Replicas
+			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 		}
 	}
 
@@ -671,10 +674,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		engineMetrics.ThroughputRPS = float64(engineMetrics.TotalRequests) / simDuration.Seconds()
 	}
 
-	// Populate ActiveReplicas from scenario (not recorded in collector)
+	// Populate ActiveReplicas from the resource manager (live routable count)
 	for _, svc := range scenario.Services {
 		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
-			sm.ActiveReplicas = svc.Replicas
+			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 		}
 	}
 
@@ -702,9 +705,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 // allowScaleDownReplicas returns true if the controller may scale down replicas given
 // current CPU/memory utilization and optional scale-down thresholds. When both
-// scaleDownCPUMax and scaleDownMemMax are 0, only the cpuHighThreshold guard applies.
-func allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownCPUMax, scaleDownMemMax float64) bool {
-	if svcCPUUtil >= cpuHighThreshold {
+// scaleDownCPUMax and scaleDownMemMax are 0, only the hot-CPU guard (0.8) applies.
+func allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax float64) bool {
+	const cpuHotThreshold = 0.8
+	if svcCPUUtil >= cpuHotThreshold {
 		return false
 	}
 	if scaleDownCPUMax <= 0 && scaleDownMemMax <= 0 {
@@ -717,6 +721,39 @@ func allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownC
 		return false
 	}
 	return true
+}
+
+func serviceQueueDepthTotal(rm *resource.Manager, serviceID string) int {
+	total := 0
+	for _, inst := range rm.GetInstancesForService(serviceID) {
+		total += inst.QueueLength()
+	}
+	return total
+}
+
+// onlineScaleDownGuard reports whether replica or vertical scale-down should be
+// skipped due to latency near target, load on queues, concurrency, or rising errors.
+func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, svcID string, targetP95 float64, prevErrFrac float64) bool {
+	if runMetrics == nil {
+		return true
+	}
+	if targetP95 > 0 && runMetrics.LatencyP95 >= targetP95*0.95 {
+		return true
+	}
+	if sm := runMetrics.ServiceMetrics[svcID]; sm != nil && sm.ConcurrentRequests > 10 {
+		return true
+	}
+	if serviceQueueDepthTotal(rm, svcID) > 0 {
+		return true
+	}
+	tot := float64(runMetrics.TotalRequests)
+	if tot > 0 && prevErrFrac >= 0 {
+		curr := float64(runMetrics.FailedRequests) / tot
+		if curr > prevErrFrac+0.005 {
+			return true
+		}
+	}
+	return false
 }
 
 // maxServiceUtilization returns the max CPU or memory utilization across non-client services.
@@ -830,12 +867,52 @@ func (e *RunExecutor) runOnlineController(
 	if initialHostCores < 1 {
 		initialHostCores = 1
 	}
+	initialHostMemGB := 0
+	if len(scenario.Hosts) > 0 {
+		initialHostMemGB = scenario.Hosts[0].MemoryGB
+	}
+	if initialHostMemGB < 1 {
+		initialHostMemGB = 1
+	}
+
+	lastScaleWall := time.Time{}
+	stableRepDown := make(map[string]int)
+	prevErrFrac := -1.0
+	intervalMs := int64(interval / time.Millisecond)
+	if intervalMs < 1 {
+		intervalMs = 1
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			stepIndexBefore := stepIndex
+			if opt.GetMaxControllerSteps() > 0 && stepIndex >= opt.GetMaxControllerSteps() {
+				continue
+			}
+			cooldown := time.Duration(opt.GetScaleDownCooldownMs()) * time.Millisecond
+			if cooldown > 0 && !lastScaleWall.IsZero() && time.Since(lastScaleWall) < cooldown {
+				continue
+			}
+			stabWindowMs := opt.GetScaleDownStabilizationWindowMs()
+			stabTicks := 1
+			if stabWindowMs > 0 {
+				stabTicks = int((stabWindowMs + intervalMs - 1) / intervalMs)
+				if stabTicks < 1 {
+					stabTicks = 1
+				}
+			}
+			minReplicasCtl := int(opt.GetMinReplicasPerService())
+			if minReplicasCtl < 1 {
+				minReplicasCtl = 1
+			}
+			minCPUCtl := opt.GetMinCpuCoresPerInstance()
+			minMemCtl := opt.GetMinMemoryMbPerInstance()
+			memHeadroomCtl := opt.GetMemoryDownsizeHeadroomMb()
+			scaleDownHostMemMax := opt.GetScaleDownHostMemUtilMax()
+
 			// Snapshot metrics
 			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
 			currentP95 := runMetrics.LatencyP95
@@ -866,6 +943,7 @@ func (e *RunExecutor) runOnlineController(
 			// vertically by increasing CPU cores per host.
 			hostCount := rm.HostCount()
 			maxHostCPU := rm.MaxHostCPUUtilization()
+			maxHostMem := rm.MaxHostMemoryUtilization()
 
 			if currentP95 > targetP95*1.05 && hostCount > 0 {
 				if hostCount < maxHosts && maxHostCPU >= hostCPUHighThreshold {
@@ -969,6 +1047,41 @@ func (e *RunExecutor) runOnlineController(
 				}
 			}
 
+			// Decrease host memory capacity when host memory utilization is low and we are
+			// above the initial scenario memory footprint.
+			if scaleDownHostMemMax > 0 && hostCount >= minHosts && maxHostMem < scaleDownHostMemMax {
+				var currentHostMemGB int
+				for _, hid := range rm.HostIDs() {
+					if h, ok := rm.GetHost(hid); ok {
+						currentHostMemGB = h.MemoryGB()
+						break
+					}
+				}
+				if currentHostMemGB > initialHostMemGB {
+					hostMemStep := int(math.Ceil(opt.StepSize))
+					if hostMemStep < 1 {
+						hostMemStep = 1
+					}
+					prevConfig, _ := e.GetRunConfiguration(runID)
+					if err := rm.DecreaseHostCapacity(0, -hostMemStep); err != nil {
+						logger.Debug("online controller decrease host memory skipped",
+							"run_id", runID,
+							"error", err)
+					} else {
+						logger.Info("online controller decreased host memory capacity",
+							"run_id", runID,
+							"memory_gb_step", hostMemStep,
+							"host_count", rm.HostCount())
+						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+							stepIndex++
+							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+								"host memory utilization low, decreased host memory capacity",
+								prevConfig, currConfig)
+						}
+					}
+				}
+			}
+
 			// Service-level controller: use p95 latency as the primary target, and CPU
 			// utilization as a guardrail to choose between horizontal scaling (replicas)
 			// and vertical scaling (CPU cores per instance). For now, we treat all
@@ -991,13 +1104,26 @@ func (e *RunExecutor) runOnlineController(
 
 				newReplicas := currentReplicas
 
-				// Current per-instance CPU cores (assume homogeneous instances).
+				// Current per-instance CPU/memory (prefer a routable instance).
 				instances := rm.GetInstancesForService(svc.ID)
 				currentCores := resource.DefaultInstanceCPUCores
-				if len(instances) > 0 {
+				currentMemMB := resource.DefaultInstanceMemoryMB
+				var routable *resource.ServiceInstance
+				for _, inst := range instances {
+					if inst.IsRoutable() {
+						routable = inst
+						break
+					}
+				}
+				if routable != nil {
+					currentCores = routable.CPUCores()
+					currentMemMB = routable.MemoryMB()
+				} else if len(instances) > 0 {
 					currentCores = instances[0].CPUCores()
+					currentMemMB = instances[0].MemoryMB()
 				}
 				newCPUCores := currentCores
+				newMemMBVert := currentMemMB
 
 				// Service-level CPU and memory utilization (if available).
 				var svcCPUUtil, svcMemUtil float64
@@ -1039,7 +1165,7 @@ func (e *RunExecutor) runOnlineController(
 							newReplicas = currentReplicas + step
 						}
 					case util < targetUtilLow && currentReplicas > 1 && currentP95 <= targetP95*1.05:
-						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownCPUMax, scaleDownMemMax) {
+						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
 							newReplicas = currentReplicas - 1
 						}
 					}
@@ -1054,10 +1180,54 @@ func (e *RunExecutor) runOnlineController(
 							newReplicas = currentReplicas + step
 						}
 					case currentP95 < targetP95*0.7 && currentReplicas > 1:
-						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, cpuHighThreshold, scaleDownCPUMax, scaleDownMemMax) {
+						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
 							newReplicas = currentReplicas - 1
 						}
 					}
+				}
+
+				// Utilization-primary: optional vertical CPU/memory downscale when replicas unchanged.
+				if primaryTarget == "cpu_utilization" && svcCPUUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas {
+					if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
+						!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac) {
+						nc := currentCores - cpuStep
+						if minCPUCtl > 0 && nc < minCPUCtl {
+							nc = minCPUCtl
+						}
+						if nc+1e-9 < currentCores {
+							newCPUCores = nc
+							scaledVertically = true
+						}
+					}
+				}
+				if primaryTarget == "memory_utilization" && svcMemUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas {
+					if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
+						!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac) {
+						nm := currentMemMB - float64(step)*128
+						if minMemCtl > 0 && nm < minMemCtl {
+							nm = minMemCtl
+						}
+						if nm+1e-9 < currentMemMB {
+							newMemMBVert = nm
+						}
+					}
+				}
+
+				// Stabilization and guardrails for replica scale-down.
+				if newReplicas < currentReplicas {
+					stableRepDown[svc.ID]++
+					if stableRepDown[svc.ID] < stabTicks {
+						newReplicas = currentReplicas
+					}
+				} else {
+					stableRepDown[svc.ID] = 0
+				}
+				if newReplicas < currentReplicas && onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac) {
+					newReplicas = currentReplicas
+					stableRepDown[svc.ID] = 0
+				}
+				if newReplicas < minReplicasCtl {
+					newReplicas = minReplicasCtl
 				}
 
 				// Apply vertical scaling first if requested.
@@ -1088,6 +1258,29 @@ func (e *RunExecutor) runOnlineController(
 							stepIndex++
 							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
 								"p95 above target, service CPU hot, scaled CPU cores",
+								prevConfig, currConfig)
+						}
+						continue
+					}
+				}
+
+				if newMemMBVert+1e-9 < currentMemMB {
+					prevConfig, _ := e.GetRunConfiguration(runID)
+					if err := e.UpdateServiceResourcesWithHeadroom(runID, svc.ID, 0, newMemMBVert, memHeadroomCtl); err != nil {
+						logger.Debug("online controller memory downscale skipped",
+							"run_id", runID,
+							"service_id", svc.ID,
+							"error", err)
+					} else {
+						logger.Info("online controller decreased service memory",
+							"run_id", runID,
+							"service_id", svc.ID,
+							"old_memory_mb", currentMemMB,
+							"new_memory_mb", newMemMBVert)
+						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+							stepIndex++
+							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+								"memory utilization low, decreased per-instance memory",
 								prevConfig, currConfig)
 						}
 						continue
@@ -1129,6 +1322,13 @@ func (e *RunExecutor) runOnlineController(
 						}
 					}
 				}
+			}
+
+			if stepIndex > stepIndexBefore {
+				lastScaleWall = time.Now()
+			}
+			if runMetrics.TotalRequests > 0 {
+				prevErrFrac = float64(runMetrics.FailedRequests) / float64(runMetrics.TotalRequests)
 			}
 		}
 	}

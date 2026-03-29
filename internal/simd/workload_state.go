@@ -145,6 +145,13 @@ func (ws *WorkloadState) generateAllEventsUpToEndTime() {
 	}
 }
 
+// Engine returns the simulation engine for this run (e.g. current simulation time).
+func (ws *WorkloadState) Engine() *engine.Engine {
+	ws.mu.RLock()
+	defer ws.mu.RUnlock()
+	return ws.engine
+}
+
 // Stop stops the workload state manager
 func (ws *WorkloadState) Stop() {
 	ws.cancel()

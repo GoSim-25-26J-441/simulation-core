@@ -405,8 +405,6 @@ func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
 
 // Test allowScaleDownReplicas: utilization-gated scale-down (Phase 1).
 func TestAllowScaleDownReplicas(t *testing.T) {
-	const cpuHigh = 0.8
-
 	tests := []struct {
 		name               string
 		svcCPUUtil         float64
@@ -474,7 +472,7 @@ func TestAllowScaleDownReplicas(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := allowScaleDownReplicas(tt.svcCPUUtil, tt.svcMemUtil, cpuHigh, tt.scaleDownCPUMax, tt.scaleDownMemMax)
+			got := allowScaleDownReplicas(tt.svcCPUUtil, tt.svcMemUtil, tt.scaleDownCPUMax, tt.scaleDownMemMax)
 			if got != tt.wantAllowScaleDown {
 				t.Errorf("allowScaleDownReplicas() = %v, want %v (cpu=%.2f mem=%.2f scaleDownCPU=%.2f scaleDownMem=%.2f)",
 					got, tt.wantAllowScaleDown, tt.svcCPUUtil, tt.svcMemUtil, tt.scaleDownCPUMax, tt.scaleDownMemMax)

@@ -5,6 +5,17 @@ import (
 	"time"
 )
 
+// InstanceLifecycle describes whether an instance accepts new work.
+type InstanceLifecycle int
+
+const (
+	// InstanceActive is the normal state: instance participates in load balancing.
+	InstanceActive InstanceLifecycle = iota
+	// InstanceDraining means no new traffic is routed here; the instance is
+	// removed once idle (or after a simulated-time drain deadline).
+	InstanceDraining
+)
+
 // ServiceInstance represents a service instance with resource tracking
 type ServiceInstance struct {
 	mu sync.RWMutex
@@ -12,6 +23,11 @@ type ServiceInstance struct {
 	id          string
 	serviceName string
 	hostID      string
+
+	lifecycle InstanceLifecycle
+	// drainDeadline is simulated-time after which the manager may force-remove
+	// this instance even if still busy. Zero means not draining.
+	drainDeadline time.Time
 
 	// Resource allocation
 	cpuCores float64 // Allocated CPU cores
@@ -39,6 +55,7 @@ func NewServiceInstance(id, serviceName, hostID string, cpuCores, memoryMB float
 		id:               id,
 		serviceName:      serviceName,
 		hostID:           hostID,
+		lifecycle:        InstanceActive,
 		cpuCores:         cpuCores,
 		memoryMB:         memoryMB,
 		cpuUsageWindow:   1 * time.Second, // Default 1-second window for utilization calculation
@@ -82,6 +99,35 @@ func (s *ServiceInstance) MemoryMB() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.memoryMB
+}
+
+// Lifecycle returns active vs draining state.
+func (s *ServiceInstance) Lifecycle() InstanceLifecycle {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lifecycle
+}
+
+// IsRoutable returns true if this instance should receive new requests.
+func (s *ServiceInstance) IsRoutable() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lifecycle == InstanceActive
+}
+
+// DrainDeadline returns the simulated-time deadline for forced removal when draining.
+func (s *ServiceInstance) DrainDeadline() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.drainDeadline
+}
+
+// SetDraining marks the instance as draining with a simulated-time deadline.
+func (s *ServiceInstance) SetDraining(deadline time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lifecycle = InstanceDraining
+	s.drainDeadline = deadline
 }
 
 // SetCPUCores updates the allocated CPU cores for this instance.

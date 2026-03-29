@@ -3,8 +3,10 @@ package simd
 import (
 	"fmt"
 	"math"
+	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
@@ -19,13 +21,20 @@ func (e *RunExecutor) UpdateServiceReplicas(runID string, serviceID string, repl
 
 	e.mu.Lock()
 	rm, ok := e.resourceManagers[runID]
+	ws, wsOk := e.workloadStates[runID]
 	e.mu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrRunNotFound, runID)
 	}
 
-	return rm.ScaleService(serviceID, replicas)
+	simTime := time.Now()
+	if wsOk {
+		if eng := ws.Engine(); eng != nil {
+			simTime = eng.GetSimTime()
+		}
+	}
+	return rm.ScaleServiceWithOptions(serviceID, replicas, resource.ScaleServiceOptions{SimTime: simTime})
 }
 
 // UpdateServiceResources updates per-instance CPU cores and memory (MB) for a service
@@ -53,6 +62,33 @@ func (e *RunExecutor) UpdateServiceResources(runID string, serviceID string, cpu
 	}
 
 	return rm.UpdateServiceResources(serviceID, cpuCores, memoryMB)
+}
+
+// UpdateServiceResourcesWithHeadroom updates per-instance CPU/memory like UpdateServiceResources
+// but supplies memory headroom (MB) for safe memory downsize validation.
+func (e *RunExecutor) UpdateServiceResourcesWithHeadroom(runID string, serviceID string, cpuCores, memoryMB, memoryHeadroomMB float64) error {
+	if runID == "" {
+		return ErrRunIDMissing
+	}
+	if serviceID == "" {
+		return fmt.Errorf("service_id is required")
+	}
+	if cpuCores < 0 || memoryMB < 0 {
+		return fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+	if cpuCores == 0 && memoryMB == 0 {
+		return nil
+	}
+
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	return rm.UpdateServiceResourcesWithHeadroom(serviceID, cpuCores, memoryMB, memoryHeadroomMB)
 }
 
 // UpdatePolicies updates policies (e.g. autoscaling) for a running simulation
@@ -157,10 +193,19 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 		default:
 			replicas = int32(n)
 		}
-		// Derive per-instance CPU/memory from one of the active instances.
+		// Derive per-instance CPU/memory from a routable instance when possible.
 		var cpuCores, memoryMB float64
+		var foundRoutable bool
 		instances := rm.GetInstancesForService(svcID)
-		if len(instances) > 0 {
+		for _, inst := range instances {
+			if inst.IsRoutable() {
+				cpuCores = inst.CPUCores()
+				memoryMB = inst.MemoryMB()
+				foundRoutable = true
+				break
+			}
+		}
+		if !foundRoutable && len(instances) > 0 {
 			cpuCores = instances[0].CPUCores()
 			memoryMB = instances[0].MemoryMB()
 		}

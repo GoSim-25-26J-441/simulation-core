@@ -282,6 +282,35 @@ message OptimizationConfig {
   // optimizer stops after this many simulation runs (initial + neighbor evaluations).
   // Ignored for online optimization. When 0, only max_iterations (improvement steps) applies.
   int32 max_evaluations = 16;
+
+  // --- Scale-down policy (online controller) ---
+  // Hard lower bounds; the controller will not go below these when scaling down.
+  int32 min_replicas_per_service = 17;
+  double min_cpu_cores_per_instance = 18;
+  double min_memory_mb_per_instance = 19;
+
+  // Require this many consecutive control intervals with stable under-utilization
+  // before a scale-down action (replica drain, vertical downsize, or host change).
+  // When 0, a single interval is enough (legacy behavior).
+  int64 scale_down_stabilization_window_ms = 20;
+
+  // Minimum wall-clock time between any two scale-up or scale-down actions.
+  int64 scale_down_cooldown_ms = 21;
+
+  // Simulation-time budget to drain a replica (no new traffic, wait for idle)
+  // before force-removing it. When 0, defaults to 1h simulated time.
+  int64 drain_timeout_ms = 22;
+
+  // Optional headroom (MB) when decreasing per-instance memory: new limit must be
+  // at least active_memory + headroom. When 0, a small default applies.
+  double memory_downsize_headroom_mb = 23;
+
+  // When > 0, host memory capacity may be decreased only if max host memory
+  // utilization is below this (0–1). Pairs with scale_down_host_cpu_util_max.
+  double scale_down_host_mem_util_max = 24;
+
+  // Optional safety cap on online controller adjustment steps (0 = unlimited).
+  int32 max_controller_steps = 25;
 }
 
 message Run {

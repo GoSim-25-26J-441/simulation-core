@@ -146,17 +146,30 @@ func TestManagerScaleService(t *testing.T) {
 		t.Fatalf("expected 4 instances for svc1, got %d", len(instances))
 	}
 
-	// Scale down (soft): 4 -> 2
+	// Scale down: 4 -> 2 active; surplus instances drain then are removed.
 	if err := m.ScaleService("svc1", 2); err != nil {
 		t.Fatalf("ScaleService(svc1, 2): %v", err)
 	}
 	if n := m.ActiveReplicas("svc1"); n != 2 {
 		t.Fatalf("expected 2 active replicas after scale down, got %d", n)
 	}
-	// Instance count in manager may still be 4 (soft scale-down); only routing uses 2
 	instances = m.GetInstancesForService("svc1")
-	if len(instances) < 2 {
-		t.Fatalf("expected at least 2 instances, got %d", len(instances))
+	if len(instances) != 4 {
+		t.Fatalf("expected 4 physical instances while draining, got %d", len(instances))
+	}
+	draining := 0
+	for _, inst := range instances {
+		if inst.Lifecycle() == InstanceDraining {
+			draining++
+		}
+	}
+	if draining != 2 {
+		t.Fatalf("expected 2 draining instances, got %d", draining)
+	}
+	m.ProcessDrainingInstances(time.Unix(0, 0))
+	instances = m.GetInstancesForService("svc1")
+	if len(instances) != 2 {
+		t.Fatalf("expected 2 instances after drain removal, got %d", len(instances))
 	}
 
 	// Invalid: replicas < 1
@@ -920,6 +933,55 @@ func TestManagerUpdateServiceResources(t *testing.T) {
 		}
 	}
 
+}
+
+func TestManagerUpdateServiceResourcesMemoryDownsizeRejected(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 8}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	inst := m.GetInstancesForService("svc1")[0]
+	inst.AllocateMemory(100)
+	if err := m.UpdateServiceResourcesWithHeadroom("svc1", 0, 50, 16); err == nil {
+		t.Fatal("expected error when new memory limit is below active usage plus headroom")
+	}
+}
+
+func TestDrainingInstanceNotSelectedForTraffic(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+			{ID: "host-2", Cores: 4},
+		},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, Model: "cpu"},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if err := m.ScaleServiceWithOptions("svc1", 1, ScaleServiceOptions{SimTime: time.Unix(1, 0), DrainTimeout: time.Hour}); err != nil {
+		t.Fatalf("ScaleServiceWithOptions: %v", err)
+	}
+	seen := map[string]int{}
+	for i := 0; i < 20; i++ {
+		inst, err := m.SelectInstanceForService("svc1")
+		if err != nil {
+			t.Fatalf("SelectInstanceForService: %v", err)
+		}
+		seen[inst.ID()]++
+		if inst.Lifecycle() != InstanceActive {
+			t.Fatalf("selected instance should be active, got %v", inst.Lifecycle())
+		}
+	}
+	if len(seen) != 1 {
+		t.Fatalf("expected only one routable instance, got ids %+v", seen)
+	}
 }
 
 func TestManagerHostScalingHelpers(t *testing.T) {

@@ -93,6 +93,7 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 func handleRequestArrival(state *scenarioState) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
+		state.rm.ProcessDrainingInstances(simTime)
 
 		// Extract service and endpoint from event data
 		serviceID, ok := evt.Data["service_id"].(string)
@@ -188,6 +189,7 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		}
 
 		simTime := eng.GetSimTime()
+		state.rm.ProcessDrainingInstances(simTime)
 
 		request := evt.Request
 		serviceID := request.ServiceName
@@ -362,6 +364,7 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 
 		rm := eng.GetRunManager()
 		simTime := eng.GetSimTime()
+		state.rm.ProcessDrainingInstances(simTime)
 
 		request := evt.Request
 		serviceID := request.ServiceName

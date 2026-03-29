@@ -16,6 +16,12 @@ const (
 	DefaultInstanceCPUCores = 1.0
 	// DefaultInstanceMemoryMB is the default amount of memory (in MB) allocated to a service instance
 	DefaultInstanceMemoryMB = 512.0
+	// DefaultMemoryDownsizeHeadroomMB is the minimum slack required between active
+	// memory and a new lower memory limit when decreasing per-instance memory.
+	DefaultMemoryDownsizeHeadroomMB = 16.0
+	// DefaultDrainTimeout is the simulated-time budget for draining a replica when
+	// no explicit timeout is provided to ScaleServiceWithOptions.
+	DefaultDrainTimeout = time.Hour
 )
 
 // Manager tracks resource usage across hosts and service instances
@@ -27,6 +33,9 @@ type Manager struct {
 	roundRobinIdx        map[string]int                // service name -> last selected instance index
 	sortedServiceInstMap map[string][]*ServiceInstance // service name -> sorted instances (cached); scale-down only shrinks this
 	nextInstanceID       int                           // global counter for new instance IDs when scaling up
+	// drainTimeout is the simulated-time budget for scale-down drains when callers
+	// use ScaleService without explicit options (set per run from optimization config).
+	drainTimeout time.Duration
 }
 
 // NewManager creates a new resource manager
@@ -154,48 +163,80 @@ func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance
 	return selectedInstance, nil
 }
 
-// rebuildSortedInstanceCache rebuilds the cache of sorted instances per service
-// Assumes lock is already held by caller
+// rebuildSortedInstanceCache rebuilds the cache of sorted routable (active) instances per service.
+// Assumes lock is already held by caller.
 func (m *Manager) rebuildSortedInstanceCache() {
-	// Group instances by service
-	serviceInstances := make(map[string][]*ServiceInstance)
+	next := make(map[string][]*ServiceInstance)
 	for _, instance := range m.instances {
-		serviceName := instance.ServiceName()
-		serviceInstances[serviceName] = append(serviceInstances[serviceName], instance)
+		if !instance.IsRoutable() {
+			continue
+		}
+		sn := instance.ServiceName()
+		next[sn] = append(next[sn], instance)
 	}
-
-	// Sort and cache each service's instances
-	for serviceName, instances := range serviceInstances {
+	for sn, instances := range next {
 		sort.Slice(instances, func(i, j int) bool {
 			return instances[i].ID() < instances[j].ID()
 		})
-		m.sortedServiceInstMap[serviceName] = instances
+		next[sn] = instances
+		if idx := m.roundRobinIdx[sn]; len(instances) > 0 && idx >= len(instances) {
+			m.roundRobinIdx[sn] = 0
+		}
 	}
+	m.sortedServiceInstMap = next
+}
+
+// ScaleServiceOptions carries simulation-time context for scale-down draining.
+type ScaleServiceOptions struct {
+	// SimTime is the current simulation clock. When zero, time.Now() is used.
+	SimTime time.Time
+	// DrainTimeout is the simulated duration after which a draining replica may be
+	// removed even if still busy. When <= 0, DefaultDrainTimeout is used.
+	DrainTimeout time.Duration
 }
 
 // ScaleService changes the number of replicas for a service at runtime.
-// Scale-up: adds new instances (round-robin across hosts) using same CPU/memory as existing instances.
-// Scale-down: reduces the set of instances that receive new traffic (soft scale-down; existing instances remain for in-flight requests).
+// Scale-up: adds new active instances. Scale-down: marks surplus active instances as
+// draining; they stop receiving new traffic and are removed once idle or after the
+// drain timeout (see ProcessDrainingInstances).
 func (m *Manager) ScaleService(serviceID string, newReplicas int) error {
+	return m.ScaleServiceWithOptions(serviceID, newReplicas, ScaleServiceOptions{})
+}
+
+// ScaleServiceWithOptions is like ScaleService but supplies simulation time and drain budget.
+func (m *Manager) ScaleServiceWithOptions(serviceID string, newReplicas int, opts ScaleServiceOptions) error {
 	if newReplicas < 1 {
 		return fmt.Errorf("replicas must be at least 1, got %d", newReplicas)
 	}
 
+	simTime := opts.SimTime
+	if simTime.IsZero() {
+		simTime = time.Now()
+	}
+	drainBudget := m.effectiveDrainTimeout(opts)
+	deadline := simTime.Add(drainBudget)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	instances := m.getInstancesForServiceLocked(serviceID)
-	if len(instances) == 0 {
+	allInst := m.getInstancesForServiceLocked(serviceID)
+	if len(allInst) == 0 {
 		return fmt.Errorf("service not found: %s", serviceID)
 	}
 
-	sort.Slice(instances, func(i, j int) bool {
-		return instances[i].ID() < instances[j].ID()
+	sort.Slice(allInst, func(i, j int) bool {
+		return allInst[i].ID() < allInst[j].ID()
 	})
-	currentN := len(instances)
 
-	if newReplicas > currentN {
-		// Scale up: add new instances
+	var activeInst []*ServiceInstance
+	for _, inst := range allInst {
+		if inst.Lifecycle() == InstanceActive {
+			activeInst = append(activeInst, inst)
+		}
+	}
+	activeN := len(activeInst)
+
+	if newReplicas > activeN {
 		hostIDs := make([]string, 0, len(m.hosts))
 		for hostID := range m.hosts {
 			hostIDs = append(hostIDs, hostID)
@@ -203,12 +244,17 @@ func (m *Manager) ScaleService(serviceID string, newReplicas int) error {
 		if len(hostIDs) == 0 {
 			return fmt.Errorf("no hosts available")
 		}
-		first := instances[0]
-		cpuCores := first.CPUCores()
-		memoryMB := first.MemoryMB()
+		template := activeInst[0]
+		if template == nil {
+			// Only draining instances exist — clone template from any instance.
+			template = allInst[0]
+		}
+		cpuCores := template.CPUCores()
+		memoryMB := template.MemoryMB()
 
-		for i := 0; i < newReplicas-currentN; i++ {
-			hostID := hostIDs[(currentN+i)%len(hostIDs)]
+		physicalN := len(allInst)
+		for i := 0; i < newReplicas-activeN; i++ {
+			hostID := hostIDs[(physicalN+i)%len(hostIDs)]
 			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceID, m.nextInstanceID)
 			m.nextInstanceID++
 
@@ -217,22 +263,67 @@ func (m *Manager) ScaleService(serviceID string, newReplicas int) error {
 			m.hosts[hostID].AddService(instanceIDStr)
 			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
 		}
-		// Rebuild sorted cache for this service so new instances are included
-		instances = m.getInstancesForServiceLocked(serviceID)
-		sort.Slice(instances, func(i, j int) bool {
-			return instances[i].ID() < instances[j].ID()
-		})
-		m.sortedServiceInstMap[serviceID] = instances
-	} else if newReplicas < currentN {
-		// Soft scale down: only the first newReplicas instances receive new traffic
-		m.sortedServiceInstMap[serviceID] = instances[:newReplicas]
-		if m.roundRobinIdx[serviceID] >= newReplicas {
-			m.roundRobinIdx[serviceID] = 0
+		m.rebuildSortedInstanceCache()
+	} else if newReplicas < activeN {
+		// Drain the last (activeN - newReplicas) active instances by stable ID order.
+		toDrain := activeInst[newReplicas:]
+		for _, inst := range toDrain {
+			inst.SetDraining(deadline)
 		}
+		m.rebuildSortedInstanceCache()
 	}
-	// else newReplicas == currentN: no-op
+	// else newReplicas == activeN: no-op
 
 	return nil
+}
+
+// ProcessDrainingInstances removes draining instances that are idle or past their
+// simulated drain deadline. Call this from the simulation loop with the current
+// simulation time so drain timeouts use the same clock as the workload.
+func (m *Manager) ProcessDrainingInstances(simTime time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var removeIDs []string
+	for id, inst := range m.instances {
+		if inst.Lifecycle() != InstanceDraining {
+			continue
+		}
+		deadline := inst.DrainDeadline()
+		idle := inst.ActiveRequests() == 0 && inst.QueueLength() == 0
+		timedOut := !deadline.IsZero() && !simTime.Before(deadline)
+		if idle || timedOut {
+			removeIDs = append(removeIDs, id)
+		}
+	}
+	for _, id := range removeIDs {
+		m.removeInstanceLocked(id)
+	}
+	if len(removeIDs) > 0 {
+		m.rebuildSortedInstanceCache()
+	}
+}
+
+func (m *Manager) removeInstanceLocked(instanceID string) {
+	inst, ok := m.instances[instanceID]
+	if !ok {
+		return
+	}
+	hostID := inst.HostID()
+	delete(m.instances, instanceID)
+
+	if ids, ok := m.hostToInstances[hostID]; ok {
+		out := ids[:0]
+		for _, x := range ids {
+			if x != instanceID {
+				out = append(out, x)
+			}
+		}
+		m.hostToInstances[hostID] = out
+	}
+	if h, ok := m.hosts[hostID]; ok {
+		h.RemoveService(instanceID)
+	}
 }
 
 // ActiveReplicas returns the number of replicas currently in rotation for the service (for GET config).
@@ -265,6 +356,40 @@ func (m *Manager) MaxHostCPUUtilization() float64 {
 		}
 	}
 	return maxUtil
+}
+
+// MaxHostMemoryUtilization returns the maximum memory utilization across all hosts.
+// If there are no hosts, it returns 0.
+func (m *Manager) MaxHostMemoryUtilization() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	maxUtil := 0.0
+	for _, host := range m.hosts {
+		if util := host.MemoryUtilization(); util > maxUtil {
+			maxUtil = util
+		}
+	}
+	return maxUtil
+}
+
+// SetScaleDownDrainTimeout configures the default simulated drain budget used by
+// ScaleService (without explicit ScaleServiceOptions). Non-positive values are ignored.
+func (m *Manager) SetScaleDownDrainTimeout(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if d > 0 {
+		m.drainTimeout = d
+	}
+}
+
+func (m *Manager) effectiveDrainTimeout(opts ScaleServiceOptions) time.Duration {
+	if opts.DrainTimeout > 0 {
+		return opts.DrainTimeout
+	}
+	if m.drainTimeout > 0 {
+		return m.drainTimeout
+	}
+	return DefaultDrainTimeout
 }
 
 // HostIDs returns a slice of all host IDs currently managed.
@@ -461,6 +586,12 @@ func (m *Manager) DecreaseHostCapacity(cpuDelta, memoryGBDelta int) error {
 // UpdateServiceResources updates per-instance CPU cores and memory (MB) for all
 // instances of a given service. Passing 0 for a field leaves it unchanged.
 func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB float64) error {
+	return m.UpdateServiceResourcesWithHeadroom(serviceID, cpuCores, memoryMB, 0)
+}
+
+// UpdateServiceResourcesWithHeadroom is like UpdateServiceResources; memoryHeadroomMB
+// is the minimum slack required when decreasing memory (when <= 0, DefaultMemoryDownsizeHeadroomMB is used).
+func (m *Manager) UpdateServiceResourcesWithHeadroom(serviceID string, cpuCores, memoryMB, memoryHeadroomMB float64) error {
 	if cpuCores < 0 || memoryMB < 0 {
 		return fmt.Errorf("cpu_cores and memory_mb must be non-negative")
 	}
@@ -473,7 +604,27 @@ func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB fl
 		return fmt.Errorf("service not found: %s", serviceID)
 	}
 
-	// First, check host capacity constraints for the proposed change.
+	headroom := memoryHeadroomMB
+	if headroom <= 0 {
+		headroom = DefaultMemoryDownsizeHeadroomMB
+	}
+
+	// Validate downsize against live usage before host capacity checks.
+	for _, inst := range instances {
+		if cpuCores > 0 && cpuCores+1e-9 < inst.CPUCores() {
+			if inst.ActiveRequests() != 0 || inst.QueueLength() != 0 {
+				return fmt.Errorf("cannot decrease CPU for instance %s while it has active requests or queued work", inst.ID())
+			}
+		}
+		if memoryMB > 0 && memoryMB+1e-9 < inst.MemoryMB() {
+			if memoryMB+1e-9 < inst.ActiveMemoryMB()+headroom {
+				return fmt.Errorf("cannot decrease memory for instance %s: proposed %.2f MB is below active usage %.2f MB plus headroom %.2f MB",
+					inst.ID(), memoryMB, inst.ActiveMemoryMB(), headroom)
+			}
+		}
+	}
+
+	// Check host capacity constraints for the proposed change.
 	for hostID, host := range m.hosts {
 		hostInstances := m.collectInstancesForHost(hostID)
 		if len(hostInstances) == 0 {
@@ -530,10 +681,15 @@ func (m *Manager) UpdateServiceResources(serviceID string, cpuCores, memoryMB fl
 func (m *Manager) ListServiceIDs() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	ids := make([]string, 0, len(m.sortedServiceInstMap))
-	for id := range m.sortedServiceInstMap {
+	seen := make(map[string]struct{})
+	for _, inst := range m.instances {
+		seen[inst.ServiceName()] = struct{}{}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 
