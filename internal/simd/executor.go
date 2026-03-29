@@ -665,6 +665,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Convert metrics collector data to RunMetrics
 	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
+	// For completed runs, use simulation duration for throughput so non-real-time
+	// mode reports requests over simulated time instead of wall-clock execution time.
+	if simDuration > 0 {
+		engineMetrics.ThroughputRPS = float64(engineMetrics.TotalRequests) / simDuration.Seconds()
+	}
 
 	// Populate ActiveReplicas from scenario (not recorded in collector)
 	for _, svc := range scenario.Services {
