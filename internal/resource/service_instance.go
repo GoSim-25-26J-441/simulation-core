@@ -150,31 +150,34 @@ func (s *ServiceInstance) SetMemoryMB(memoryMB float64) {
 	s.memoryMB = memoryMB
 }
 
-// CPUUtilization returns CPU utilization (0.0 to 1.0) based on a sliding time window
+// CPUUtilization returns CPU utilization (0.0 to 1.0) based on a sliding time window,
+// evaluated at wall-clock now. Prefer CPUUtilizationAt in discrete-event simulation.
 func (s *ServiceInstance) CPUUtilization() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.cpuUtilizationAt(time.Now())
+	return s.cpuUtilizationAtLocked(time.Now())
 }
 
-// cpuUtilizationAt calculates CPU utilization at a specific time.
-// This is an internal method that assumes the caller holds the read lock (s.mu.RLock).
-// For public use, call CPUUtilization() instead.
-func (s *ServiceInstance) cpuUtilizationAt(currentTime time.Time) float64 {
+// CPUUtilizationAt returns utilization using the same sliding window as AllocateCPU, evaluated
+// at at (simulation time). Capacity and gauge metrics in the simulator must use this clock, not
+// time.Now(), or fast-forward runs treat CPU as idle while sim time is heavily loaded.
+func (s *ServiceInstance) CPUUtilizationAt(at time.Time) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cpuUtilizationAtLocked(at)
+}
+
+// cpuUtilizationAtLocked calculates CPU utilization at currentTime. Caller must hold s.mu (RLock or Lock).
+func (s *ServiceInstance) cpuUtilizationAtLocked(currentTime time.Time) float64 {
 	if s.cpuCores == 0 {
 		return 0.0
 	}
 
-	// Check if we need to move to a new window
 	windowEnd := s.windowStartTime.Add(s.cpuUsageWindow)
 	if currentTime.After(windowEnd) || currentTime.Equal(windowEnd) {
-		// We've moved past the current window, so CPU usage decays to 0
-		// This implements the time-based decay that the reviewer requested
 		return 0.0
 	}
 
-	// Calculate utilization based on CPU time consumed in this window
-	// Utilization = (CPU time consumed in window / window duration) / available cores
 	windowDurationMs := float64(s.cpuUsageWindow.Milliseconds())
 	if windowDurationMs == 0 {
 		return 0.0
@@ -291,18 +294,20 @@ func (s *ServiceInstance) QueueLength() int {
 	return len(s.requestQueue)
 }
 
-// HasCapacity checks if the instance has capacity for a new request
+// HasCapacity checks capacity at wall-clock now. Prefer HasCapacityAt for simulation.
 func (s *ServiceInstance) HasCapacity() bool {
+	return s.HasCapacityAt(time.Now())
+}
 
-	// If no CPU cores are allocated, this instance cannot process requests
+// HasCapacityAt returns true if the instance can accept another request immediately,
+// using CPU utilization evaluated at at (simulation time).
+func (s *ServiceInstance) HasCapacityAt(at time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if s.cpuCores <= 0 {
 		return false
 	}
-
-	// Check if CPU utilization is below 100%
-	// Use the internal method to avoid re-acquiring the lock
-	utilization := s.cpuUtilizationAt(time.Now())
-	return utilization < 1.0
+	return s.cpuUtilizationAtLocked(at) < 1.0
 }
 
 // ActiveMemoryMB returns the active memory usage in MB (for internal use)
@@ -310,4 +315,27 @@ func (s *ServiceInstance) ActiveMemoryMB() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.activeMemoryMB
+}
+
+// EvictResourceState clears in-flight and queued accounting so a draining replica can be
+// removed on a hard drain timeout without leaving host utilization inconsistent.
+// It returns request IDs that were waiting in the instance queue so callers can mark
+// those requests failed. In-flight work is zeroed for host aggregation; completion
+// handlers may still run and will no-op against a removed instance.
+func (s *ServiceInstance) EvictResourceState(simTime time.Time) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var dropped []string
+	for _, id := range s.requestQueue {
+		if id != "" {
+			dropped = append(dropped, id)
+		}
+	}
+	s.activeRequests = 0
+	s.activeMemoryMB = 0
+	s.requestQueue = nil
+	s.cpuUsageInWindow = 0
+	s.windowStartTime = simTime
+	s.lastUpdate = simTime
+	return dropped
 }

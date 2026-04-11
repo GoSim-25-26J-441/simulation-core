@@ -38,6 +38,10 @@ service SimulationService {
 
   // GetRunConfiguration returns the current effective configuration for a running run.
   rpc GetRunConfiguration(GetRunConfigurationRequest) returns (GetRunConfigurationResponse);
+
+  // RenewOnlineLease extends the wall-clock lease for a running online optimization run
+  // when lease_ttl_ms is configured. Idempotent while the run is RUNNING.
+  rpc RenewOnlineLease(RenewOnlineLeaseRequest) returns (RenewOnlineLeaseResponse);
 }
 
 // ---- Requests / responses
@@ -142,6 +146,14 @@ message GetRunConfigurationResponse {
   RunConfiguration configuration = 1;
 }
 
+message RenewOnlineLeaseRequest {
+  string run_id = 1;
+}
+
+message RenewOnlineLeaseResponse {
+  Run run = 1;
+}
+
 message RunConfiguration {
   repeated ServiceConfigEntry services = 1;    // current replicas and per-instance resources per service
   repeated WorkloadPatternEntry workload = 2;  // current workload patterns (pattern_key, rate_rps)
@@ -225,9 +237,9 @@ message OptimizationConfig {
   int64 evaluation_duration_ms = 4;
 
   // When true, this optimization is an "online" controller that runs within a single
-  // long-lived simulation run. The simulator adjusts configuration dynamically using
-  // the existing dynamic configuration APIs instead of spawning separate evaluation
-  // runs. The run continues until it is explicitly stopped.
+  // simulation run. The simulator adjusts configuration dynamically using the existing
+  // dynamic configuration APIs. Wall-clock limits (max_online_duration_ms, lease, noop
+  // convergence) are enforced server-side unless allow_unbounded_online is set.
   bool online = 5;
 
   // Target p95 latency in milliseconds for online optimization. When > 0, the
@@ -278,9 +290,12 @@ message OptimizationConfig {
   // only when max host CPU utilization is below this (0.0–1.0). Default 0 (disabled).
   double scale_down_host_cpu_util_max = 15;
 
-  // Optional cap on total evaluation runs for batch optimization. When > 0, the
-  // optimizer stops after this many simulation runs (initial + neighbor evaluations).
-  // Ignored for online optimization. When 0, only max_iterations (improvement steps) applies.
+  // Optional cap on total simulation runs for batch optimization. Each logical
+  // candidate evaluation may execute multiple runs when reevaluations_per_candidate > 1;
+  // all of those runs count toward this cap. When > 0, the optimizer stops once the
+  // cap would be exceeded. When batch optimization is enabled (optimization.batch) and
+  // this is 0, the server applies a default cap (64 simulation runs). Ignored for online
+  // optimization. When 0 without batch, only max_iterations applies for hill-climbing.
   int32 max_evaluations = 16;
 
   // --- Scale-down policy (online controller) ---
@@ -309,8 +324,132 @@ message OptimizationConfig {
   // utilization is below this (0–1). Pairs with scale_down_host_cpu_util_max.
   double scale_down_host_mem_util_max = 24;
 
-  // Optional safety cap on online controller adjustment steps (0 = unlimited).
+  // Safety cap on online controller adjustment steps. When 0, the server derives
+  // ceil(max_online_duration_ms / control_interval_ms) after applying defaults and caps.
   int32 max_controller_steps = 25;
+
+  // Wall-clock maximum duration for an online run (milliseconds). When 0 and
+  // allow_unbounded_online is false, the server applies a default (e.g. 10m) and
+  // hard-caps to server_max_online_duration. When allow_unbounded_online is true,
+  // 0 means no wall-clock duration limit from this field.
+  int64 max_online_duration_ms = 26;
+
+  // When true, allows max_online_duration_ms == 0 with max_controller_steps == 0
+  // (no derived step cap) and skips mandatory lease for long runs. Use only when
+  // the client will explicitly stop the run.
+  bool allow_unbounded_online = 27;
+
+  // Stop the online run after this many consecutive control intervals with no
+  // configuration change (converged). When 0, the server applies a default based
+  // on control_interval_ms (at least 20 intervals and ~60s of wall time at the
+  // control cadence). Set to -1 to disable convergence-based stop.
+  int32 max_noop_intervals = 28;
+
+  // Wall-clock lease period (milliseconds) for heartbeat renewal. Required when
+  // effective max_online_duration_ms exceeds the server's heartbeat threshold (e.g. 10m)
+  // unless allow_unbounded_online is true. When > 0, the client must call RenewOnlineLease
+  // before each lease expires or the run completes with online_completion_reason=heartbeat_expired.
+  int64 lease_ttl_ms = 29;
+
+  // When set and online=false, batch beam-search optimization is used instead of the legacy
+  // hill-climbing loop. Legacy objective/step_size/max_iterations still accepted for compatibility.
+  BatchOptimizationConfig batch = 30;
+}
+
+// ---- Batch optimization (offline multi-eval recommendation engine)
+
+enum BatchSearchStrategy {
+  BATCH_SEARCH_STRATEGY_UNSPECIFIED = 0;
+  BATCH_SEARCH_STRATEGY_BEAM = 1;
+}
+
+enum BatchScalingAction {
+  BATCH_SCALING_ACTION_UNSPECIFIED = 0;
+  SERVICE_SCALE_OUT = 1;
+  SERVICE_SCALE_IN = 2;
+  SERVICE_SCALE_UP_CPU = 3;
+  SERVICE_SCALE_DOWN_CPU = 4;
+  SERVICE_SCALE_UP_MEMORY = 5;
+  SERVICE_SCALE_DOWN_MEMORY = 6;
+  HOST_SCALE_OUT = 7;
+  HOST_SCALE_IN = 8;
+  HOST_SCALE_UP_CPU = 9;
+  HOST_SCALE_DOWN_CPU = 10;
+  HOST_SCALE_UP_MEMORY = 11;
+  HOST_SCALE_DOWN_MEMORY = 12;
+}
+
+message UtilizationBand {
+  double low = 1;
+  double high = 2;
+}
+
+message BatchStepSizes {
+  int32 replica_step = 1;
+  double service_cpu_ratio = 2;
+  double service_memory_ratio = 3;
+  int32 host_count_step = 4;
+  int32 host_cpu_step_cores = 5;
+  int32 host_memory_step_gb = 6;
+}
+
+message BatchCostWeights {
+  double service_cpu = 1;
+  double service_memory_gb = 2;
+  double replicas = 3;
+  double hosts = 4;
+  double host_cpu = 5;
+  double host_memory_gb = 6;
+  double churn = 7;
+}
+
+message BatchPenaltyWeights {
+  double p95 = 1;
+  double p99 = 2;
+  double error_rate = 3;
+  double throughput = 4;
+  double service_cpu_balance = 5;
+  double service_memory_balance = 6;
+  double host_cpu_balance = 7;
+  double host_memory_balance = 8;
+}
+
+message BatchOptimizationConfig {
+  BatchSearchStrategy search_strategy = 1;
+  repeated BatchScalingAction allowed_actions = 2;
+  optional bool freeze_workload = 3;
+  optional bool freeze_policies = 4;
+  double max_p95_latency_ms = 5;
+  double max_p99_latency_ms = 6;
+  double max_error_rate = 7;
+  double min_throughput_rps = 8;
+  UtilizationBand service_cpu_utilization_band = 9;
+  UtilizationBand service_memory_utilization_band = 10;
+  UtilizationBand host_cpu_utilization_band = 11;
+  UtilizationBand host_memory_utilization_band = 12;
+  int32 min_hosts = 13;
+  int32 max_hosts = 14;
+  int32 min_replicas_per_service = 15;
+  int32 max_replicas_per_service = 16;
+  double min_cpu_cores_per_instance = 17;
+  double max_cpu_cores_per_instance = 18;
+  double min_memory_mb_per_instance = 19;
+  double max_memory_mb_per_instance = 20;
+  int32 min_host_cpu_cores = 21;
+  int32 max_host_cpu_cores = 22;
+  int32 min_host_memory_gb = 23;
+  int32 max_host_memory_gb = 24;
+  BatchStepSizes step_sizes = 25;
+  int32 beam_width = 26;
+  int32 max_search_depth = 27;
+  int32 max_neighbors_per_state = 28;
+  int32 reevaluations_per_candidate = 29;
+  int32 infeasible_beam_width = 30;
+  BatchCostWeights cost_weights = 31;
+  BatchPenaltyWeights penalty_weights = 32;
+  // Optional: when unset, server defaults apply (local refinement on; deterministic seeds on).
+  optional bool enable_local_refinement = 33;
+  optional bool deterministic_candidate_seeds = 34;
 }
 
 message Run {
@@ -326,12 +465,25 @@ message Run {
 
   // For optimization runs: the best run ID and score found.
   string best_run_id = 7;
+  // For batch optimization, best_score remains a legacy compatibility scalar containing efficiency only; clients should use batch_recommendation_feasible, batch_violation_score, batch_efficiency_score, and batch_recommendation_summary for the full result.
+  // For non-batch (hill-climbing) optimization, best_score is the objective value for the best configuration.
   double best_score = 8;
   int32 iterations = 9;
 
   // For optimization runs: run IDs of candidate configurations (from the optimizer).
   // When SIMD_OPTIMIZATION_TOP_CANDIDATES is set to N, only the top N by score are included (best run always included).
   repeated string candidate_run_ids = 10;
+
+  // When status is RUN_STATUS_COMPLETED for an online run stopped by server limits,
+  // identifies why: duration_limit, controller_steps_limit, converged, heartbeat_expired.
+  string online_completion_reason = 11;
+
+  // Batch optimization (offline): feasibility and structured scores for the recommended config.
+  bool batch_recommendation_feasible = 12;
+  double batch_violation_score = 13;
+  double batch_efficiency_score = 14;
+  // Human-readable summary (e.g. infeasible set empty, least-violating chosen).
+  string batch_recommendation_summary = 15;
 }
 
 enum RunStatus {
@@ -357,6 +509,14 @@ message RunMetrics {
   double throughput_rps = 8;
 
   repeated ServiceMetrics service_metrics = 9;
+  // Per-host utilization when the simulator records host-level CPU/memory gauges.
+  repeated HostMetrics host_metrics = 10;
+}
+
+message HostMetrics {
+  string host_id = 1;
+  double cpu_utilization = 2;
+  double memory_utilization = 3;
 }
 
 message ServiceMetrics {

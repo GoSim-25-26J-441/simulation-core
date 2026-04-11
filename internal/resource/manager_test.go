@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -492,6 +493,39 @@ func TestManagerAllocateMemoryErrorCases(t *testing.T) {
 	}
 }
 
+func TestManagerAllocateMemoryHostCapacitySentinel(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4, MemoryGB: 1},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2},
+				},
+			},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	instanceID := m.GetInstancesForService("svc1")[0].ID()
+	if err := m.AllocateMemory(instanceID, 900.0); err != nil {
+		t.Fatalf("first AllocateMemory: %v", err)
+	}
+	err := m.AllocateMemory(instanceID, 200.0)
+	if err == nil {
+		t.Fatalf("expected host capacity error")
+	}
+	if !errors.Is(err, ErrHostMemoryCapacity) {
+		t.Fatalf("want ErrHostMemoryCapacity, got %v", err)
+	}
+}
+
 func TestManagerAllocateCPUErrorCases(t *testing.T) {
 	m := NewManager()
 
@@ -948,6 +982,41 @@ func TestManagerUpdateServiceResourcesMemoryDownsizeRejected(t *testing.T) {
 	inst.AllocateMemory(100)
 	if err := m.UpdateServiceResourcesWithHeadroom("svc1", 0, 50, 16); err == nil {
 		t.Fatal("expected error when new memory limit is below active usage plus headroom")
+	}
+}
+
+func TestProcessDrainingInstancesTimeoutEvictsBusyInstance(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4},
+			{ID: "host-2", Cores: 4},
+		},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, Model: "cpu"},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	t0 := time.Unix(1000, 0)
+	if err := m.ScaleServiceWithOptions("svc1", 1, ScaleServiceOptions{SimTime: t0, DrainTimeout: time.Second}); err != nil {
+		t.Fatalf("ScaleServiceWithOptions: %v", err)
+	}
+	var draining *ServiceInstance
+	for _, inst := range m.GetInstancesForService("svc1") {
+		if inst.Lifecycle() == InstanceDraining {
+			draining = inst
+			break
+		}
+	}
+	if draining == nil {
+		t.Fatal("expected one draining instance")
+	}
+	draining.AllocateMemory(64)
+	m.ProcessDrainingInstances(t0.Add(2 * time.Second))
+	if n := len(m.GetInstancesForService("svc1")); n != 1 {
+		t.Fatalf("expected 1 instance after forced timeout eviction, got %d", n)
 	}
 }
 

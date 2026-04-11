@@ -1,6 +1,7 @@
 package simd
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -46,6 +47,58 @@ func TestRunStoreCreateDuplicate(t *testing.T) {
 	_, err = store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "y"})
 	if err == nil {
 		t.Fatalf("expected duplicate error")
+	}
+}
+
+func TestRunStoreCreate_RejectsBatchWithOnline(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-batch-online", &simulationv1.RunInput{
+		ScenarioYaml: "hosts: []",
+		Optimization: &simulationv1.OptimizationConfig{
+			Online: true,
+			Batch:  &simulationv1.BatchOptimizationConfig{BeamWidth: 2},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error when batch and online are both set")
+	}
+	if !strings.Contains(err.Error(), "batch optimization cannot be used with online=true") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunStoreCreate_RejectsInvalidBatchSpec(t *testing.T) {
+	store := NewRunStore()
+	yaml := `hosts:
+  - id: h1
+    cores: 4
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /x
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0.5
+        net_latency_ms: { mean: 1, sigma: 0.1 }
+workload:
+  - from: c
+    to: svc1:/x
+    arrival: { type: poisson, rate_rps: 1 }
+`
+	_, err := store.Create("run-bad-batch", &simulationv1.RunInput{
+		ScenarioYaml: yaml,
+		Optimization: &simulationv1.OptimizationConfig{
+			Batch: &simulationv1.BatchOptimizationConfig{
+				ServiceCpuUtilizationBand: &simulationv1.UtilizationBand{Low: 0.9, High: 0.1},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid batch service utilization band")
+	}
+	if !strings.Contains(err.Error(), "batch optimization") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -447,5 +500,43 @@ func TestRunStoreAppendOptimizationStep(t *testing.T) {
 	err = store.AppendOptimizationStep("nonexistent", step)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("expected not found error, got: %v", err)
+	}
+}
+
+func TestSetStatusRunningWithOnlineConcurrencyGuardEnforcesCap(t *testing.T) {
+	store := NewRunStore()
+	lim := DefaultOnlineRunLimits()
+	lim.MaxConcurrentOnlineRuns = 1
+	store.SetOnlineLimits(lim)
+
+	minYAML := `hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+`
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50,
+	}
+	if _, err := store.Create("run-a", &simulationv1.RunInput{ScenarioYaml: minYAML, Optimization: opt}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Create("run-b", &simulationv1.RunInput{ScenarioYaml: minYAML, Optimization: opt}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.SetStatusRunningWithOnlineConcurrencyGuard("run-a"); err != nil {
+		t.Fatalf("first guard: %v", err)
+	}
+	_, err := store.SetStatusRunningWithOnlineConcurrencyGuard("run-b")
+	if !errors.Is(err, ErrOnlineRunConcurrencyLimit) {
+		t.Fatalf("expected ErrOnlineRunConcurrencyLimit, got %v", err)
 	}
 }

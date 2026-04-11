@@ -9,9 +9,20 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
+
+func mustScenarioState(t *testing.T, scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector) *scenarioState {
+	t.Helper()
+	policies := policy.NewPolicyManager(nil)
+	state, err := newScenarioState(scenario, rm, collector, policies)
+	if err != nil {
+		t.Fatalf("newScenarioState: %v", err)
+	}
+	return state
+}
 
 type mockOptimizationRunner struct{}
 
@@ -318,7 +329,8 @@ func TestRunExecutorOnlineControllerScalesUp(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 
 	// Allow a few control iterations.
 	time.Sleep(80 * time.Millisecond)
@@ -328,6 +340,87 @@ func TestRunExecutorOnlineControllerScalesUp(t *testing.T) {
 	replicas := rm.ActiveReplicas("svc1")
 	if replicas <= 1 {
 		t.Fatalf("expected replicas to scale up above 1, got %d", replicas)
+	}
+}
+
+// TestRunExecutorOnlineControllerMaxControllerStepsSignalsReason exercises the max_controller_steps
+// branch: after at least one control step, the next tick must signal controller_steps_limit (same path
+// as full online runs; completion reason is read via takeOnlineCompletionReason).
+func TestRunExecutorOnlineControllerMaxControllerStepsSignalsReason(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-max-controller-steps"
+
+	now := time.Now()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+		Workload: []config.WorkloadPattern{
+			{
+				From:    "client",
+				To:      "svc1:/test",
+				Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 10},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	wsStub, err := newWorkloadStateWithPatternsStub(runID, scenario, now)
+	if err != nil {
+		t.Fatalf("newWorkloadStateWithPatternsStub: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	for i := 0; i < 5; i++ {
+		metrics.RecordLatency(collector, 200.0, now.Add(time.Duration(i)*time.Millisecond), metrics.CreateServiceLabels("svc1"))
+	}
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.workloadStates[runID] = wsStub
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50.0,
+		ControlIntervalMs:  10,
+		StepSize:           1.0,
+		MaxControllerSteps: 1,
+		MaxNoopIntervals:   -1,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+
+	// First tick: scale (stepIndex 1). Second tick: stepIndex >= MaxControllerSteps -> signal.
+	time.Sleep(120 * time.Millisecond)
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+
+	reason := exec.takeOnlineCompletionReason(runID)
+	if reason != OnlineCompletionControllerSteps {
+		t.Fatalf("expected online completion reason %q, got %q", OnlineCompletionControllerSteps, reason)
 	}
 }
 
@@ -388,7 +481,8 @@ func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 
 	time.Sleep(80 * time.Millisecond)
 	cancel()
@@ -524,7 +618,8 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		state := mustScenarioState(t, scenario, rm, collector)
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 		time.Sleep(80 * time.Millisecond)
 		cancel()
 		time.Sleep(20 * time.Millisecond)
@@ -578,7 +673,8 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		state := mustScenarioState(t, scenario, rm, collector)
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 		time.Sleep(80 * time.Millisecond)
 		cancel()
 		time.Sleep(20 * time.Millisecond)
@@ -630,7 +726,8 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		state := mustScenarioState(t, scenario, rm, collector)
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 		time.Sleep(80 * time.Millisecond)
 		cancel()
 		time.Sleep(20 * time.Millisecond)
@@ -686,7 +783,8 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+		state := mustScenarioState(t, scenario, rm, collector)
+		go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 		time.Sleep(100 * time.Millisecond)
 		cancel()
 		time.Sleep(30 * time.Millisecond)
@@ -760,7 +858,8 @@ func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 
 	// Allow a few control iterations.
 	time.Sleep(80 * time.Millisecond)
@@ -843,7 +942,8 @@ func TestRunExecutorOnlineControllerScalesOutHostsBeforeVertical(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -921,7 +1021,8 @@ func TestRunExecutorOnlineControllerScaleInHosts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -1013,7 +1114,8 @@ func TestRunExecutorOnlineControllerIncreasesHostCapacityAtMaxHosts(t *testing.T
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm)
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
 
 	time.Sleep(100 * time.Millisecond)
 	cancel()

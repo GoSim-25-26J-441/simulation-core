@@ -126,6 +126,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for /online/renew-lease suffix
+	if strings.HasSuffix(path, "/online/renew-lease") {
+		runID := strings.TrimSuffix(path, "/online/renew-lease")
+		if r.Method == http.MethodPost {
+			s.handleRenewOnlineLease(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+
 	// Check for /workload suffix
 	if strings.HasSuffix(path, "/workload") {
 		runID := strings.TrimSuffix(path, "/workload")
@@ -182,12 +193,14 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	rec, err := s.store.Create(req.RunID, req.Input)
 	if err != nil {
 		switch {
+		case errors.Is(err, ErrInvalidOnlineRunInput):
+			s.writeError(w, http.StatusBadRequest, err.Error())
 		case strings.Contains(err.Error(), "already exists"):
 			s.writeError(w, http.StatusConflict, err.Error())
 		case strings.Contains(err.Error(), "cannot contain"):
 			s.writeError(w, http.StatusBadRequest, err.Error())
 		default:
-			s.writeError(w, http.StatusInternalServerError, err.Error())
+			s.writeError(w, http.StatusBadRequest, err.Error())
 		}
 		return
 	}
@@ -295,6 +308,8 @@ func (s *HTTPServer) handleStartRun(w http.ResponseWriter, _ *http.Request, runI
 			s.writeError(w, http.StatusConflict, err.Error())
 		case errors.Is(err, ErrRunIDMissing):
 			s.writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ErrOnlineRunConcurrencyLimit):
+			s.writeError(w, http.StatusTooManyRequests, err.Error())
 		default:
 			s.writeError(w, http.StatusInternalServerError, err.Error())
 		}
@@ -305,6 +320,25 @@ func (s *HTTPServer) handleStartRun(w http.ResponseWriter, _ *http.Request, runI
 	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"run": convertRunToJSON(updated.Run, rec.Input),
+	})
+}
+
+// handleRenewOnlineLease handles POST /v1/runs/{id}/online/renew-lease
+func (s *HTTPServer) handleRenewOnlineLease(w http.ResponseWriter, _ *http.Request, runID string) {
+	rec, err := s.Executor.RenewOnlineLease(runID)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrRunNotFound):
+			s.writeError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrRunIDMissing):
+			s.writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			s.writeError(w, http.StatusConflict, err.Error())
+		}
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"run": convertRunToJSON(rec.Run, rec.Input),
 	})
 }
 
@@ -1325,6 +1359,22 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 	if len(run.CandidateRunIds) > 0 {
 		result["candidate_run_ids"] = run.CandidateRunIds
 	}
+	if run.OnlineCompletionReason != "" {
+		result["online_completion_reason"] = run.OnlineCompletionReason
+	}
+	if run.GetBatchRecommendationSummary() != "" || run.GetBatchRecommendationFeasible() ||
+		run.GetBatchViolationScore() != 0 || run.GetBatchEfficiencyScore() != 0 {
+		result["batch_recommendation_feasible"] = run.GetBatchRecommendationFeasible()
+		result["batch_violation_score"] = run.GetBatchViolationScore()
+		result["batch_efficiency_score"] = run.GetBatchEfficiencyScore()
+		result["batch_recommendation_summary"] = run.GetBatchRecommendationSummary()
+		result["batch_score_breakdown"] = map[string]any{
+			"feasible":          run.GetBatchRecommendationFeasible(),
+			"violation_score":   run.GetBatchViolationScore(),
+			"efficiency_score":  run.GetBatchEfficiencyScore(),
+			"summary":           run.GetBatchRecommendationSummary(),
+		}
+	}
 
 	return result
 }
@@ -1479,6 +1529,23 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 			})
 		}
 		result["service_metrics"] = serviceMetrics
+	}
+
+	if len(metrics.HostMetrics) > 0 {
+		hm := make([]map[string]any, 0, len(metrics.HostMetrics))
+		for _, h := range metrics.HostMetrics {
+			if h == nil {
+				continue
+			}
+			hm = append(hm, map[string]any{
+				"host_id":             h.HostId,
+				"cpu_utilization":     h.CpuUtilization,
+				"memory_utilization":  h.MemoryUtilization,
+			})
+		}
+		if len(hm) > 0 {
+			result["host_metrics"] = hm
+		}
 	}
 
 	return result

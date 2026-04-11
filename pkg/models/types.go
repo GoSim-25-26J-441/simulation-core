@@ -41,6 +41,14 @@ type RunMetrics struct {
 	CPUUtilization     float64                    `json:"cpu_utilization"`
 	MemoryUtilization  float64                    `json:"memory_utilization"`
 	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
+	HostMetrics        map[string]*HostMetrics    `json:"host_metrics,omitempty"`
+}
+
+// HostMetrics holds utilization observed on a host (when the simulator records host-level gauges).
+type HostMetrics struct {
+	HostID              string  `json:"host_id"`
+	CPUUtilization      float64 `json:"cpu_utilization"`
+	MemoryUtilization   float64 `json:"memory_utilization"`
 }
 
 // ServiceMetrics contains metrics for a specific service

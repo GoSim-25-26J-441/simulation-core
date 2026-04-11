@@ -287,8 +287,9 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 	// Copy hosts
 	for i, host := range scenario.Hosts {
 		cloned.Hosts[i] = config.Host{
-			ID:    host.ID,
-			Cores: host.Cores,
+			ID:       host.ID,
+			Cores:    host.Cores,
+			MemoryGB: host.MemoryGB,
 		}
 	}
 

@@ -1923,3 +1923,83 @@ func TestHTTPServerUpdateWorkloadNotRunning(t *testing.T) {
 		t.Fatalf("expected status 400 when updating non-running run, got %d", rr.Code)
 	}
 }
+
+func TestHTTPServerRenewOnlineLease(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	rec, err := store.Create("http-lease-run", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+			LeaseTtlMs:         60_000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id+"/online/renew-lease", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	run, ok := resp["run"].(map[string]any)
+	if !ok || run["id"] != rec.Run.Id {
+		t.Fatalf("expected run with id %q in response, got %#v", rec.Run.Id, resp["run"])
+	}
+}
+
+func TestHTTPServerRenewOnlineLeaseNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/does-not-exist/online/renew-lease", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHTTPServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	rec, err := store.Create("http-no-lease-ttl", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:               true,
+			TargetP95LatencyMs:     50,
+			AllowUnboundedOnline:   true,
+			MaxOnlineDurationMs:    0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs/"+rec.Run.Id+"/online/renew-lease", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

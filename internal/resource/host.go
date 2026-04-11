@@ -2,6 +2,7 @@ package resource
 
 import (
 	"sync"
+	"time"
 )
 
 // Host represents a physical or virtual host with capacity constraints
@@ -132,6 +133,38 @@ func (h *Host) UpdateCPUUtilization(instances []InstanceUtilizationSource) {
 	totalCPUUsed := 0.0
 	for _, inst := range instances {
 		totalCPUUsed += inst.CPUUtilization() * inst.CPUCores()
+	}
+	h.mu.RLock()
+	cores := h.cpuCores
+	h.mu.RUnlock()
+	if cores > 0 {
+		util := totalCPUUsed / float64(cores)
+		if util > 1.0 {
+			util = 1.0
+		}
+		if util < 0.0 {
+			util = 0.0
+		}
+		h.SetCPUUtilization(util)
+	}
+}
+
+// UpdateCPUUtilizationFromInstancesAt is like UpdateCPUUtilization but evaluates each instance
+// at simTime so discrete-event simulation host gauges match instance windows.
+func (h *Host) UpdateCPUUtilizationFromInstancesAt(simTime time.Time, instances []*ServiceInstance) {
+	if len(instances) == 0 {
+		h.SetCPUUtilization(0)
+		return
+	}
+	if simTime.IsZero() {
+		simTime = time.Now()
+	}
+	totalCPUUsed := 0.0
+	for _, inst := range instances {
+		if inst == nil {
+			continue
+		}
+		totalCPUUsed += inst.CPUUtilizationAt(simTime) * inst.CPUCores()
 	}
 	h.mu.RLock()
 	cores := h.cpuCores

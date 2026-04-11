@@ -59,9 +59,13 @@ func getTopCandidatesN() int {
 }
 
 // buildTopCandidateRunIDs returns run IDs for candidates, optionally limited to top N by score (lower is better).
+// For batch optimization, ordering follows CompareBatchScores (feasible first, then violation, efficiency).
 // If n <= 0, all candidates are returned. The best run is always included when n > 0.
 // Each RunID appears at most once (duplicates from multiple history steps are removed).
 func buildTopCandidateRunIDs(r *improvement.ExperimentResult, n int) []string {
+	if r != nil && len(r.BatchCandidateRunIDs) > 0 {
+		return trimTopBatchCandidates(r.BatchCandidateRunIDs, r.BestRunID, n)
+	}
 	runs := make([]*improvement.RunContext, 0, len(r.Runs))
 	for _, rc := range r.Runs {
 		if rc != nil && rc.RunID != "" {
@@ -97,6 +101,35 @@ func buildTopCandidateRunIDs(r *improvement.ExperimentResult, n int) []string {
 	return out
 }
 
+func trimTopBatchCandidates(ordered []string, bestRunID string, n int) []string {
+	if n <= 0 || len(ordered) <= n {
+		out := make([]string, 0, len(ordered))
+		seen := make(map[string]bool)
+		for _, id := range ordered {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+		return out
+	}
+	out := make([]string, 0, n+1)
+	seen := make(map[string]bool)
+	for i := 0; i < len(ordered) && len(out) < n; i++ {
+		id := ordered[i]
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if bestRunID != "" && !seen[bestRunID] {
+		out = append(out, bestRunID)
+	}
+	return out
+}
+
 // optimizationRunnerAdapter adapts improvement.Orchestrator to simd.OptimizationRunner.
 // It creates a fresh orchestrator per run with the requested params.
 type optimizationRunnerAdapter struct {
@@ -105,12 +138,16 @@ type optimizationRunnerAdapter struct {
 }
 
 func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (bestRunID string, bestScore float64, iterations int32, candidateRunIDs []string, err error) {
+	objName := params.Objective
+	if objName == "" {
+		objName = "p95_latency_ms"
+	}
 	var utilTarget *improvement.UtilizationTarget
-	if (params.Objective == "cpu_utilization" || params.Objective == "memory_utilization") &&
+	if (objName == "cpu_utilization" || objName == "memory_utilization") &&
 		params.TargetUtilLow >= 0 && params.TargetUtilHigh <= 1 && params.TargetUtilLow < params.TargetUtilHigh {
 		utilTarget = &improvement.UtilizationTarget{Low: params.TargetUtilLow, High: params.TargetUtilHigh}
 	}
-	objective, err := improvement.NewObjectiveFunction(params.Objective, utilTarget)
+	objective, err := improvement.NewObjectiveFunction(objName, utilTarget)
 	if err != nil {
 		return "", 0, 0, nil, err
 	}
@@ -124,17 +161,8 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 		stepSize = 1.0
 	}
 
-	optimizer := improvement.NewOptimizer(objective, maxIter, stepSize).
-		WithProgressReporter(func(iter int, score float64) {
-			iterClamped := int32(math.Max(0, math.Min(float64(iter), float64(math.MaxInt32))))
-			a.store.SetOptimizationProgress(runID, iterClamped, score)
-		})
-	if params.MaxEvaluations > 0 {
-		optimizer = optimizer.WithMaxEvaluations(int(params.MaxEvaluations))
-	}
-	orchestrator := improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
+	var orchestrator *improvement.Orchestrator
 
-	// Run in goroutine so we can cancel active sub-runs when ctx is done
 	type result struct {
 		bestRunID       string
 		bestScore       float64
@@ -143,16 +171,45 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 		err             error
 	}
 	done := make(chan result, 1)
-	go func() {
-		r, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
-		if err != nil {
-			done <- result{err: err}
-			return
+
+	if params.Batch != nil {
+		orchestrator = improvement.NewOrchestrator(a.store, a.executor, improvement.NewOptimizer(objective, 1, 1.0), objective)
+		go func() {
+			r, err := orchestrator.RunBatchExperiment(ctx, scenario, durationMs, params.Batch, int(params.MaxEvaluations))
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			if r.Batch != nil {
+				// Structured batch fields (feasible, violation, efficiency, summary) are authoritative for UI/API.
+				_ = a.store.SetBatchRecommendation(runID, r.Batch.Feasible, r.Batch.BestScore.ViolationScore, r.Batch.BestScore.EfficiencyScore, r.Batch.Summary)
+			}
+			iterClamped := int32(math.Max(0, math.Min(float64(r.Iterations), float64(math.MaxInt32))))
+			candidates := buildTopCandidateRunIDs(r, getTopCandidatesN())
+			// r.BestScore is efficiency-only for batch (legacy scalar path); do not use it alone for batch semantics.
+			done <- result{bestRunID: r.BestRunID, bestScore: r.BestScore, iterations: iterClamped, candidateRunIDs: candidates}
+		}()
+	} else {
+		optimizer := improvement.NewOptimizer(objective, maxIter, stepSize).
+			WithProgressReporter(func(iter int, score float64) {
+				iterClamped := int32(math.Max(0, math.Min(float64(iter), float64(math.MaxInt32))))
+				a.store.SetOptimizationProgress(runID, iterClamped, score)
+			})
+		if params.MaxEvaluations > 0 {
+			optimizer = optimizer.WithMaxEvaluations(int(params.MaxEvaluations))
 		}
-		iterClamped := int32(math.Max(0, math.Min(float64(r.Iterations), float64(math.MaxInt32))))
-		candidates := buildTopCandidateRunIDs(r, getTopCandidatesN())
-		done <- result{bestRunID: r.BestRunID, bestScore: r.BestScore, iterations: iterClamped, candidateRunIDs: candidates}
-	}()
+		orchestrator = improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
+		go func() {
+			r, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
+			if err != nil {
+				done <- result{err: err}
+				return
+			}
+			iterClamped := int32(math.Max(0, math.Min(float64(r.Iterations), float64(math.MaxInt32))))
+			candidates := buildTopCandidateRunIDs(r, getTopCandidatesN())
+			done <- result{bestRunID: r.BestRunID, bestScore: r.BestScore, iterations: iterClamped, candidateRunIDs: candidates}
+		}()
+	}
 
 	select {
 	case res := <-done:
@@ -164,7 +221,7 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 		if cancelErr := orchestrator.CancelActiveRuns(); cancelErr != nil {
 			logger.Warn("cancel active runs failed during optimization cancellation", "error", cancelErr)
 		}
-		<-done // Wait for RunExperiment to return
+		<-done
 		return "", 0, 0, nil, ctx.Err()
 	}
 }
@@ -184,6 +241,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
 	store := simd.NewRunStore()
+	store.SetOnlineLimits(simd.OnlineRunLimitsFromEnv())
 	executor := simd.NewRunExecutor(store, getCallbackWhitelist())
 	executor.SetOptimizationRunner(&optimizationRunnerAdapter{store: store, executor: executor})
 

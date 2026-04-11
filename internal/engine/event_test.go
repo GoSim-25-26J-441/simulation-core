@@ -233,6 +233,7 @@ func TestEventTypes(t *testing.T) {
 		EventTypeScaleUp,
 		EventTypeScaleDown,
 		EventTypeSimulationEnd,
+		EventTypeDrainSweep,
 	}
 
 	for _, eventType := range types {

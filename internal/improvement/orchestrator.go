@@ -9,6 +9,7 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/simd"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -23,6 +24,10 @@ type Orchestrator struct {
 	mu              sync.RWMutex
 	activeRuns      map[string]*RunContext
 	maxParallelRuns int // Maximum number of parallel runs
+
+	// batchCandidateStore is set only during RunBatchExperiment for hash→runID resolution.
+	batchCandMu       sync.Mutex
+	batchCandidateStore *CandidateStore
 }
 
 // RunContext tracks the context for a single optimization run
@@ -49,7 +54,9 @@ const (
 
 // ExperimentResult contains the results of an optimization experiment
 type ExperimentResult struct {
-	BestConfig        *config.Scenario
+	BestConfig *config.Scenario
+	// BestScore for legacy hill-climb is the objective value; for batch runs it is efficiency-only.
+	// Use Batch and BatchCandidateRunIDs (or Run batch_* protobuf fields) for full batch semantics.
 	BestScore         float64
 	BestRunID         string
 	Iterations        int
@@ -60,6 +67,10 @@ type ExperimentResult struct {
 	Duration          time.Duration
 	Converged         bool
 	ConvergenceReason string
+	// Batch is set when batch beam search was used (RunBatchExperiment).
+	Batch *BatchSearchResult
+	// BatchCandidateRunIDs lists candidate runs in CompareBatchScores order (batch runs only).
+	BatchCandidateRunIDs []string
 }
 
 // NewOrchestrator creates a new optimization orchestrator
@@ -144,33 +155,42 @@ func (o *Orchestrator) RunExperiment(ctx context.Context, initialConfig *config.
 
 // evaluateConfiguration runs a simulation for a given configuration and returns the objective score
 func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *config.Scenario, durationMs int64) (float64, error) {
-	// Convert scenario to YAML
+	metrics, err := o.evaluateConfigurationMetrics(ctx, scenario, durationMs, nil, 0)
+	if err != nil {
+		return 0, err
+	}
+	return o.evaluateRunScore(scenario, metrics)
+}
+
+// evaluateConfigurationMetrics runs one candidate simulation and returns metrics. When cand is non-nil,
+// registers ConfigHash(scenario)→runID for lookup. seed is passed to RunInput when > 0 (deterministic re-runs).
+func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenario *config.Scenario, durationMs int64, cand *CandidateStore, seed int64) (*simulationv1.RunMetrics, error) {
 	scenarioYAML, err := config.MarshalScenarioYAML(scenario)
 	if err != nil {
-		return 0, fmt.Errorf("failed to marshal scenario: %w", err)
+		return nil, fmt.Errorf("failed to marshal scenario: %w", err)
 	}
 
-	// Create run input
 	runInput := &simulationv1.RunInput{
 		ScenarioYaml: scenarioYAML,
 		DurationMs:   durationMs,
-		Seed:         0, // Use random seed for each run
+		Seed:         seed,
 	}
 
-	// Generate unique run ID using cryptographic random bytes for parallel execution safety
 	randomBytes := make([]byte, 8)
 	if _, err := rand.Read(randomBytes); err != nil {
-		return 0, fmt.Errorf("failed to generate run ID: %w", err)
+		return nil, fmt.Errorf("failed to generate run ID: %w", err)
 	}
 	runID := fmt.Sprintf("opt-%d-%s", time.Now().UnixNano(), hex.EncodeToString(randomBytes))
 
-	// Create run
 	_, err = o.store.Create(runID, runInput)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create run: %w", err)
+		return nil, fmt.Errorf("failed to create run: %w", err)
 	}
 
-	// Create run context
+	if cand != nil {
+		cand.Register(batchspec.ConfigHash(scenario), runID)
+	}
+
 	runCtx := &RunContext{
 		RunID:     runID,
 		Config:    scenario,
@@ -182,7 +202,6 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 	o.activeRuns[runID] = runCtx
 	o.mu.Unlock()
 
-	// Start the run
 	_, err = o.executor.Start(runID)
 	if err != nil {
 		o.mu.Lock()
@@ -190,36 +209,31 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 		runCtx.Error = err
 		runCtx.CompletedAt = time.Now()
 		o.mu.Unlock()
-		return 0, fmt.Errorf("failed to start run: %w", err)
+		return nil, fmt.Errorf("failed to start run: %w", err)
 	}
 
 	o.mu.Lock()
 	runCtx.Status = RunStatusRunning
 	o.mu.Unlock()
 
-	// Wait for completion (with timeout)
 	timeout := time.Duration(durationMs) * time.Millisecond
-	// For very short durations (likely tests), use a more reasonable minimum
 	if durationMs < 5000 {
-		// For test durations (< 5s), allow up to 10 seconds
 		if timeout < 10*time.Second {
 			timeout = 10 * time.Second
 		}
 	} else {
-		// For production durations, use longer timeout
 		if timeout < 30*time.Second {
-			timeout = 30 * time.Second // Minimum timeout
+			timeout = 30 * time.Second
 		}
-		timeout *= 2 // Allow some buffer for longer runs
+		timeout *= 2
 	}
 
 	completionCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Poll for completion - use faster polling for short durations (tests)
 	pollInterval := 500 * time.Millisecond
 	if durationMs < 5000 {
-		pollInterval = 100 * time.Millisecond // Faster polling for tests
+		pollInterval = 100 * time.Millisecond
 	}
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -227,7 +241,11 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 	for {
 		select {
 		case <-completionCtx.Done():
-			// Timeout or context cancelled
+			if o.executor != nil {
+				if _, stopErr := o.executor.Stop(runID); stopErr != nil {
+					logger.Debug("orchestrator timeout: Stop candidate run", "run_id", runID, "error", stopErr)
+				}
+			}
 			o.mu.Lock()
 			runCtx.Status = RunStatusFailed
 			if ctx.Err() != nil {
@@ -238,11 +256,10 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 			runCtx.CompletedAt = time.Now()
 			o.mu.Unlock()
 			if ctx.Err() != nil {
-				return 0, ctx.Err()
+				return nil, ctx.Err()
 			}
-			return 0, runCtx.Error
+			return nil, runCtx.Error
 		case <-ticker.C:
-			// Check run status
 			rec, ok := o.store.Get(runID)
 			if !ok {
 				o.mu.Lock()
@@ -250,12 +267,11 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 				runCtx.Error = fmt.Errorf("run not found")
 				runCtx.CompletedAt = time.Now()
 				o.mu.Unlock()
-				return 0, runCtx.Error
+				return nil, runCtx.Error
 			}
 
 			switch rec.Run.Status {
 			case simulationv1.RunStatus_RUN_STATUS_COMPLETED:
-				// Run completed successfully
 				metrics := rec.Metrics
 				if metrics == nil {
 					o.mu.Lock()
@@ -263,11 +279,8 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 					runCtx.Error = fmt.Errorf("run completed but no metrics available")
 					runCtx.CompletedAt = time.Now()
 					o.mu.Unlock()
-					return 0, runCtx.Error
+					return nil, runCtx.Error
 				}
-
-				// Evaluate objective. For cost objective, use configuration-based
-				// infrastructure cost so ranking reflects allocated vCPU/memory/replicas.
 				score, evalErr := o.evaluateRunScore(scenario, metrics)
 				if evalErr != nil {
 					o.mu.Lock()
@@ -275,7 +288,7 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 					runCtx.Error = fmt.Errorf("failed to evaluate objective: %w", evalErr)
 					runCtx.CompletedAt = time.Now()
 					o.mu.Unlock()
-					return 0, runCtx.Error
+					return nil, evalErr
 				}
 				o.mu.Lock()
 				runCtx.Status = RunStatusCompleted
@@ -285,22 +298,20 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 				o.mu.Unlock()
 
 				logger.Info("run completed", "run_id", runID, "score", score)
-				return score, nil
+				return metrics, nil
 
 			case simulationv1.RunStatus_RUN_STATUS_FAILED,
 				simulationv1.RunStatus_RUN_STATUS_CANCELLED,
 				simulationv1.RunStatus_RUN_STATUS_STOPPED:
-				// Run failed
 				o.mu.Lock()
 				runCtx.Status = RunStatusFailed
 				runCtx.Error = fmt.Errorf("run failed: %s", rec.Run.Error)
 				runCtx.CompletedAt = time.Now()
 				o.mu.Unlock()
-				return 0, runCtx.Error
+				return nil, runCtx.Error
 
 			case simulationv1.RunStatus_RUN_STATUS_RUNNING,
 				simulationv1.RunStatus_RUN_STATUS_PENDING:
-				// Still running, continue waiting
 				continue
 			}
 		}
@@ -319,10 +330,24 @@ func (o *Orchestrator) evaluateRunScore(scenario *config.Scenario, metrics *simu
 
 // findRunContextForConfig finds a run context that matches the given configuration
 func (o *Orchestrator) findRunContextForConfig(scenario *config.Scenario) *RunContext {
+	o.batchCandMu.Lock()
+	store := o.batchCandidateStore
+	o.batchCandMu.Unlock()
+
+	if store != nil {
+		if rid, ok := store.Lookup(batchspec.ConfigHash(scenario)); ok {
+			o.mu.RLock()
+			rc := o.activeRuns[rid]
+			o.mu.RUnlock()
+			if rc != nil {
+				return rc
+			}
+		}
+	}
+
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
-	// Simple matching: find run with matching service replica counts
 	for _, runCtx := range o.activeRuns {
 		if runCtx.Config != nil && configsMatch(runCtx.Config, scenario) {
 			return runCtx
@@ -335,6 +360,17 @@ func (o *Orchestrator) findRunContextForConfig(scenario *config.Scenario) *RunCo
 func configsMatch(c1, c2 *config.Scenario) bool {
 	if c1 == nil || c2 == nil {
 		return c1 == c2
+	}
+
+	// Compare hosts
+	if len(c1.Hosts) != len(c2.Hosts) {
+		return false
+	}
+	for i := range c1.Hosts {
+		h1, h2 := c1.Hosts[i], c2.Hosts[i]
+		if h1.ID != h2.ID || h1.Cores != h2.Cores || h1.MemoryGB != h2.MemoryGB {
+			return false
+		}
 	}
 
 	// Compare services

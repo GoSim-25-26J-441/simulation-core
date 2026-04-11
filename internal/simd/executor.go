@@ -27,11 +27,13 @@ type RunExecutor struct {
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
 
-	mu               sync.Mutex
-	cancels          map[string]context.CancelFunc
-	workloadStates   map[string]*WorkloadState    // key: runID
-	resourceManagers map[string]*resource.Manager // key: runID; for dynamic replica updates
-	policyManagers   map[string]*policy.Manager   // key: runID; for dynamic policy updates
+	mu                     sync.Mutex
+	cancels                map[string]context.CancelFunc
+	workloadStates         map[string]*WorkloadState    // key: runID
+	resourceManagers       map[string]*resource.Manager // key: runID; for dynamic replica updates
+	policyManagers         map[string]*policy.Manager   // key: runID; for dynamic policy updates
+	onlineCompletionReason map[string]string            // pending COMPLETED reason for online lease limits
+	onlineLeaseDeadline    map[string]time.Time         // wall-clock heartbeat deadline per run
 }
 
 // SetOptimizationRunner sets the optimization runner for multi-run experiments.
@@ -42,20 +44,38 @@ func (e *RunExecutor) SetOptimizationRunner(r OptimizationRunner) {
 	e.optimizationRunner = r
 }
 
+// defaultBatchMaxEvaluations is applied when optimization.batch is set and the client
+// omits optimization.max_evaluations (0). Hill-climbing runs keep 0 = unlimited.
+const defaultBatchMaxEvaluations int32 = 64
+
+func applyMaxEvaluationsFromOpt(params *OptimizationParams, opt *simulationv1.OptimizationConfig) {
+	if opt == nil {
+		return
+	}
+	if opt.MaxEvaluations > 0 {
+		params.MaxEvaluations = opt.MaxEvaluations
+	} else if opt.GetBatch() != nil {
+		params.MaxEvaluations = defaultBatchMaxEvaluations
+	}
+}
+
 var (
-	ErrRunNotFound  = errors.New("run not found")
-	ErrRunTerminal  = errors.New("run is terminal")
-	ErrRunIDMissing = errors.New("run_id is required")
+	ErrRunNotFound               = errors.New("run not found")
+	ErrRunTerminal               = errors.New("run is terminal")
+	ErrRunIDMissing              = errors.New("run_id is required")
+	ErrOnlineRunConcurrencyLimit = errors.New("online run concurrency limit")
 )
 
 func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 	return &RunExecutor{
-		store:            store,
-		notifier:         NewNotifierWithWhitelist(callbackWhitelist),
-		cancels:          make(map[string]context.CancelFunc),
-		workloadStates:   make(map[string]*WorkloadState),
-		resourceManagers: make(map[string]*resource.Manager),
-		policyManagers:   make(map[string]*policy.Manager),
+		store:                  store,
+		notifier:               NewNotifierWithWhitelist(callbackWhitelist),
+		cancels:                make(map[string]context.CancelFunc),
+		workloadStates:         make(map[string]*WorkloadState),
+		resourceManagers:       make(map[string]*resource.Manager),
+		policyManagers:         make(map[string]*policy.Manager),
+		onlineCompletionReason: make(map[string]string),
+		onlineLeaseDeadline:    make(map[string]time.Time),
 	}
 }
 
@@ -66,22 +86,7 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 		return nil, ErrRunIDMissing
 	}
 
-	rec, ok := e.store.Get(runID)
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
-	}
-
-	switch rec.Run.Status {
-	case simulationv1.RunStatus_RUN_STATUS_RUNNING:
-		return rec, nil
-	case simulationv1.RunStatus_RUN_STATUS_COMPLETED,
-		simulationv1.RunStatus_RUN_STATUS_FAILED,
-		simulationv1.RunStatus_RUN_STATUS_CANCELLED,
-		simulationv1.RunStatus_RUN_STATUS_STOPPED:
-		return nil, fmt.Errorf("%w: %s", ErrRunTerminal, runID)
-	}
-
-	updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	updated, err := e.store.SetStatusRunningWithOnlineConcurrencyGuard(runID)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +103,7 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	// Optimization runs can use either the batch optimizer (multi-run) or the
 	// online controller mode, which adjusts configuration within a single long-
 	// running simulation.
-	if opt := rec.Input.Optimization; opt != nil {
+	if opt := updated.Input.Optimization; opt != nil {
 		if opt.Online {
 			go e.runOnlineOptimization(ctx, runID)
 		} else {
@@ -152,7 +157,92 @@ func (e *RunExecutor) cleanup(runID string) {
 	}
 	delete(e.resourceManagers, runID)
 	delete(e.policyManagers, runID)
+	delete(e.onlineCompletionReason, runID)
+	delete(e.onlineLeaseDeadline, runID)
 	e.mu.Unlock()
+}
+
+// signalOnlineLeaseEnd requests a normal completion for an online run (COMPLETED + online_completion_reason).
+// It stops the engine and cancels the run context; runOnlineOptimization finalizes metrics and status.
+func (e *RunExecutor) signalOnlineLeaseEnd(runID, reason string) {
+	e.mu.Lock()
+	if e.onlineCompletionReason == nil {
+		e.onlineCompletionReason = make(map[string]string)
+	}
+	e.onlineCompletionReason[runID] = reason
+	cancel := e.cancels[runID]
+	ws := e.workloadStates[runID]
+	e.mu.Unlock()
+
+	if ws != nil {
+		if eng := ws.Engine(); eng != nil {
+			eng.Stop()
+		}
+	}
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (e *RunExecutor) takeOnlineCompletionReason(runID string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.onlineCompletionReason == nil {
+		return ""
+	}
+	r := e.onlineCompletionReason[runID]
+	delete(e.onlineCompletionReason, runID)
+	return r
+}
+
+func (e *RunExecutor) setOnlineLeaseDeadline(runID string, deadline time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.onlineLeaseDeadline == nil {
+		e.onlineLeaseDeadline = make(map[string]time.Time)
+	}
+	e.onlineLeaseDeadline[runID] = deadline
+}
+
+func (e *RunExecutor) onlineLeaseExpired(runID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.onlineLeaseDeadline == nil {
+		return false
+	}
+	until, ok := e.onlineLeaseDeadline[runID]
+	return ok && !until.IsZero() && time.Now().After(until)
+}
+
+// RenewOnlineLease extends the wall-clock lease for a running online run that uses lease_ttl_ms.
+func (e *RunExecutor) RenewOnlineLease(runID string) (*RunRecord, error) {
+	if runID == "" {
+		return nil, ErrRunIDMissing
+	}
+	rec, ok := e.store.Get(runID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		return nil, fmt.Errorf("run is not running")
+	}
+	opt := rec.Input.GetOptimization()
+	if opt == nil || !opt.Online || opt.GetLeaseTtlMs() <= 0 {
+		return nil, fmt.Errorf("lease not configured for this run")
+	}
+	ttl := time.Duration(opt.GetLeaseTtlMs()) * time.Millisecond
+	e.mu.Lock()
+	if e.onlineLeaseDeadline == nil {
+		e.onlineLeaseDeadline = make(map[string]time.Time)
+	}
+	e.onlineLeaseDeadline[runID] = time.Now().Add(ttl)
+	e.mu.Unlock()
+
+	rec2, ok := e.store.Get(runID)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+	return rec2, nil
 }
 
 // getCallbackSecret extracts the callback secret from a run record, returning empty string if not set
@@ -223,11 +313,12 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		if opt.StepSize > 0 {
 			params.StepSize = opt.StepSize
 		}
-		if opt.MaxEvaluations > 0 {
-			params.MaxEvaluations = opt.MaxEvaluations
-		}
+		applyMaxEvaluationsFromOpt(params, opt)
 		params.TargetUtilLow = opt.GetTargetUtilLow()
 		params.TargetUtilHigh = opt.GetTargetUtilHigh()
+		if opt.GetBatch() != nil {
+			params.Batch = opt.GetBatch()
+		}
 	}
 
 	// Determine evaluation duration for each candidate run in the optimization.
@@ -243,7 +334,8 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		durationMs = 10000 // 10 seconds default
 	}
 
-	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective, "max_iterations", params.MaxIterations)
+	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective,
+		"max_iterations", params.MaxIterations, "max_evaluations", params.MaxEvaluations, "batch", params.Batch != nil)
 
 	bestRunID, bestScore, iterations, candidateRunIDs, err := runner.RunExperiment(ctx, runID, scenario, durationMs, params)
 	if err != nil {
@@ -280,6 +372,49 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	} else {
 		logger.Info("optimization completed", "run_id", runID,
 			"best_run_id", bestRunID, "best_score", bestScore, "iterations", iterations)
+		e.sendNotificationIfConfigured(updated)
+	}
+}
+
+// finalizeOnlineOptimizationRun aggregates metrics and marks the run COMPLETED with an optional online_completion_reason.
+func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *config.Scenario, rm *resource.Manager, metricsCollector *metrics.Collector, onlineReason string) {
+	metricsCollector.Stop()
+	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
+	for _, svc := range scenario.Services {
+		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
+	}
+	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
+	attachHostMetrics(scenario, engineMetrics, metricsCollector)
+	for _, svc := range scenario.Services {
+		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
+			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
+		}
+	}
+	pbMetrics := convertMetricsToProto(engineMetrics)
+	if err := e.store.SetMetrics(runID, pbMetrics); err != nil {
+		logger.Error("failed to set metrics for online run", "run_id", runID, "error", err)
+	}
+	if onlineReason != "" {
+		if err := e.store.SetOnlineCompletionReason(runID, onlineReason); err != nil {
+			logger.Error("failed to set online completion reason", "run_id", runID, "error", err)
+		}
+	}
+	rec, ok := e.store.Get(runID)
+	if !ok || rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		return
+	}
+	n := len(rec.OptimizationHistory)
+	steps := int32(n)
+	if n > math.MaxInt32 {
+		steps = math.MaxInt32
+	}
+	if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
+		logger.Error("failed to set optimization result for online run", "run_id", runID, "error", err)
+	}
+	if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		logger.Error("failed to set completed status for online run", "run_id", runID, "error", err)
+	} else {
+		logger.Info("online optimization run completed", "run_id", runID, "online_completion_reason", onlineReason)
 		e.sendNotificationIfConfigured(updated)
 	}
 }
@@ -385,6 +520,8 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	// Initialize workload state for continuous event generation
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(onlineRunDuration)
+	state.SetSimEndTime(endTime)
+	ScheduleDrainSweepKickoff(eng, startTime)
 	workloadState := NewWorkloadState(runID, eng, endTime)
 	if err := workloadState.Start(scenario, startTime, true); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
@@ -403,14 +540,39 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	e.policyManagers[runID] = policies
 	e.mu.Unlock()
 
-	// Start the online controller loop
-	go e.runOnlineController(ctx, runID, scenario, metricsCollector, opt, rm)
+	if opt.GetLeaseTtlMs() > 0 {
+		ttl := time.Duration(opt.GetLeaseTtlMs()) * time.Millisecond
+		e.setOnlineLeaseDeadline(runID, time.Now().Add(ttl))
+	}
 
-	// Run simulation; expect it to be stopped explicitly via StopRun.
+	if opt.GetMaxOnlineDurationMs() > 0 {
+		wallDur := time.Duration(opt.GetMaxOnlineDurationMs()) * time.Millisecond
+		go func() {
+			timer := time.NewTimer(wallDur)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				e.signalOnlineLeaseEnd(runID, OnlineCompletionDurationLimit)
+			}
+		}()
+	}
+
+	// Start the online controller loop
+	go e.runOnlineController(ctx, runID, scenario, metricsCollector, opt, rm, state)
+
+	// Run simulation; wall-clock limits use signalOnlineLeaseEnd; explicit stop uses StopRun.
 	logger.Info("starting online optimization run", "run_id", runID, "duration", onlineRunDuration)
 	if err := eng.Run(onlineRunDuration); err != nil {
 		// If cancelled, handle based on current run status.
 		if ctx.Err() != nil {
+			reason := e.takeOnlineCompletionReason(runID)
+			if reason != "" {
+				e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason)
+				return
+			}
+
 			rec, ok := e.store.Get(runID)
 			if !ok {
 				logger.Info("online simulation cancelled; run record not found", "run_id", runID)
@@ -430,6 +592,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 					serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 				}
 				engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
+				attachHostMetrics(scenario, engineMetrics, metricsCollector)
 				for _, svc := range scenario.Services {
 					if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
 						sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
@@ -478,44 +641,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	logger.Info("online simulation completed", "run_id", runID,
 		"simulation_duration", simDuration,
 		"expected_duration", onlineRunDuration)
-
-	metricsCollector.Stop()
-
-	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
-		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
-	}
-	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
-	for _, svc := range scenario.Services {
-		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
-			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
-		}
-	}
-
-	pbMetrics := convertMetricsToProto(engineMetrics)
-	if err := e.store.SetMetrics(runID, pbMetrics); err != nil {
-		logger.Error("failed to set metrics", "run_id", runID, "error", err)
-	}
-
-	// Mark as completed if still running
-	rec, ok = e.store.Get(runID)
-	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
-		// Set optimization result so callback includes best_run_id and top_candidates (self).
-		n := len(rec.OptimizationHistory)
-		steps := int32(n)
-		if n > math.MaxInt32 {
-			steps = math.MaxInt32
-		}
-		if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
-			logger.Error("failed to set optimization result for online run", "run_id", runID, "error", err)
-		}
-		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
-			logger.Error("failed to set completed status", "run_id", runID, "error", err)
-		} else {
-			logger.Info("online optimization run completed", "run_id", runID)
-			e.sendNotificationIfConfigured(updated)
-		}
-	}
+	e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, "")
 }
 
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
@@ -613,6 +739,8 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Initialize workload state for continuous event generation
 	startTime := eng.GetSimTime()
 	endTime := startTime.Add(duration)
+	state.SetSimEndTime(endTime)
+	ScheduleDrainSweepKickoff(eng, startTime)
 	workloadState := NewWorkloadState(runID, eng, endTime)
 	if err := workloadState.Start(scenario, startTime, rec.Input.RealTimeMode); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
@@ -668,6 +796,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Convert metrics collector data to RunMetrics
 	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
+	attachHostMetrics(scenario, engineMetrics, metricsCollector)
 	// For completed runs, use simulation duration for throughput so non-real-time
 	// mode reports requests over simulated time instead of wall-clock execution time.
 	if simDuration > 0 {
@@ -809,6 +938,7 @@ func (e *RunExecutor) runOnlineController(
 	collector *metrics.Collector,
 	opt *simulationv1.OptimizationConfig,
 	rm *resource.Manager,
+	state *scenarioState,
 ) {
 	if opt == nil {
 		return
@@ -877,11 +1007,18 @@ func (e *RunExecutor) runOnlineController(
 
 	lastScaleWall := time.Time{}
 	stableRepDown := make(map[string]int)
+	stableHostScaleIn := 0
+	stableHostCPUDown := 0
+	stableHostMemDown := 0
+	stableVertCPUDown := make(map[string]int)
+	stableVertMemDown := make(map[string]int)
 	prevErrFrac := -1.0
 	intervalMs := int64(interval / time.Millisecond)
 	if intervalMs < 1 {
 		intervalMs = 1
 	}
+	var noopStreak int32
+	maxStepsNoticeLogged := false
 
 	for {
 		select {
@@ -889,7 +1026,29 @@ func (e *RunExecutor) runOnlineController(
 			return
 		case <-ticker.C:
 			stepIndexBefore := stepIndex
+			if lt := rm.LastSimTime(); !lt.IsZero() {
+				dropped := rm.ProcessDrainingInstances(lt)
+				e.mu.Lock()
+				ws := e.workloadStates[runID]
+				e.mu.Unlock()
+				if ws != nil {
+					if eng := ws.Engine(); eng != nil {
+						failDroppedQueueRequests(eng, state, lt, dropped)
+					}
+				}
+			}
+			if opt.GetLeaseTtlMs() > 0 && e.onlineLeaseExpired(runID) {
+				e.signalOnlineLeaseEnd(runID, OnlineCompletionHeartbeatExpired)
+				continue
+			}
 			if opt.GetMaxControllerSteps() > 0 && stepIndex >= opt.GetMaxControllerSteps() {
+				if !maxStepsNoticeLogged {
+					logger.Warn("online controller reached max_controller_steps; stopping simulation",
+						"run_id", runID,
+						"max_controller_steps", opt.GetMaxControllerSteps())
+					maxStepsNoticeLogged = true
+				}
+				e.signalOnlineLeaseEnd(runID, OnlineCompletionControllerSteps)
 				continue
 			}
 			cooldown := time.Duration(opt.GetScaleDownCooldownMs()) * time.Millisecond
@@ -915,6 +1074,7 @@ func (e *RunExecutor) runOnlineController(
 
 			// Snapshot metrics
 			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
+			attachHostMetrics(scenario, runMetrics, collector)
 			currentP95 := runMetrics.LatencyP95
 
 			// Compute current score from primary target (same metric used for scaling decisions)
@@ -990,8 +1150,14 @@ func (e *RunExecutor) runOnlineController(
 				}
 			}
 
-			// Host-level scale-in: when P95 and host CPU are low, remove empty hosts down to min_hosts.
-			if scaleDownHostCPUMax > 0 && currentP95 < targetP95*0.7 && hostCount > minHosts && maxHostCPU < scaleDownHostCPUMax {
+			// Host-level scale-in (stabilized): when P95 and host CPU are low, remove empty hosts.
+			hostScaleInCond := scaleDownHostCPUMax > 0 && currentP95 < targetP95*0.7 && hostCount > minHosts && maxHostCPU < scaleDownHostCPUMax
+			if hostScaleInCond {
+				stableHostScaleIn++
+			} else {
+				stableHostScaleIn = 0
+			}
+			if hostScaleInCond && stableHostScaleIn >= stabTicks {
 				prevConfig, _ := e.GetRunConfiguration(runID)
 				if err := rm.ScaleInHosts(hostCount - 1); err != nil {
 					logger.Debug("online controller scale-in hosts skipped",
@@ -999,6 +1165,7 @@ func (e *RunExecutor) runOnlineController(
 						"host_count", hostCount,
 						"error", err)
 				} else if rm.HostCount() < hostCount {
+					stableHostScaleIn = 0
 					logger.Info("online controller scaled in hosts",
 						"run_id", runID,
 						"previous_hosts", hostCount,
@@ -1013,71 +1180,78 @@ func (e *RunExecutor) runOnlineController(
 				}
 			}
 
-			// Decrease host capacity when host CPU is low and we are above initial scenario capacity.
-			if scaleDownHostCPUMax > 0 && hostCount >= minHosts && maxHostCPU < scaleDownHostCPUMax {
-				var currentHostCores int
-				for _, hid := range rm.HostIDs() {
-					if h, ok := rm.GetHost(hid); ok {
-						currentHostCores = h.CPUCores()
-						break
-					}
+			var currentHostCores int
+			for _, hid := range rm.HostIDs() {
+				if h, ok := rm.GetHost(hid); ok {
+					currentHostCores = h.CPUCores()
+					break
 				}
-				if currentHostCores > initialHostCores {
-					hostCPUStep := int(math.Ceil(opt.StepSize))
-					if hostCPUStep < 1 {
-						hostCPUStep = 1
-					}
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					if err := rm.DecreaseHostCapacity(-hostCPUStep, 0); err != nil {
-						logger.Debug("online controller decrease host capacity skipped",
-							"run_id", runID,
-							"error", err)
-					} else {
-						logger.Info("online controller decreased host capacity",
-							"run_id", runID,
-							"cpu_step", hostCPUStep,
-							"host_count", rm.HostCount())
-						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-							stepIndex++
-							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-								"host utilization low, decreased host CPU capacity",
-								prevConfig, currConfig)
-						}
+			}
+			hostCPUDownCond := scaleDownHostCPUMax > 0 && hostCount >= minHosts && maxHostCPU < scaleDownHostCPUMax && currentHostCores > initialHostCores
+			if hostCPUDownCond {
+				stableHostCPUDown++
+			} else {
+				stableHostCPUDown = 0
+			}
+			if hostCPUDownCond && stableHostCPUDown >= stabTicks {
+				hostCPUStep := int(math.Ceil(opt.StepSize))
+				if hostCPUStep < 1 {
+					hostCPUStep = 1
+				}
+				prevConfig, _ := e.GetRunConfiguration(runID)
+				if err := rm.DecreaseHostCapacity(-hostCPUStep, 0); err != nil {
+					logger.Debug("online controller decrease host capacity skipped",
+						"run_id", runID,
+						"error", err)
+				} else {
+					stableHostCPUDown = 0
+					logger.Info("online controller decreased host capacity",
+						"run_id", runID,
+						"cpu_step", hostCPUStep,
+						"host_count", rm.HostCount())
+					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+						stepIndex++
+						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+							"host utilization low, decreased host CPU capacity",
+							prevConfig, currConfig)
 					}
 				}
 			}
 
-			// Decrease host memory capacity when host memory utilization is low and we are
-			// above the initial scenario memory footprint.
-			if scaleDownHostMemMax > 0 && hostCount >= minHosts && maxHostMem < scaleDownHostMemMax {
-				var currentHostMemGB int
-				for _, hid := range rm.HostIDs() {
-					if h, ok := rm.GetHost(hid); ok {
-						currentHostMemGB = h.MemoryGB()
-						break
-					}
+			var currentHostMemGB int
+			for _, hid := range rm.HostIDs() {
+				if h, ok := rm.GetHost(hid); ok {
+					currentHostMemGB = h.MemoryGB()
+					break
 				}
-				if currentHostMemGB > initialHostMemGB {
-					hostMemStep := int(math.Ceil(opt.StepSize))
-					if hostMemStep < 1 {
-						hostMemStep = 1
-					}
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					if err := rm.DecreaseHostCapacity(0, -hostMemStep); err != nil {
-						logger.Debug("online controller decrease host memory skipped",
-							"run_id", runID,
-							"error", err)
-					} else {
-						logger.Info("online controller decreased host memory capacity",
-							"run_id", runID,
-							"memory_gb_step", hostMemStep,
-							"host_count", rm.HostCount())
-						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-							stepIndex++
-							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-								"host memory utilization low, decreased host memory capacity",
-								prevConfig, currConfig)
-						}
+			}
+			hostMemDownCond := scaleDownHostMemMax > 0 && hostCount >= minHosts && maxHostMem < scaleDownHostMemMax && currentHostMemGB > initialHostMemGB
+			if hostMemDownCond {
+				stableHostMemDown++
+			} else {
+				stableHostMemDown = 0
+			}
+			if hostMemDownCond && stableHostMemDown >= stabTicks {
+				hostMemStep := int(math.Ceil(opt.StepSize))
+				if hostMemStep < 1 {
+					hostMemStep = 1
+				}
+				prevConfig, _ := e.GetRunConfiguration(runID)
+				if err := rm.DecreaseHostCapacity(0, -hostMemStep); err != nil {
+					logger.Debug("online controller decrease host memory skipped",
+						"run_id", runID,
+						"error", err)
+				} else {
+					stableHostMemDown = 0
+					logger.Info("online controller decreased host memory capacity",
+						"run_id", runID,
+						"memory_gb_step", hostMemStep,
+						"host_count", rm.HostCount())
+					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+						stepIndex++
+						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
+							"host memory utilization low, decreased host memory capacity",
+							prevConfig, currConfig)
 					}
 				}
 			}
@@ -1186,31 +1360,56 @@ func (e *RunExecutor) runOnlineController(
 					}
 				}
 
-				// Utilization-primary: optional vertical CPU/memory downscale when replicas unchanged.
-				if primaryTarget == "cpu_utilization" && svcCPUUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas {
-					if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
-						!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac) {
-						nc := currentCores - cpuStep
-						if minCPUCtl > 0 && nc < minCPUCtl {
-							nc = minCPUCtl
-						}
-						if nc+1e-9 < currentCores {
-							newCPUCores = nc
-							scaledVertically = true
-						}
+				// Utilization-primary: vertical CPU/memory downscale (stabilized like replica drain).
+				wantVertCPU := primaryTarget == "cpu_utilization" && svcCPUUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas &&
+					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
+					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac)
+				var targetVertCPU float64
+				if wantVertCPU {
+					nc := currentCores - cpuStep
+					if minCPUCtl > 0 && nc < minCPUCtl {
+						nc = minCPUCtl
+					}
+					if nc+1e-9 < currentCores {
+						targetVertCPU = nc
+					} else {
+						wantVertCPU = false
 					}
 				}
-				if primaryTarget == "memory_utilization" && svcMemUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas {
-					if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
-						!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac) {
-						nm := currentMemMB - float64(step)*128
-						if minMemCtl > 0 && nm < minMemCtl {
-							nm = minMemCtl
-						}
-						if nm+1e-9 < currentMemMB {
-							newMemMBVert = nm
-						}
+				if wantVertCPU {
+					stableVertCPUDown[svc.ID]++
+				} else {
+					stableVertCPUDown[svc.ID] = 0
+				}
+				if wantVertCPU && stableVertCPUDown[svc.ID] >= stabTicks && targetVertCPU > 0 {
+					newCPUCores = targetVertCPU
+					scaledVertically = true
+					stableVertCPUDown[svc.ID] = 0
+				}
+
+				wantVertMem := primaryTarget == "memory_utilization" && svcMemUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas &&
+					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
+					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac)
+				var targetVertMem float64
+				if wantVertMem {
+					nm := currentMemMB - float64(step)*128
+					if minMemCtl > 0 && nm < minMemCtl {
+						nm = minMemCtl
 					}
+					if nm+1e-9 < currentMemMB {
+						targetVertMem = nm
+					} else {
+						wantVertMem = false
+					}
+				}
+				if wantVertMem {
+					stableVertMemDown[svc.ID]++
+				} else {
+					stableVertMemDown[svc.ID] = 0
+				}
+				if wantVertMem && stableVertMemDown[svc.ID] >= stabTicks && targetVertMem > 0 {
+					newMemMBVert = targetVertMem
+					stableVertMemDown[svc.ID] = 0
 				}
 
 				// Stabilization and guardrails for replica scale-down.
@@ -1330,8 +1529,32 @@ func (e *RunExecutor) runOnlineController(
 			if runMetrics.TotalRequests > 0 {
 				prevErrFrac = float64(runMetrics.FailedRequests) / float64(runMetrics.TotalRequests)
 			}
+
+			if opt.GetMaxNoopIntervals() > 0 {
+				if stepIndex == stepIndexBefore {
+					noopStreak++
+					if noopStreak >= opt.GetMaxNoopIntervals() {
+						logger.Info("online controller converged (no configuration changes)",
+							"run_id", runID, "noop_intervals", noopStreak)
+						e.signalOnlineLeaseEnd(runID, OnlineCompletionConverged)
+					}
+				} else {
+					noopStreak = 0
+				}
+			}
 		}
 	}
+}
+
+func attachHostMetrics(scenario *config.Scenario, engineMetrics *models.RunMetrics, collector *metrics.Collector) {
+	if scenario == nil || engineMetrics == nil {
+		return
+	}
+	ids := make([]string, 0, len(scenario.Hosts))
+	for _, h := range scenario.Hosts {
+		ids = append(ids, h.ID)
+	}
+	metrics.AttachHostUtilization(engineMetrics, collector, ids)
 }
 
 // convertMetricsToProto converts engine RunMetrics to protobuf RunMetrics
@@ -1383,6 +1606,19 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 				ConcurrentRequests: concurrentReqs,
 			}
 			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
+		}
+	}
+
+	if engineMetrics.HostMetrics != nil {
+		for _, hm := range engineMetrics.HostMetrics {
+			if hm == nil {
+				continue
+			}
+			pbMetrics.HostMetrics = append(pbMetrics.HostMetrics, &simulationv1.HostMetrics{
+				HostId:              hm.HostID,
+				CpuUtilization:      hm.CPUUtilization,
+				MemoryUtilization:   hm.MemoryUtilization,
+			})
 		}
 	}
 

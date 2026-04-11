@@ -130,7 +130,8 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		}
 	}
 
-	// Calculate latency percentiles
+	// Latency percentiles and mean are computed from the same pooled samples (successful
+	// completions only; see handleRequestComplete). Failed requests do not emit request_latency_ms.
 	var latencyP50, latencyP95, latencyP99, latencyMean float64
 	if len(allLatencyValues) > 0 {
 		sort.Float64s(allLatencyValues)
@@ -236,6 +237,30 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		LatencyMean:        latencyMean,
 		ThroughputRPS:      throughputRPS,
 		ServiceMetrics:     serviceMetrics,
+	}
+}
+
+// AttachHostUtilization fills per-host CPU/memory utilization from collector series labeled by host.
+func AttachHostUtilization(rm *models.RunMetrics, collector *Collector, hostIDs []string) {
+	if rm == nil || len(hostIDs) == 0 {
+		return
+	}
+	collector.ComputeAllAggregations()
+	if rm.HostMetrics == nil {
+		rm.HostMetrics = make(map[string]*models.HostMetrics)
+	}
+	for _, hid := range hostIDs {
+		labels := CreateHostLabels(hid)
+		cpuAgg := collector.GetOrComputeAggregationForLabelSubset(MetricCPUUtilization, labels)
+		memAgg := collector.GetOrComputeAggregationForLabelSubset(MetricMemoryUtilization, labels)
+		hm := &models.HostMetrics{HostID: hid}
+		if cpuAgg != nil {
+			hm.CPUUtilization = cpuAgg.Mean
+		}
+		if memAgg != nil {
+			hm.MemoryUtilization = memAgg.Mean
+		}
+		rm.HostMetrics[hid] = hm
 	}
 }
 

@@ -418,3 +418,28 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 	}
 }
+
+// newWorkloadStateWithPatternsStub returns a WorkloadState with patterns loaded from the scenario
+// so GetRunConfiguration can observe workload entries. Used by online controller tests that call
+// runOnlineController without a live engine.
+func newWorkloadStateWithPatternsStub(runID string, scenario *config.Scenario, startTime time.Time) (*WorkloadState, error) {
+	ws := NewWorkloadState(runID, nil, startTime.Add(24*time.Hour))
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	for _, workloadPattern := range scenario.Workload {
+		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
+		if err != nil {
+			return nil, err
+		}
+		key := patternKey(workloadPattern.From, workloadPattern.To)
+		ws.patterns[key] = &WorkloadPatternState{
+			Pattern:       workloadPattern,
+			ServiceID:     serviceID,
+			EndpointPath:  endpointPath,
+			LastEventTime: startTime,
+			NextEventTime: startTime,
+			Active:        true,
+		}
+	}
+	return ws, nil
+}

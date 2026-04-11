@@ -32,6 +32,9 @@ const (
 
 	// EventTypeSimulationEnd represents the end of the simulation
 	EventTypeSimulationEnd EventType = "simulation_end"
+
+	// EventTypeDrainSweep runs periodic replica drain processing independent of request traffic.
+	EventTypeDrainSweep EventType = "drain_sweep"
 )
 
 // Event represents a discrete event in the simulation

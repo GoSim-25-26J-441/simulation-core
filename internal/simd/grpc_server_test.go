@@ -7,7 +7,9 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func TestGRPCServerCreateStartGetMetricsLifecycle(t *testing.T) {
@@ -956,5 +958,121 @@ func TestGRPCServerGetRunConfigurationValidation(t *testing.T) {
 	_, err = srv.GetRunConfiguration(ctx, &simulationv1.GetRunConfigurationRequest{RunId: "non-existent"})
 	if err == nil {
 		t.Fatalf("expected error for non-existent run")
+	}
+}
+
+func TestGRPCServerRenewOnlineLease(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewSimulationGRPCServer(store, exec)
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	rec, err := store.Create("grpc-lease-run", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   100,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+			LeaseTtlMs:         60_000,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	resp, err := srv.RenewOnlineLease(ctx, &simulationv1.RenewOnlineLeaseRequest{RunId: rec.Run.Id})
+	if err != nil {
+		t.Fatalf("RenewOnlineLease: %v", err)
+	}
+	if resp.GetRun() == nil || resp.GetRun().GetId() != rec.Run.Id {
+		t.Fatalf("expected run id in response, got %#v", resp.GetRun())
+	}
+}
+
+func TestGRPCServerRenewOnlineLeaseNotFound(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
+	ctx := context.Background()
+
+	_, err := srv.RenewOnlineLease(ctx, &simulationv1.RenewOnlineLeaseRequest{RunId: "missing-run"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", err)
+	}
+}
+
+func TestGRPCServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
+	store := NewRunStore()
+	srv := NewSimulationGRPCServer(store, NewRunExecutor(store, nil))
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	rec, err := store.Create("grpc-lease-not-configured", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   100,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:               true,
+			TargetP95LatencyMs:     50,
+			AllowUnboundedOnline:   true,
+			MaxOnlineDurationMs:    0,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus: %v", err)
+	}
+
+	_, err = srv.RenewOnlineLease(ctx, &simulationv1.RenewOnlineLeaseRequest{RunId: rec.Run.Id})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
 	}
 }

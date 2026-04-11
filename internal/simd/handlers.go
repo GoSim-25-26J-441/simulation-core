@@ -1,6 +1,7 @@
 package simd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -26,6 +27,13 @@ type scenarioState struct {
 	collector *metrics.Collector   // Metrics collector for time-series metrics
 	policies  *policy.Manager      // Policy manager for autoscaling, rate limiting, retries, circuit breaking
 	interact  *interaction.Manager // Interaction manager for service graph and downstream calls
+	// simEndTime is the simulation horizon for scheduling drain sweeps (zero disables rescheduling).
+	simEndTime time.Time
+}
+
+// SetSimEndTime sets the simulation end time used by periodic drain sweeps.
+func (s *scenarioState) SetSimEndTime(t time.Time) {
+	s.simEndTime = t
 }
 
 // newScenarioState creates a new scenario state from a parsed scenario
@@ -87,13 +95,59 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeRequestStart, handleRequestStart(state))
 	eng.RegisterHandler(engine.EventTypeRequestComplete, handleRequestComplete(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamCall, handleDownstreamCall(state, eng))
+	eng.RegisterHandler(engine.EventTypeDrainSweep, handleDrainSweep(state))
+}
+
+const drainSweepInterval = 100 * time.Millisecond
+
+// ScheduleDrainSweepKickoff schedules the first simulated-time drain sweep so draining
+// replicas are processed even when request traffic stops.
+func ScheduleDrainSweepKickoff(eng *engine.Engine, startTime time.Time) {
+	eng.ScheduleAt(engine.EventTypeDrainSweep, startTime.Add(50*time.Millisecond), nil, "", nil)
+}
+
+// failDroppedQueueRequests marks queued (pending) requests failed when their instance
+// queue was cleared by a hard drain timeout eviction.
+func failDroppedQueueRequests(eng *engine.Engine, state *scenarioState, simTime time.Time, dropped []string) {
+	if len(dropped) == 0 {
+		return
+	}
+	rm := eng.GetRunManager()
+	for _, reqID := range dropped {
+		req, ok := rm.GetRequest(reqID)
+		if !ok {
+			continue
+		}
+		if req.Status != models.RequestStatusPending {
+			continue
+		}
+		req.Status = models.RequestStatusFailed
+		labels := metrics.CreateEndpointLabels(req.ServiceName, req.Endpoint)
+		metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+	}
+}
+
+func handleDrainSweep(state *scenarioState) engine.EventHandler {
+	return func(eng *engine.Engine, evt *engine.Event) error {
+		simTime := eng.GetSimTime()
+		state.rm.NoteSimTime(simTime)
+		dropped := state.rm.ProcessDrainingInstances(simTime)
+		failDroppedQueueRequests(eng, state, simTime, dropped)
+		next := simTime.Add(drainSweepInterval)
+		if state.simEndTime.IsZero() || next.Before(state.simEndTime) {
+			eng.ScheduleAt(engine.EventTypeDrainSweep, next, nil, "", nil)
+		}
+		return nil
+	}
 }
 
 // handleRequestArrival creates a new request and schedules it to start
 func handleRequestArrival(state *scenarioState) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
-		state.rm.ProcessDrainingInstances(simTime)
+		state.rm.NoteSimTime(simTime)
+		dropped := state.rm.ProcessDrainingInstances(simTime)
+		failDroppedQueueRequests(eng, state, simTime, dropped)
 
 		// Extract service and endpoint from event data
 		serviceID, ok := evt.Data["service_id"].(string)
@@ -157,8 +211,8 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 		}
 
-		// Check if instance has capacity
-		if !instance.HasCapacity() {
+		// Check if instance has capacity (must use simulation time, not wall clock)
+		if !instance.HasCapacityAt(simTime) {
 			// Instance is at capacity, enqueue the request
 			if err := state.rm.EnqueueRequest(instance.ID(), requestID); err != nil {
 				return fmt.Errorf("failed to enqueue request: %w", err)
@@ -189,7 +243,9 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		}
 
 		simTime := eng.GetSimTime()
-		state.rm.ProcessDrainingInstances(simTime)
+		state.rm.NoteSimTime(simTime)
+		dropped := state.rm.ProcessDrainingInstances(simTime)
+		failDroppedQueueRequests(eng, state, simTime, dropped)
 
 		request := evt.Request
 		serviceID := request.ServiceName
@@ -275,6 +331,9 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
 				}
 			}
+			if errors.Is(err, resource.ErrHostMemoryCapacity) {
+				return nil
+			}
 			return fmt.Errorf("failed to allocate memory: %w", err)
 		}
 
@@ -285,8 +344,8 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		// Record resource utilization metrics
 		instance, ok := state.rm.GetServiceInstance(instanceID)
 		if ok {
-			// Record CPU utilization (instance-level)
-			cpuUtil := instance.CPUUtilization()
+			// Record CPU utilization (instance-level) at simulation time
+			cpuUtil := instance.CPUUtilizationAt(simTime)
 			instanceLabels := metrics.CreateInstanceLabels(serviceID, instanceID)
 			metrics.RecordCPUUtilization(state.collector, cpuUtil, simTime, instanceLabels)
 
@@ -364,7 +423,9 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 
 		rm := eng.GetRunManager()
 		simTime := eng.GetSimTime()
-		state.rm.ProcessDrainingInstances(simTime)
+		state.rm.NoteSimTime(simTime)
+		dropped := state.rm.ProcessDrainingInstances(simTime)
+		failDroppedQueueRequests(eng, state, simTime, dropped)
 
 		request := evt.Request
 		serviceID := request.ServiceName
@@ -455,6 +516,7 @@ func handleDownstreamCall(state *scenarioState, _ *engine.Engine) engine.EventHa
 		}
 
 		simTime := eng.GetSimTime()
+		state.rm.NoteSimTime(simTime)
 		parentRequest := evt.Request
 
 		// Extract downstream service and endpoint

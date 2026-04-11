@@ -3,6 +3,7 @@ package simd
 import (
 	"context"
 
+	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
@@ -14,6 +15,8 @@ type OptimizationParams struct {
 	MaxEvaluations int32   // optional cap on total simulation runs (0 = no cap)
 	TargetUtilLow  float64 // for cpu_utilization/memory_utilization: desired band low (0 = not set)
 	TargetUtilHigh float64 // for cpu_utilization/memory_utilization: desired band high
+	// When non-nil and online mode is off, batch beam-search optimization is used.
+	Batch *simulationv1.BatchOptimizationConfig
 }
 
 // OptimizationRunner runs a multi-run optimization experiment.

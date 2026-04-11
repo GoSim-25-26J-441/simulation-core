@@ -8,7 +8,9 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
 	"google.golang.org/protobuf/proto"
 )
@@ -22,23 +24,74 @@ type RunRecord struct {
 }
 
 type RunStore struct {
-	mu   sync.RWMutex
-	runs map[string]*RunRecord
+	mu           sync.RWMutex
+	runs         map[string]*RunRecord
+	onlineLimits OnlineRunLimits
 }
 
 func NewRunStore() *RunStore {
 	return &RunStore{
-		runs: make(map[string]*RunRecord),
+		runs:         make(map[string]*RunRecord),
+		onlineLimits: DefaultOnlineRunLimits(),
 	}
+}
+
+// SetOnlineLimits replaces server-side online run defaults and caps (e.g. from environment).
+func (s *RunStore) SetOnlineLimits(l OnlineRunLimits) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onlineLimits = l
+}
+
+// OnlineLimits returns a copy of the configured online run limits.
+func (s *RunStore) OnlineLimits() OnlineRunLimits {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.onlineLimits
+}
+
+// CountRunningOnline returns how many runs are RUNNING with optimization.online set.
+func (s *RunStore) CountRunningOnline() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, rec := range s.runs {
+		if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING &&
+			rec.Input != nil && rec.Input.Optimization != nil && rec.Input.Optimization.Online {
+			n++
+		}
+	}
+	return n
 }
 
 func nowUnixMs() int64 {
 	return time.Now().UTC().UnixMilli()
 }
 
+func validateBatchOptimizationInput(input *simulationv1.RunInput) error {
+	if input == nil || input.Optimization == nil || input.Optimization.GetBatch() == nil {
+		return nil
+	}
+	if input.Optimization.GetOnline() {
+		return fmt.Errorf("batch optimization cannot be used with online=true")
+	}
+	scenario, err := config.ParseScenarioYAML([]byte(input.GetScenarioYaml()))
+	if err != nil {
+		return fmt.Errorf("batch optimization: invalid scenario yaml: %w", err)
+	}
+	if _, err := batchspec.ParseBatchSpec(input.Optimization.GetBatch(), scenario); err != nil {
+		return fmt.Errorf("batch optimization: %w", err)
+	}
+	return nil
+}
+
 func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if err := validateBatchOptimizationInput(input); err != nil {
+		return nil, err
+	}
 
 	if runID == "" {
 		runID = utils.GenerateRunID()
@@ -51,13 +104,17 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 		return nil, fmt.Errorf("run already exists: %s", runID)
 	}
 
+	clonedInput := cloneRunInput(input)
+	if err := PrepareOnlineRunInput(clonedInput, s.onlineLimits); err != nil {
+		return nil, err
+	}
 	rec := &RunRecord{
 		Run: &simulationv1.Run{
 			Id:              runID,
 			Status:          simulationv1.RunStatus_RUN_STATUS_PENDING,
 			CreatedAtUnixMs: nowUnixMs(),
 		},
-		Input:   cloneRunInput(input),
+		Input:   clonedInput,
 		Metrics: nil,
 	}
 	s.runs[runID] = rec
@@ -123,6 +180,55 @@ func (s *RunStore) ListFiltered(limit, offset int, status simulationv1.RunStatus
 	return allRuns[start:end]
 }
 
+// SetStatusRunningWithOnlineConcurrencyGuard atomically enforces MaxConcurrentOnlineRuns
+// (when > 0) and transitions PENDING -> RUNNING under a single store lock so concurrent
+// Start calls cannot oversubscribe the cap.
+func (s *RunStore) SetStatusRunningWithOnlineConcurrencyGuard(runID string) (*RunRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	rec, ok := s.runs[runID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	switch rec.Run.Status {
+	case simulationv1.RunStatus_RUN_STATUS_RUNNING:
+		return cloneRunRecord(rec), nil
+	case simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+		simulationv1.RunStatus_RUN_STATUS_FAILED,
+		simulationv1.RunStatus_RUN_STATUS_CANCELLED,
+		simulationv1.RunStatus_RUN_STATUS_STOPPED:
+		return nil, fmt.Errorf("%w: %s", ErrRunTerminal, runID)
+	}
+
+	opt := rec.Input.GetOptimization()
+	if opt != nil && opt.Online {
+		lim := s.onlineLimits
+		if lim.MaxConcurrentOnlineRuns > 0 {
+			var n int
+			for _, r := range s.runs {
+				if r == nil || r.Run == nil {
+					continue
+				}
+				if r.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING &&
+					r.Input != nil && r.Input.GetOptimization() != nil && r.Input.GetOptimization().GetOnline() {
+					n++
+				}
+			}
+			if n >= lim.MaxConcurrentOnlineRuns {
+				return nil, fmt.Errorf("%w: maximum concurrent online runs (%d) reached", ErrOnlineRunConcurrencyLimit, lim.MaxConcurrentOnlineRuns)
+			}
+		}
+	}
+
+	rec.Run.Status = simulationv1.RunStatus_RUN_STATUS_RUNNING
+	if rec.Run.StartedAtUnixMs == 0 {
+		rec.Run.StartedAtUnixMs = nowUnixMs()
+	}
+	return cloneRunRecord(rec), nil
+}
+
 func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg string) (*RunRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -152,6 +258,18 @@ func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg
 	return cloneRunRecord(rec), nil
 }
 
+// SetOnlineCompletionReason sets Run.online_completion_reason (for COMPLETED online runs).
+func (s *RunStore) SetOnlineCompletionReason(runID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	rec.Run.OnlineCompletionReason = reason
+	return nil
+}
+
 func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,6 +279,24 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 		return fmt.Errorf("run not found: %s", runID)
 	}
 	rec.Metrics = cloneRunMetrics(metrics)
+	return nil
+}
+
+// SetBatchRecommendation stores batch optimization summary fields on the parent run.
+// For batch runs, Run.best_score (via SetOptimizationResult) may still reflect efficiency-only for legacy
+// compatibility; clients should treat batch_recommendation_feasible, batch_violation_score,
+// batch_efficiency_score, and batch_recommendation_summary as the full batch outcome.
+func (s *RunStore) SetBatchRecommendation(runID string, feasible bool, violationScore, efficiencyScore float64, summary string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	rec.Run.BatchRecommendationFeasible = feasible
+	rec.Run.BatchViolationScore = violationScore
+	rec.Run.BatchEfficiencyScore = efficiencyScore
+	rec.Run.BatchRecommendationSummary = summary
 	return nil
 }
 

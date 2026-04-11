@@ -3,6 +3,7 @@ package simd
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -33,11 +34,34 @@ func (s *SimulationGRPCServer) CreateRun(ctx context.Context, req *simulationv1.
 
 	rec, err := s.store.Create(req.RunId, req.Input)
 	if err != nil {
-		return nil, status.Error(codes.AlreadyExists, err.Error())
+		if errors.Is(err, ErrInvalidOnlineRunInput) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if strings.Contains(err.Error(), "already exists") {
+			return nil, status.Error(codes.AlreadyExists, err.Error())
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
 	logger.Info("run created", "run_id", rec.Run.Id)
 	return &simulationv1.CreateRunResponse{Run: rec.Run}, nil
+}
+
+func (s *SimulationGRPCServer) RenewOnlineLease(ctx context.Context, req *simulationv1.RenewOnlineLeaseRequest) (*simulationv1.RenewOnlineLeaseResponse, error) {
+	if req == nil || req.GetRunId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "run_id is required")
+	}
+	rec, err := s.Executor.RenewOnlineLease(req.GetRunId())
+	if err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		if errors.Is(err, ErrRunIDMissing) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	return &simulationv1.RenewOnlineLeaseResponse{Run: rec.Run}, nil
 }
 
 func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.StartRunRequest) (*simulationv1.StartRunResponse, error) {
@@ -52,6 +76,9 @@ func (s *SimulationGRPCServer) StartRun(ctx context.Context, req *simulationv1.S
 		}
 		if errors.Is(err, ErrRunTerminal) {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		if errors.Is(err, ErrOnlineRunConcurrencyLimit) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
 		}
 		return nil, status.Error(codes.Internal, err.Error())
 	}

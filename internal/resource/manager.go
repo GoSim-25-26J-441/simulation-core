@@ -36,6 +36,8 @@ type Manager struct {
 	// drainTimeout is the simulated-time budget for scale-down drains when callers
 	// use ScaleService without explicit options (set per run from optimization config).
 	drainTimeout time.Duration
+	// lastSimTime tracks the latest simulation time seen from the workload (for sweeps).
+	lastSimTime time.Time
 }
 
 // NewManager creates a new resource manager
@@ -278,13 +280,18 @@ func (m *Manager) ScaleServiceWithOptions(serviceID string, newReplicas int, opt
 }
 
 // ProcessDrainingInstances removes draining instances that are idle or past their
-// simulated drain deadline. Call this from the simulation loop with the current
-// simulation time so drain timeouts use the same clock as the workload.
-func (m *Manager) ProcessDrainingInstances(simTime time.Time) {
+// simulated drain deadline. For hard timeouts with queued work, it returns the
+// request IDs that were waiting in those instance queues so callers can fail them.
+func (m *Manager) ProcessDrainingInstances(simTime time.Time) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if !simTime.IsZero() && simTime.After(m.lastSimTime) {
+		m.lastSimTime = simTime
+	}
+
 	var removeIDs []string
+	var evictIDs []string
 	for id, inst := range m.instances {
 		if inst.Lifecycle() != InstanceDraining {
 			continue
@@ -292,24 +299,64 @@ func (m *Manager) ProcessDrainingInstances(simTime time.Time) {
 		deadline := inst.DrainDeadline()
 		idle := inst.ActiveRequests() == 0 && inst.QueueLength() == 0
 		timedOut := !deadline.IsZero() && !simTime.Before(deadline)
-		if idle || timedOut {
+		switch {
+		case idle:
 			removeIDs = append(removeIDs, id)
+		case timedOut && !idle:
+			// Hard timeout: sync host accounting before dropping the instance record.
+			evictIDs = append(evictIDs, id)
 		}
 	}
-	for _, id := range removeIDs {
-		m.removeInstanceLocked(id)
+	var droppedReqIDs []string
+	for _, id := range evictIDs {
+		droppedReqIDs = append(droppedReqIDs, m.removeInstanceLocked(id, simTime, true)...)
 	}
-	if len(removeIDs) > 0 {
+	for _, id := range removeIDs {
+		m.removeInstanceLocked(id, simTime, false)
+	}
+	if len(removeIDs)+len(evictIDs) > 0 {
 		m.rebuildSortedInstanceCache()
+	}
+	return droppedReqIDs
+}
+
+// NoteSimTime records the latest simulation time from the workload (best-effort).
+func (m *Manager) NoteSimTime(t time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !t.IsZero() && t.After(m.lastSimTime) {
+		m.lastSimTime = t
 	}
 }
 
-func (m *Manager) removeInstanceLocked(instanceID string) {
+// LastSimTime returns the last observed simulation time, or zero if unknown.
+func (m *Manager) LastSimTime() time.Time {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastSimTime
+}
+
+func (m *Manager) removeInstanceLocked(instanceID string, simTime time.Time, evictAccounting bool) []string {
 	inst, ok := m.instances[instanceID]
 	if !ok {
-		return
+		return nil
 	}
 	hostID := inst.HostID()
+	host, hostOk := m.hosts[hostID]
+
+	var dropped []string
+	if evictAccounting {
+		if simTime.IsZero() {
+			simTime = time.Now()
+		}
+		dropped = inst.EvictResourceState(simTime)
+		if hostOk {
+			instances := m.collectInstancesForHost(hostID)
+			m.updateHostCPUUtilizationWithData(host, instances, simTime)
+			m.updateHostMemoryUtilizationWithData(host, instances)
+		}
+	}
+
 	delete(m.instances, instanceID)
 
 	if ids, ok := m.hostToInstances[hostID]; ok {
@@ -324,6 +371,7 @@ func (m *Manager) removeInstanceLocked(instanceID string) {
 	if h, ok := m.hosts[hostID]; ok {
 		h.RemoveService(instanceID)
 	}
+	return dropped
 }
 
 // ActiveReplicas returns the number of replicas currently in rotation for the service (for GET config).
@@ -720,7 +768,7 @@ func (m *Manager) AllocateCPU(instanceID string, cpuTimeMs float64, simTime time
 	instance.AllocateCPU(cpuTimeMs, simTime)
 
 	// Update host utilization (aggregate from all instances on this host)
-	m.updateHostCPUUtilizationWithData(host, instances)
+	m.updateHostCPUUtilizationWithData(host, instances, simTime)
 
 	return nil
 }
@@ -748,7 +796,7 @@ func (m *Manager) ReleaseCPU(instanceID string, cpuTimeMs float64, simTime time.
 
 	// Release CPU and update utilization without holding Manager lock
 	instance.ReleaseCPU(cpuTimeMs, simTime)
-	m.updateHostCPUUtilizationWithData(host, instances)
+	m.updateHostCPUUtilizationWithData(host, instances, simTime)
 }
 
 // AllocateMemory allocates memory resources
@@ -778,7 +826,7 @@ func (m *Manager) AllocateMemory(instanceID string, memoryMB float64) error {
 		hostMemUtil := host.MemoryUtilization()
 		if hostMemUtil+(memoryMB/1024.0)/float64(hostMemoryGB) > 1.0 {
 			m.mu.Unlock()
-			return fmt.Errorf("host memory at capacity")
+			return ErrHostMemoryCapacity
 		}
 	}
 
@@ -922,13 +970,12 @@ func (m *Manager) collectInstancesForHost(hostID string) []*ServiceInstance {
 	return instances
 }
 
-// updateHostCPUUtilizationWithData updates host CPU utilization by delegating to Host aggregation
-func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*ServiceInstance) {
-	sources := make([]InstanceUtilizationSource, len(instances))
-	for i, inst := range instances {
-		sources[i] = inst
+// updateHostCPUUtilizationWithData updates host CPU utilization by delegating to Host aggregation.
+func (m *Manager) updateHostCPUUtilizationWithData(host *Host, instances []*ServiceInstance, simTime time.Time) {
+	if simTime.IsZero() {
+		simTime = time.Now()
 	}
-	host.UpdateCPUUtilization(sources)
+	host.UpdateCPUUtilizationFromInstancesAt(simTime, instances)
 }
 
 // updateHostMemoryUtilizationWithData updates host memory utilization by delegating to Host aggregation
