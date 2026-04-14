@@ -34,7 +34,8 @@ type WorkloadPatternState struct {
 	Pattern      config.WorkloadPattern
 	ServiceID    string
 	EndpointPath string
-	// Epoch is simulation start time for this pattern; used to align bursty burst/quiet cycles.
+	// Epoch is simulation start time for this pattern; used to align bursty burst/quiet cycles
+	// and (for lazy uniform) as the anchor for cumulative expected arrivals per chunk.
 	Epoch         time.Time
 	LastEventTime time.Time
 	NextEventTime time.Time
@@ -478,7 +479,16 @@ func (ws *WorkloadState) sampleUniformArrivalTimes(startTime, endTime time.Time,
 		return nil
 	}
 	n := int64(math.Round(rateRPS * totalSeconds))
+	return ws.uniformPlaceNInInterval(startTime, endTime, n)
+}
+
+// uniformPlaceNInInterval samples n independent uniform offsets in [start, end) and returns sorted times.
+func (ws *WorkloadState) uniformPlaceNInInterval(startTime, endTime time.Time, n int64) []time.Time {
 	if n <= 0 {
+		return nil
+	}
+	totalSeconds := endTime.Sub(startTime).Seconds()
+	if totalSeconds <= 0 {
 		return nil
 	}
 	times := make([]time.Time, 0, n)
@@ -492,6 +502,26 @@ func (ws *WorkloadState) sampleUniformArrivalTimes(startTime, endTime time.Time,
 	}
 	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
 	return times
+}
+
+// sampleLazyUniformChunk schedules arrivals for one lazy realtime chunk. Count is
+// floor(rate*Δt_end) - floor(rate*Δt_start) with Δ measured from pattern Epoch (same
+// anchor as Start/UpdateRate/UpdatePattern), so totals over many chunks match
+// floor(rate * horizon_seconds) without floating carry drift or per-chunk rounding bias.
+func (ws *WorkloadState) sampleLazyUniformChunk(chunkStart, chunkEnd time.Time, rateRPS float64, epoch time.Time) []time.Time {
+	sec0 := chunkStart.Sub(epoch).Seconds()
+	sec1 := chunkEnd.Sub(epoch).Seconds()
+	if sec1 <= sec0 {
+		return nil
+	}
+	if sec0 < 0 {
+		sec0 = 0
+	}
+	n := int64(math.Floor(rateRPS*sec1)) - int64(math.Floor(rateRPS*sec0))
+	if n < 0 {
+		n = 0
+	}
+	return ws.uniformPlaceNInInterval(chunkStart, chunkEnd, n)
 }
 
 // ensureUniformHorizon extends uniformTimes for lazy real-time uniform patterns by sampling
@@ -514,7 +544,7 @@ func (ws *WorkloadState) ensureUniformHorizon(ps *WorkloadPatternState, coverThr
 		if !chunkStart.Before(chunkEnd) {
 			break
 		}
-		part := ws.sampleUniformArrivalTimes(chunkStart, chunkEnd, rate)
+		part := ws.sampleLazyUniformChunk(chunkStart, chunkEnd, rate, ps.Epoch)
 		ps.uniformTimes = append(ps.uniformTimes, part...)
 		if len(ps.uniformTimes) > ps.uniformCursor {
 			tail := ps.uniformTimes[ps.uniformCursor:]

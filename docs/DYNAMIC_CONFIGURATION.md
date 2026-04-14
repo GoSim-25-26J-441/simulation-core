@@ -61,7 +61,7 @@ Create Run → Parse Scenario → Start Continuous Event Generation → Execute 
 
 1. **Continuous Event Generation**: A background goroutine (`WorkloadState`) continuously generates arrival events based on current rates
 2. **Rate Management**: Current rates are tracked per workload pattern with thread-safe updates
-3. **Event Scheduling**: Events are scheduled up to 1 second ahead (lookahead window) to ensure smooth execution
+3. **Event Scheduling**: Events are scheduled up to **10 seconds** ahead (`EventGenerationLookaheadWindow` in `internal/simd`) to ensure smooth execution
 4. **Dynamic Updates**: Rate changes take effect immediately and affect future event generation
 
 ---
@@ -73,8 +73,8 @@ Create Run → Parse Scenario → Start Continuous Event Generation → Execute 
 The implementation uses a background goroutine that:
 
 1. **Tracks Workload Patterns**: Maintains state for each workload pattern (`WorkloadPatternState`)
-2. **Generates Events Continuously**: Uses a ticker (100ms interval) to check and generate new events
-3. **Maintains Lookahead Window**: Schedules events up to 1 second ahead of current simulation time
+2. **Generates Events Continuously**: Uses a ticker (**500ms** `EventGenerationTickerInterval`) to check and generate new events
+3. **Maintains Lookahead Window**: Schedules events up to **10 seconds** ahead of current simulation time (see `IMPLEMENTATION_NOTE.md` for **uniform** lazy semantics vs full-horizon non-realtime)
 4. **Supports Rate Updates**: Updates rates dynamically via thread-safe mutex-protected operations
 
 **Architecture:**
@@ -111,7 +111,7 @@ The implementation uses a background goroutine that:
 ### Limitations
 
 1. **Configuration Changes**: Full scenario configuration changes (e.g., service replicas, policies) are not yet supported - only workload rates/patterns
-2. **Bursty Workloads**: Bursty workload pattern is currently an alias for Poisson distribution (full bursty logic with burst/idle periods is TODO)
+2. **Bursty Workloads**: Bursty arrival windows are implemented in `WorkloadState` (burst vs quiet phases); see scenario validation and `IMPLEMENTATION_NOTE.md` for behavior
 3. **Event Cancellation**: Pre-scheduled events are not cancelled when rates change - only future events use the new rate
 
 ---

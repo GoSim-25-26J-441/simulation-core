@@ -79,7 +79,10 @@ func (g *Generator) schedulePoissonArrivals(eng *engine.Engine, startTime, endTi
 	return nil
 }
 
-// scheduleUniformArrivals schedules arrivals uniformly over the duration
+// scheduleUniformArrivals schedules arrivals uniformly over the full [start,end) horizon using
+// N = round(rate_rps * duration_seconds) and N i.i.d. uniform offsets (legacy helper for tests
+// and non-SIMD callers). SIMD runs use internal/simd.WorkloadState for uniform (non-realtime
+// uses the same round-then-place semantics; realtime uses lazy chunks with residual).
 func (g *Generator) scheduleUniformArrivals(eng *engine.Engine, startTime, endTime time.Time, rateRPS float64, serviceID, endpointPath string) error {
 	if rateRPS <= 0 {
 		return fmt.Errorf("rate must be positive, got %f", rateRPS)
