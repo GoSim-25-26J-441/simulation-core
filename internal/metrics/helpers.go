@@ -9,16 +9,18 @@ import (
 
 // Common metric names
 const (
-	MetricRequestLatency          = "request_latency_ms"
-	MetricServiceRequestLatency   = "service_request_latency_ms"
-	MetricRootRequestLatency      = "root_request_latency_ms"
-	MetricRequestCount            = "request_count"
-	MetricRequestErrorCount       = "request_error_count"
-	MetricCPUUtilization     = "cpu_utilization"
-	MetricMemoryUtilization  = "memory_utilization"
-	MetricQueueLength        = "queue_length"
-	MetricThroughputRPS      = "throughput_rps"
-	MetricConcurrentRequests = "concurrent_requests"
+	MetricRequestLatency            = "request_latency_ms"
+	MetricServiceRequestLatency     = "service_request_latency_ms"
+	MetricServiceProcessingLatency  = "service_processing_latency_ms"
+	MetricQueueWait                 = "queue_wait_ms"
+	MetricRootRequestLatency        = "root_request_latency_ms"
+	MetricRequestCount              = "request_count"
+	MetricRequestErrorCount         = "request_error_count"
+	MetricCPUUtilization            = "cpu_utilization"
+	MetricMemoryUtilization         = "memory_utilization"
+	MetricQueueLength               = "queue_length"
+	MetricThroughputRPS             = "throughput_rps"
+	MetricConcurrentRequests        = "concurrent_requests"
 )
 
 // RecordLatency records end-to-end latency for a completed request (per-hop total duration when the request node finishes).
@@ -26,9 +28,21 @@ func RecordLatency(collector *Collector, latencyMs float64, timestamp time.Time,
 	collector.Record(MetricRequestLatency, latencyMs, timestamp, labels)
 }
 
-// RecordServiceRequestLatency records local service time for one hop (start to local processing complete).
+// RecordServiceRequestLatency records one hop's total local time from this request's ArrivalTime
+// at this service to local completion (queue wait + CPU + network for that hop).
 func RecordServiceRequestLatency(collector *Collector, latencyMs float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricServiceRequestLatency, latencyMs, timestamp, labels)
+}
+
+// RecordServiceProcessingLatency records local processing time only (StartTime to completion),
+// excluding queue wait before StartTime.
+func RecordServiceProcessingLatency(collector *Collector, latencyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricServiceProcessingLatency, latencyMs, timestamp, labels)
+}
+
+// RecordQueueWait records simulated queue wait at request start (DES time from ArrivalTime to StartTime).
+func RecordQueueWait(collector *Collector, queueWaitMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueWait, queueWaitMs, timestamp, labels)
 }
 
 // RecordRootRequestLatency records ingress/root trace latency (external request; full synchronous subtree).

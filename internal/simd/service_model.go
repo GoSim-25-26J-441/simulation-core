@@ -16,8 +16,9 @@ type ServiceExecutionProfile struct {
 	MemoryMB         float64
 	ConcurrencyCost float64
 	QueueClass       string
-	// QueueMeanWorkMs is a deterministic mean service time (ms) used for backlog
-	// queue-delay estimation (FIFO * mean work), separate from sampled path latency.
+	// QueueMeanWorkMs is a deterministic mean service time (ms) for diagnostics / tuning
+	// (e.g. queue class hints). DES queue wait is modeled as sim time from ArrivalTime to
+	// StartTime, not as queue_length × QueueMeanWorkMs.
 	QueueMeanWorkMs float64
 }
 

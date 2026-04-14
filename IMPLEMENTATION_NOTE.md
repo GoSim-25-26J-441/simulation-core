@@ -2,7 +2,7 @@
 
 ## Synchronous vs asynchronous downstream
 
-- **Sync** (default `mode`, or explicit `sync`): When a request finishes **local** work, it records **service_request_latency_ms** (hop-local time from `request_start` to local completion). If there are **synchronous** downstream edges, the request stays **processing** until **every** sync child request has **fully completed** (including their own sync subtrees). The parent is then **finalized** at the simulation time of the **last** completing sync child. **request_latency_ms** and **root_request_latency_ms** (ingress-only) are emitted at **finalize**; the ingress root trace uses **root_request_latency_ms** with full sync subtree duration.
+- **Sync** (default `mode`, or explicit `sync`): When a request finishes **local** work, it records **service_request_latency_ms** (hop-local time from this request’s **ArrivalTime** at the service to local completion, including **FIFO queue wait** + CPU + net). If there are **synchronous** downstream edges, the request stays **processing** until **every** sync child request has **fully completed** (including their own sync subtrees). The parent is then **finalized** at the simulation time of the **last** completing sync child. **request_latency_ms** and **root_request_latency_ms** (ingress-only) are emitted at **finalize**; the ingress root trace uses **root_request_latency_ms** with full sync subtree duration.
 
 - **Async / event** (`mode: async|event`): Downstream work is scheduled **without** blocking the parent. The parent **finalizes** immediately after local work (no pending sync count). Async children still consume **resources** and increment **request_count** with `origin=downstream`.
 
@@ -22,19 +22,26 @@
 
 - **Policy**: `internal/policy` `RetryPolicy.ShouldRetry(attempt, err)` and `GetBackoffDuration(attempt)` with `attempt >= 1` for backoff delay after failure `attempt` 0,1,…; `max_retries` from config matches existing semantics (`max_retries == 0` means no retries). Retries are modeled only as **DES events** (`EventTypeDownstreamRetry`), never wall-clock sleeps.
 - **Per-attempt requests**: Each physical attempt is a distinct `models.Request` with shared `trace_id`, stable `logical_call_id` (first attempt’s id), `retry_attempt`, and `is_retry` on later attempts. **request_count** increments once per attempt (real work).
-- **Metrics**: **service_request_latency_ms** remains per-attempt local hop time. **root_request_latency_ms** on ingress includes time while sync children are outstanding, including backoff gaps before retry. **Circuit breaker** `RecordFailure` on each failed attempt; `RecordSuccess` when an attempt completes successfully and emits success latency.
+- **Metrics**: **service_request_latency_ms** remains per-attempt hop time (queue wait + processing for that attempt). **service_processing_latency_ms** records CPU + net only (StartTime → completion). **root_request_latency_ms** on ingress includes time while sync children are outstanding, including backoff gaps before retry. **Circuit breaker** `RecordFailure` on each failed attempt; `RecordSuccess` when an attempt completes successfully and emits success latency.
 
 ## Metrics
 
-- **service_request_latency_ms**: Local service time per hop (CPU + net + queue delay for that instance).
+- **queue_wait_ms**: Emitted at **request_start** (simulation time). Value is **StartTime − ArrivalTime** for that hop—the actual DES wait before service processing begins. Labels include `service`, `endpoint`, `instance`, `origin`, optional `traffic_class` / `source_kind`, and retry labels (`is_retry`, `attempt`) when applicable. **queue_length** remains a **gauge** (current backlog depth per instance); it is **not** multiplied by mean service time to infer latency.
+- **service_request_latency_ms**: Per-hop **total** local time from **ArrivalTime** to **CompletionTime** at that service (queue wait + CPU + network for this hop). **Not** “start to complete” processing-only.
+- **service_processing_latency_ms**: Per-hop **processing** time only (**StartTime** → **CompletionTime**): CPU + sampled network latency, **excluding** queue wait.
 - **request_latency_ms**: Total duration for a request node when it **finalizes** (includes waiting for sync children when applicable).
-- **root_request_latency_ms**: Emitted only for **ingress** requests (`ParentID` empty) at finalize; represents external trace latency through the synchronous subtree.
-- **Run-level** latency percentiles in `ConvertToRunMetrics` prefer **root_request_latency_ms** samples when present; otherwise **request_latency_ms**.
+- **root_request_latency_ms**: Emitted only for **ingress** requests (`ParentID` empty) at finalize; represents external trace latency through the synchronous subtree (includes all queue waits and sync subtree work).
+- **Run-level** latency percentiles in `ConvertToRunMetrics` prefer **root_request_latency_ms** samples when present; otherwise **request_latency_ms**. Per-service rollups in `ServiceMetrics` use **service_request_latency_ms** aggregates (hop totals including queue wait).
 - **request_count** continues to use `origin` (`ingress`/`downstream`) plus optional `traffic_class` and `source_kind` labels when present on the request.
+
+## Queueing (FIFO DES)
+
+- Waiting is modeled as **elapsed simulation time** while a request is **pending** on an instance (after arrival/admission, before **RequestStart**). Completion work duration is **CPU + net** only; queue time is **not** added again inside processing duration.
+- The simulator does **not** implement a full **M/M/c** or analytical queueing formula; capacity is enforced via **CPU windows** and **FIFO** instance queues. Dropped or drain-evicted **pending** requests never reach **RequestStart**, so they do not emit **queue_wait_ms** or success-path service latency.
 
 ## Service model, kind, and role
 
-- **`model`**: `cpu` — CPU + network + memory follow endpoint stats (default queue mean ≈ `mean_cpu_ms` + `net_latency_ms.mean`). `mixed` — same sampling path with higher **memory** influence on concurrency cost (working-set pressure). `db_latency` — **IO/latency dominated**: sampled CPU work is **capped** below network/query latency unless the endpoint explicitly configures high CPU; queue backlog uses an IO-weighted mean so queues reflect datastore behavior more than raw CPU.
+- **`model`**: `cpu` — CPU + network + memory follow endpoint stats. `mixed` — same sampling path with higher **memory** influence on concurrency cost (working-set pressure). `db_latency` — **IO/latency dominated**: sampled CPU work is **capped** below network/query latency unless the endpoint explicitly configures high CPU; **QueueMeanWorkMs** in the execution profile reflects IO-weighted means for hints, not synthetic queue delay in DES.
 - **`kind` / `role`**: `api_gateway` / `ingress` classify ingress-facing work (queue class `ingress`). `database` / `datastore` use datastore IO queue class. `cache` slightly reduces CPU vs generic services; `external` nudges network latency up. **`kind: queue` is rejected at scenario validation** (not implemented). `cache` and `external` are accepted and use the generic execution path with light nudges (partially differentiated).
 - **`scaling`**: `pkg/config` scaling helpers (`ServiceAllowsBatchScalingAction`, `ServiceAllowsHorizontalScaling`, …) gate **batch** and **online** actions. **Database** services with **no** `scaling` block **horizontal** scaling by default (vertical changes still require an explicit policy when `scaling` is set; when `scaling` is nil on a database, **all** optimizer dimensions are blocked).
 

@@ -211,11 +211,26 @@ func labelsForRequestMetrics(req *models.Request, serviceID, endpointPath string
 	return lbl
 }
 
-func localServiceLatencyMs(request *models.Request, simTime time.Time) float64 {
-	if !request.StartTime.IsZero() {
-		return float64(simTime.Sub(request.StartTime).Milliseconds())
+// labelsForQueueWaitMetrics extends endpoint request labels with instance for queue_wait_ms.
+func labelsForQueueWaitMetrics(req *models.Request, serviceID, endpointPath, instanceID string) map[string]string {
+	lbl := labelsForRequestMetricsWithRetry(req, serviceID, endpointPath)
+	if instanceID != "" {
+		lbl["instance"] = instanceID
 	}
+	return lbl
+}
+
+// localServiceHopLatencyMs is total time at this hop from request.ArrivalTime to completion (queue + processing).
+func localServiceHopLatencyMs(request *models.Request, simTime time.Time) float64 {
 	return float64(simTime.Sub(request.ArrivalTime).Milliseconds())
+}
+
+// localServiceProcessingLatencyMs is StartTime to completion (CPU + network service time only).
+func localServiceProcessingLatencyMs(request *models.Request, simTime time.Time) float64 {
+	if request.StartTime.IsZero() {
+		return localServiceHopLatencyMs(request, simTime)
+	}
+	return float64(simTime.Sub(request.StartTime).Milliseconds())
 }
 
 func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interaction.ResolvedCall, td, ad int) (asyncCalls, syncCalls []interaction.ResolvedCall) {
@@ -458,6 +473,18 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		request.Status = models.RequestStatusProcessing
 		request.StartTime = simTime
 
+		// FIFO queue wait in DES time: elapsed from ArrivalTime until this start (not queueLength × mean service).
+		queueWait := simTime.Sub(request.ArrivalTime)
+		if queueWait < 0 {
+			queueWait = 0
+		}
+		request.QueueTimeMs = float64(queueWait.Nanoseconds()) / 1e6
+		if request.Metadata == nil {
+			request.Metadata = make(map[string]interface{})
+		}
+		request.Metadata["queue_wait_ms"] = request.QueueTimeMs
+		metrics.RecordQueueWait(state.collector, request.QueueTimeMs, simTime, labelsForQueueWaitMetrics(request, serviceID, endpointPath, instanceID))
+
 		cpuTimeMs := prof.CPUTimeMs
 		request.CPUTimeMs = cpuTimeMs
 
@@ -522,45 +549,15 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		request.Metadata["allocated_memory_mb"] = memoryMB
 
 		// Record resource utilization metrics
-		instance, ok := state.rm.GetServiceInstance(instanceID)
-		if ok {
+		if _, ok := state.rm.GetServiceInstance(instanceID); ok {
 			recordInstanceAndHostGauges(state, serviceID, instanceID, simTime)
-			queueLength := instance.QueueLength()
-			// Model queueing delay based on mean service time
-			// Queue delay is estimated as the sum of expected service times for all queued requests.
-			// This assumes:
-			// - FIFO queue processing
-			// - Independent, identically distributed service times
-			// - Mean service time ≈ mean CPU time + mean network latency
-			// - No variance in service times (uses mean values)
-			//
-			// Limitations:
-			// - Does not account for actual variability in service times
-			// - Assumes all queued requests have similar characteristics
-			// - Does not model complex queueing effects (e.g., head-of-line blocking)
-			//
-			// For more accurate modeling, consider implementing a detailed queueing theory model
-			// (e.g., M/M/1, M/G/1) with actual service time distributions.
-			queueDelayMs := 0.0
-			if queueLength > 0 {
-				meanServiceTimeMs := prof.QueueMeanWorkMs
-				if meanServiceTimeMs < 0 {
-					meanServiceTimeMs = 0
-				}
-				queueDelayMs = float64(queueLength) * meanServiceTimeMs
-			}
 			if prof.QueueClass != "" {
 				request.Metadata["queue_class"] = prof.QueueClass
 			}
-			request.Metadata["queue_delay_ms"] = queueDelayMs
 		}
 
-		// Total processing time = CPU time + network latency + queue delay
-		var queueDelayMs float64
-		if qd, ok := request.Metadata["queue_delay_ms"].(float64); ok {
-			queueDelayMs = qd
-		}
-		processingTime := time.Duration(cpuTimeMs+netLatencyMs+queueDelayMs) * time.Millisecond
+		// Local processing duration (CPU + network). Queue wait is already reflected in sim time before start.
+		processingTime := time.Duration(cpuTimeMs+netLatencyMs) * time.Millisecond
 
 		// Schedule completion
 		completionTime := simTime.Add(processingTime)
@@ -620,8 +617,10 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		}
 
 		labels := labelsForRequestMetrics(request, serviceID, endpointPath)
-		svcLocalMs := localServiceLatencyMs(request, simTime)
-		metrics.RecordServiceRequestLatency(state.collector, svcLocalMs, simTime, labels)
+		hopMs := localServiceHopLatencyMs(request, simTime)
+		procMs := localServiceProcessingLatencyMs(request, simTime)
+		metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
+		metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
 
 		downstreamCalls, err := state.interact.GetDownstreamCalls(serviceID, endpointPath)
 		if err != nil {
