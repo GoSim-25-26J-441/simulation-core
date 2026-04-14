@@ -27,6 +27,8 @@ const (
 	MetricActiveConnections       = "active_connections"
 	MetricCacheHitCount           = "cache_hit_count"
 	MetricCacheMissCount          = "cache_miss_count"
+	// MetricDownstreamCallerCPU records caller-side CPU work for downstream serialization / client overhead (ms per edge attempt).
+	MetricDownstreamCallerCPU = "downstream_caller_cpu_ms"
 )
 
 // RecordLatency records end-to-end latency for a completed request (per-hop total duration when the request node finishes).
@@ -109,6 +111,11 @@ func RecordCacheHitCount(collector *Collector, count float64, timestamp time.Tim
 // RecordCacheMissCount records cache miss events.
 func RecordCacheMissCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricCacheMissCount, count, timestamp, labels)
+}
+
+// RecordDownstreamCallerCPU records caller-side CPU time charged for a downstream edge attempt.
+func RecordDownstreamCallerCPU(collector *Collector, cpuMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricDownstreamCallerCPU, cpuMs, timestamp, labels)
 }
 
 // RecordIngressLogicalFailure records one user-visible ingress/root logical failure (for SLO error rate).

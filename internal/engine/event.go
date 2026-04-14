@@ -41,6 +41,12 @@ const (
 
 	// EventTypeDownstreamRetry schedules a replacement downstream attempt after simulated backoff (retry policy).
 	EventTypeDownstreamRetry EventType = "downstream_retry"
+
+	// EventTypeDownstreamCallerOverheadStart allocates caller CPU for downstream serialization / client overhead.
+	EventTypeDownstreamCallerOverheadStart EventType = "downstream_caller_overhead_start"
+
+	// EventTypeDownstreamCallerOverheadEnd releases caller CPU and schedules the downstream spawn (or retry spawn).
+	EventTypeDownstreamCallerOverheadEnd EventType = "downstream_caller_overhead_end"
 )
 
 // Event represents a discrete event in the simulation

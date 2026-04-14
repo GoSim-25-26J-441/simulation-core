@@ -225,7 +225,17 @@ func handleDownstreamRetry(state *scenarioState, eng *engine.Engine) engine.Even
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
 		parentRequest := evt.Request
-		return execDownstreamSpawnFromEvent(state, eng, parentRequest, evt)
+		childSvc := evt.ServiceID
+		childPath := metadataString(evt.Data, "endpoint_path")
+		dsCall, _ := resolveDownstreamCallSpec(state, parentRequest, childSvc, childPath)
+		resolved := interaction.ResolvedCall{ServiceID: childSvc, Path: childPath, Call: dsCall}
+		traceDepth := metadataInt(evt.Data, "trace_depth")
+		asyncDepth := metadataInt(evt.Data, "async_depth")
+		isAsync := metadataBool(evt.Data, "is_async_downstream")
+		retryAttempt := metadataInt(evt.Data, metaRetryAttempt)
+		logicalID := metadataString(evt.Data, metaLogicalCallID)
+		scheduleDownstreamWithCallerOverhead(state, eng, parentRequest, resolved, simTime, traceDepth, asyncDepth, isAsync, true, retryAttempt, logicalID)
+		return nil
 	}
 }
 
@@ -299,6 +309,40 @@ func maybeRetryAsyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine
 }
 
 // maybeRetrySyncStartFailure schedules a downstream retry after CPU/memory allocation failure on a sync child.
+// maybeRetrySyncCallerOverheadFailure schedules a downstream retry after CPU reservation failure on caller-side
+// downstream overhead (no child request exists yet).
+func maybeRetrySyncCallerOverheadFailure(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, parent *models.Request, evt *engine.Event, simTime time.Time, reason string) bool {
+	rp := getRetryPolicy(state.policies)
+	if rp == nil || evt == nil || evt.Data == nil {
+		return false
+	}
+	if metadataBool(evt.Data, "is_async_downstream") {
+		return false
+	}
+	attempt := metadataInt(evt.Data, metaRetryAttempt)
+	if !rp.ShouldRetry(attempt, retryReasonError(reason)) {
+		return false
+	}
+	childSvc := evt.ServiceID
+	childPath := metadataString(evt.Data, "child_endpoint_path")
+	logical := metadataString(evt.Data, metaLogicalCallID)
+	if logical == "" {
+		logical = parent.ID + ":" + childSvc + ":" + childPath
+	}
+	nextAttempt := attempt + 1
+	delay := rp.GetBackoffDuration(nextAttempt)
+	scheduleDownstreamRetryEvent(state, eng, parent, childSvc, childPath,
+		metadataInt(evt.Data, "trace_depth"),
+		metadataInt(evt.Data, "async_depth"),
+		false,
+		metadataFloat64(evt.Data, "downstream_timeout_ms"),
+		nextAttempt,
+		logical,
+		delay,
+	)
+	return true
+}
+
 func maybeRetrySyncStartFailure(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, simTime time.Time, reason string) bool {
 	rp := getRetryPolicy(state.policies)
 	if rp == nil {

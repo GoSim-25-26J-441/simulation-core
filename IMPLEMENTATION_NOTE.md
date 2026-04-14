@@ -81,7 +81,7 @@
 ### Downstream calls (optional)
 
 - **`failure_rate` [0,1]**: After `call_latency_ms` delay, Bernoulli **transport/dependency failure** before the child request starts. Target **`kind: external`** service **`behavior.failure_rate`** is merged independently: \(1-(1-p_{edge})(1-p_{svc})\). Reasons: `dependency_failure` (generic) or `external_failure` (external target). **`retryable`**: when `false`, sync/async retries via `policies.retries` are not scheduled for that edge.
-- **`downstream_fraction_cpu`**: Reserved for future parent/child CPU sharing; not applied in this pass (still hashed for identity).
+- **`downstream_fraction_cpu` [0,1]** (default **0**): Fraction of a deterministic **reference CPU work** (ms) charged on the **caller’s instance** as extra CPU before the downstream hop is scheduled. The reference is **`call_latency_ms.mean`** when `> 0`; otherwise **`mean_cpu_ms`** of the **target endpoint**; otherwise **0** (no overhead). The work uses **`ReserveCPUWork` → `AllocateCPU` / `ReleaseCPU`** on the parent instance, participates in FIFO CPU scheduling and utilization, and is included in **`service_request_latency_ms`** / **`service_processing_latency_ms`** for that hop (added to the locally measured hop times). **Sync**: overhead completes before the delayed `downstream_call` (network `call_latency_ms`) and child spawn; **root latency** extends because the child subtree starts later. **Async**: overhead is sequenced before the async child is emitted; the parent does not wait on the child. **Retries**: each retry attempt that re-enters the downstream path pays overhead again. **Dependency failure** (`failure_rate`): still sampled at spawn **after** network delay; caller overhead has already run. **Metric**: **`downstream_caller_cpu_ms`** (per-edge attempt, low-cardinality labels including caller/downstream service+endpoint, mode, origin, traffic/source, retry labels when applicable).
 
 ### Datastore IO and connection pool (distinct from CPU FIFO)
 
@@ -95,7 +95,7 @@
 ### Metrics (new series / reasons)
 
 - Reasons: `external_failure`, `dependency_failure`, `local_failure`, `db_connection_timeout`, `db_connection_rejected` (reserved; pool uses FIFO wait rather than reject in the current model).
-- Series: `db_wait_ms`, `active_connections` (datastore pool gauge), `cache_hit_count`, `cache_miss_count`.
+- Series: `db_wait_ms`, `active_connections` (datastore pool gauge), `cache_hit_count`, `cache_miss_count`, `downstream_caller_cpu_ms` (caller-side downstream serialization / client CPU per edge attempt).
 
 ## Optimizer / scaling guards
 

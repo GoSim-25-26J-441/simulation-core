@@ -234,6 +234,10 @@ func TestEventTypes(t *testing.T) {
 		EventTypeScaleDown,
 		EventTypeSimulationEnd,
 		EventTypeDrainSweep,
+		EventTypeDownstreamTimeout,
+		EventTypeDownstreamRetry,
+		EventTypeDownstreamCallerOverheadStart,
+		EventTypeDownstreamCallerOverheadEnd,
 	}
 
 	for _, eventType := range types {

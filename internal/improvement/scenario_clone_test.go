@@ -23,7 +23,7 @@ func TestCloneScenarioPreservesV2Semantics(t *testing.T) {
 						Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0,
 						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0},
 						Downstream: []config.DownstreamCall{
-							{To: "x:/p", Mode: "async", Kind: "db", Probability: 0.5, TimeoutMs: 100},
+							{To: "x:/p", Mode: "async", Kind: "db", Probability: 0.5, TimeoutMs: 100, DownstreamFractionCPU: 0.25},
 						},
 					},
 				},
@@ -45,7 +45,7 @@ func TestCloneScenarioPreservesV2Semantics(t *testing.T) {
 		t.Fatalf("service scaling: %+v", cl.Services[0])
 	}
 	ds := cl.Services[0].Endpoints[0].Downstream[0]
-	if ds.Mode != "async" || ds.Kind != "db" || ds.Probability != 0.5 || ds.TimeoutMs != 100 {
+	if ds.Mode != "async" || ds.Kind != "db" || ds.Probability != 0.5 || ds.TimeoutMs != 100 || ds.DownstreamFractionCPU != 0.25 {
 		t.Fatalf("downstream: %+v", ds)
 	}
 	if cl.Workload[0].TrafficClass != "ingress" || cl.Workload[0].SourceKind != "client" {

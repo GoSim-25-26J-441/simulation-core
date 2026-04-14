@@ -349,6 +349,50 @@ func TestScenarioValidation(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "Invalid downstream_fraction_cpu high",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "h1", Cores: 4}},
+				Services: []Service{
+					{
+						ID: "svc1", Replicas: 1, Model: "cpu",
+						Endpoints: []Endpoint{
+							{
+								Path: "/a",
+								Downstream: []DownstreamCall{
+									{To: "svc2:/b", DownstreamFractionCPU: 1.1},
+								},
+							},
+						},
+					},
+					{ID: "svc2", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/b"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "svc1:/a", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
+		{
+			name: "Invalid downstream_fraction_cpu negative",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "h1", Cores: 4}},
+				Services: []Service{
+					{
+						ID: "svc1", Replicas: 1, Model: "cpu",
+						Endpoints: []Endpoint{
+							{
+								Path: "/a",
+								Downstream: []DownstreamCall{
+									{To: "svc2:/b", DownstreamFractionCPU: -0.01},
+								},
+							},
+						},
+					},
+					{ID: "svc2", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/b"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "svc1:/a", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {

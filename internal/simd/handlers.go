@@ -107,6 +107,8 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeRequestComplete, handleRequestComplete(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamCall, handleDownstreamCall(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamRetry, handleDownstreamRetry(state, eng))
+	eng.RegisterHandler(engine.EventTypeDownstreamCallerOverheadStart, handleDownstreamCallerOverheadStart(state, eng))
+	eng.RegisterHandler(engine.EventTypeDownstreamCallerOverheadEnd, handleDownstreamCallerOverheadEnd(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamTimeout, handleDownstreamTimeout(state, eng))
 	eng.RegisterHandler(engine.EventTypeDrainSweep, handleDrainSweep(state))
 }
@@ -709,6 +711,26 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 	}
 }
 
+// dequeueNextRequestForInstance schedules the next queued request after the instance is free until scheduleAt
+// (caller downstream CPU overhead is ordered before the next hop start).
+func dequeueNextRequestForInstance(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, instanceID, serviceID, endpointPath string, scheduleAt time.Time) error {
+	nextRequestID, hasNext := state.rm.DequeueRequest(instanceID)
+	if !hasNext {
+		return nil
+	}
+	nextRequest, found := rm.GetRequest(nextRequestID)
+	if !found {
+		return fmt.Errorf("queued request %s not found in run manager", nextRequestID)
+	}
+	eng.ScheduleAt(engine.EventTypeRequestStart, scheduleAt, nextRequest, serviceID, map[string]interface{}{
+		"service_id":    serviceID,
+		"endpoint_path": endpointPath,
+		"instance_id":   instanceID,
+	})
+	recordInstanceAndHostGauges(state, serviceID, instanceID, scheduleAt)
+	return nil
+}
+
 // handleRequestComplete records metrics and handles downstream calls
 func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.EventHandler {
 	return func(_ *engine.Engine, evt *engine.Event) error {
@@ -726,10 +748,8 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		serviceID := request.ServiceName
 		endpointPath := request.Endpoint
 
-		// Get instance ID from metadata
-		instanceID, ok := request.Metadata["instance_id"].(string)
-		if ok {
-			// Release resources
+		instanceID, hasInstance := request.Metadata["instance_id"].(string)
+		if hasInstance {
 			if cpuMs, ok := request.Metadata["allocated_cpu_ms"].(float64); ok {
 				state.rm.ReleaseCPU(instanceID, cpuMs, simTime)
 			}
@@ -739,45 +759,43 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			if metadataBool(request.Metadata, "db_reserved") {
 				state.rm.ReleaseDBConnection(instanceID)
 			}
-
-			// Process next queued request if available
-			nextRequestID, hasNext := state.rm.DequeueRequest(instanceID)
-			if hasNext {
-				rm := eng.GetRunManager()
-				nextRequest, found := rm.GetRequest(nextRequestID)
-				if !found {
-					return fmt.Errorf("queued request %s not found in run manager", nextRequestID)
-				}
-				eng.ScheduleAt(engine.EventTypeRequestStart, simTime, nextRequest, serviceID, map[string]interface{}{
-					"service_id":    serviceID,
-					"endpoint_path": endpointPath,
-					"instance_id":   instanceID,
-				})
-			}
-			// Refresh gauges after release/dequeue to avoid stale service-level snapshots.
 			recordInstanceAndHostGauges(state, serviceID, instanceID, simTime)
 		}
 
 		labels := labelsForRequestMetrics(request, serviceID, endpointPath)
-		hopMs := localServiceHopLatencyMs(request, simTime)
-		procMs := localServiceProcessingLatencyMs(request, simTime)
-		metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
-		metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
-
-		if metadataBool(request.Metadata, "cache_hit") {
-			metrics.RecordCacheHitCount(state.collector, 1.0, simTime, labels)
-		}
-		if metadataBool(request.Metadata, "cache_miss") {
-			metrics.RecordCacheMissCount(state.collector, 1.0, simTime, labels)
-		}
 
 		if metadataBool(request.Metadata, "local_timeout") {
+			hopMs := localServiceHopLatencyMs(request, simTime)
+			procMs := localServiceProcessingLatencyMs(request, simTime)
+			metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
+			metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+			if metadataBool(request.Metadata, "cache_hit") {
+				metrics.RecordCacheHitCount(state.collector, 1.0, simTime, labels)
+			}
+			if metadataBool(request.Metadata, "cache_miss") {
+				metrics.RecordCacheMissCount(state.collector, 1.0, simTime, labels)
+			}
 			finalizeRequestFailure(state, eng, rm, request, simTime, labels, metrics.ReasonLocalFailure)
+			if hasInstance {
+				if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, simTime); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 
 		if metadataBool(request.Metadata, "cache_hit") {
+			hopMs := localServiceHopLatencyMs(request, simTime)
+			procMs := localServiceProcessingLatencyMs(request, simTime)
+			metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
+			metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+			metrics.RecordCacheHitCount(state.collector, 1.0, simTime, labels)
 			finalizeRequestCompletion(state, eng, rm, request, simTime, labels)
+			if hasInstance {
+				if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, simTime); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 
@@ -790,14 +808,37 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		ad := metadataInt(request.Metadata, "async_depth")
 		asyncCalls, syncCalls := partitionDownstreamFiltered(state, downstreamCalls, td, ad)
 
+		callerExtraMs := 0.0
+		for _, dc := range asyncCalls {
+			callerExtraMs += computeDownstreamCallerCPU(state, dc)
+		}
+		for _, dc := range syncCalls {
+			callerExtraMs += computeDownstreamCallerCPU(state, dc)
+		}
+
+		hopMs := localServiceHopLatencyMs(request, simTime) + callerExtraMs
+		procMs := localServiceProcessingLatencyMs(request, simTime) + callerExtraMs
+		metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
+		metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+
+		if metadataBool(request.Metadata, "cache_miss") {
+			metrics.RecordCacheMissCount(state.collector, 1.0, simTime, labels)
+		}
+
+		tAfter := simTime
 		for _, downstreamCall := range asyncCalls {
 			nextTD := td + 1
 			nextAD := ad + 1
-			scheduleDownstreamCallEvent(state, eng, request, downstreamCall, simTime, nextTD, nextAD, true)
+			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "")
 		}
 
 		if len(syncCalls) == 0 {
 			finalizeRequestCompletion(state, eng, rm, request, simTime, labels)
+			if hasInstance {
+				if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, tAfter); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 
@@ -808,9 +849,13 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		for _, downstreamCall := range syncCalls {
 			nextTD := td + 1
 			nextAD := ad
-			scheduleDownstreamCallEvent(state, eng, request, downstreamCall, simTime, nextTD, nextAD, false)
+			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "")
 		}
-
+		if hasInstance {
+			if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, tAfter); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 }

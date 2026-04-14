@@ -392,6 +392,9 @@ func validateScenario(s *Scenario) error {
 				if ds.FailureRate < 0 || ds.FailureRate > 1 {
 					return fmt.Errorf("service %s, endpoint %s: downstream failure_rate must be in [0,1], got %v", svc.ID, ep.Path, ds.FailureRate)
 				}
+				if ds.DownstreamFractionCPU < 0 || ds.DownstreamFractionCPU > 1 {
+					return fmt.Errorf("service %s, endpoint %s: downstream_fraction_cpu must be in [0,1], got %v", svc.ID, ep.Path, ds.DownstreamFractionCPU)
+				}
 			}
 		}
 	}

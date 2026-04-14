@@ -156,6 +156,37 @@ func notifyParentSyncChildResolved(state *scenarioState, eng *engine.Engine, rm 
 	finalizeRequestCompletion(state, eng, rm, parent, simTime, plabels)
 }
 
+// propagateSyncPendingFromCallerOverheadFailure handles CPU allocation failure for caller-side downstream overhead
+// before any child request exists. Decrements pendingSync for a parent that is waiting on sync children.
+func propagateSyncPendingFromCallerOverheadFailure(state *scenarioState, eng *engine.Engine, parent *models.Request, simTime time.Time, reason string, isAsync bool) {
+	if isAsync {
+		return
+	}
+	rm := eng.GetRunManager()
+	parentID := parent.ID
+	state.pendingSyncMu.Lock()
+	n, ok := state.pendingSync[parentID]
+	if !ok || n <= 0 {
+		state.pendingSyncMu.Unlock()
+		return
+	}
+	n--
+	if parent.Metadata != nil {
+		parent.Metadata[metaSubtreeFailed] = true
+		parent.Metadata[metaFailureReason] = reason
+	}
+	if n > 0 {
+		state.pendingSync[parentID] = n
+		state.pendingSyncMu.Unlock()
+		return
+	}
+	delete(state.pendingSync, parentID)
+	state.pendingSyncMu.Unlock()
+
+	plabels := labelsForRequestMetrics(parent, parent.ServiceName, parent.Endpoint)
+	finalizeRequestFailure(state, eng, rm, parent, simTime, plabels, metrics.ReasonDownstreamFailure)
+}
+
 // propagateSyncChildFailureFromStartFailure is used when a downstream child fails before local completion (e.g. CPU allocation).
 func propagateSyncChildFailureFromStartFailure(state *scenarioState, eng *engine.Engine, request *models.Request, simTime time.Time, reason string) {
 	if request.ParentID == "" {
