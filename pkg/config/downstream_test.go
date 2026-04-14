@@ -16,3 +16,17 @@ func TestDownstreamCallIsAsync(t *testing.T) {
 		t.Fatal("empty mode defaults to sync")
 	}
 }
+
+func TestDownstreamCallIsRetryable(t *testing.T) {
+	if !(DownstreamCall{}).IsRetryable() {
+		t.Fatal("default retryable true")
+	}
+	f := false
+	if (DownstreamCall{Retryable: &f}).IsRetryable() {
+		t.Fatal("expected retryable false")
+	}
+	tv := true
+	if !(DownstreamCall{Retryable: &tv}).IsRetryable() {
+		t.Fatal("expected retryable true")
+	}
+}

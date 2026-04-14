@@ -40,7 +40,23 @@ type Service struct {
 	CPUCores  float64         `yaml:"cpu_cores,omitempty"`
 	MemoryMB  float64         `yaml:"memory_mb,omitempty"`
 	Scaling   *ScalingPolicy  `yaml:"scaling,omitempty"`
+	Behavior  *ServiceBehavior `yaml:"behavior,omitempty"`
 	Endpoints []Endpoint      `yaml:"endpoints"`
+}
+
+// ServiceBehavior holds optional failure, saturation, pool, and cache semantics (all backward compatible).
+type ServiceBehavior struct {
+	FailureRate               float64         `yaml:"failure_rate,omitempty"`
+	SaturationLatencyFactor   float64         `yaml:"saturation_latency_factor,omitempty"`
+	MaxConnections            int             `yaml:"max_connections,omitempty"`
+	Cache                     *CacheBehavior  `yaml:"cache,omitempty"`
+}
+
+// CacheBehavior configures hit/miss latency sampling for cache-style services.
+type CacheBehavior struct {
+	HitRate       float64     `yaml:"hit_rate,omitempty"`
+	HitLatencyMs  LatencySpec `yaml:"hit_latency_ms,omitempty"`
+	MissLatencyMs LatencySpec `yaml:"miss_latency_ms,omitempty"`
 }
 
 // ScalingPolicy declares which scaling dimensions are allowed for batch/online optimizers.
@@ -56,6 +72,10 @@ type Endpoint struct {
 	MeanCPUMs       float64          `yaml:"mean_cpu_ms"`
 	CPUSigmaMs      float64          `yaml:"cpu_sigma_ms"`
 	DefaultMemoryMB float64          `yaml:"default_memory_mb,omitempty"` // Default memory usage in MB (optional, defaults to 10.0)
+	FailureRate     float64          `yaml:"failure_rate,omitempty"`
+	TimeoutMs       float64          `yaml:"timeout_ms,omitempty"` // Local processing deadline from StartTime (optional)
+	IOMs            LatencySpec      `yaml:"io_ms,omitempty"`
+	ConnectionPool  int              `yaml:"connection_pool,omitempty"`
 	Downstream      []DownstreamCall `yaml:"downstream"`
 	NetLatencyMs    LatencySpec      `yaml:"net_latency_ms"`
 }
@@ -64,11 +84,13 @@ type Endpoint struct {
 type DownstreamCall struct {
 	To                    string      `yaml:"to"`
 	Mode                  string      `yaml:"mode,omitempty"` // sync (default), async, event
-	Kind                  string      `yaml:"kind,omitempty"` // rest, grpc, db, queue
+	Kind                  string      `yaml:"kind,omitempty"` // rest, grpc, db, queue, external
 	Probability           float64     `yaml:"probability,omitempty"`
 	CallCountMean         float64     `yaml:"call_count_mean,omitempty"`
 	CallLatencyMs         LatencySpec `yaml:"call_latency_ms,omitempty"`
 	TimeoutMs             float64     `yaml:"timeout_ms,omitempty"`
+	FailureRate           float64     `yaml:"failure_rate,omitempty"`
+	Retryable             *bool       `yaml:"retryable,omitempty"` // default true when omitted
 	DownstreamFractionCPU float64     `yaml:"downstream_fraction_cpu,omitempty"`
 }
 

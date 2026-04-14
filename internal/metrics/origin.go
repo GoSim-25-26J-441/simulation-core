@@ -24,6 +24,11 @@ const (
 	ReasonCircuitOpen         = "circuit_open"
 	ReasonNoInstance          = "no_instance"
 	ReasonDrainEvicted        = "drain_evicted"
+	ReasonExternalFailure     = "external_failure"
+	ReasonDependencyFailure   = "dependency_failure"
+	ReasonLocalFailure        = "local_failure"
+	ReasonDBConnectionTimeout = "db_connection_timeout"
+	ReasonDBConnectionRejected = "db_connection_rejected"
 )
 
 // EndpointLabelsWithOrigin adds an origin label to endpoint-scoped metrics.

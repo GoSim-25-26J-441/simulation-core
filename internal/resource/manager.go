@@ -829,6 +829,29 @@ func (m *Manager) ReserveCPUWork(instanceID string, arrivalTime time.Time, cpuDe
 	return cpuStart, cpuEnd, nil
 }
 
+// ReserveDBWork reserves a datastore connection slot for IO duration after CPU completes.
+func (m *Manager) ReserveDBWork(instanceID string, arrivalAfterCPU time.Time, ioDurMs float64, maxSlots int) (ioStart, ioEnd time.Time, slotIdx int, waitMs float64, err error) {
+	m.mu.Lock()
+	instance, ok := m.instances[instanceID]
+	m.mu.Unlock()
+	if !ok {
+		return time.Time{}, time.Time{}, -1, 0, fmt.Errorf("instance not found: %s", instanceID)
+	}
+	ioStart, ioEnd, slotIdx, waitMs = instance.ReserveDBWork(arrivalAfterCPU, ioDurMs, maxSlots)
+	return ioStart, ioEnd, slotIdx, waitMs, nil
+}
+
+// ReleaseDBConnection decrements DB pool in-flight accounting when IO completes.
+func (m *Manager) ReleaseDBConnection(instanceID string) {
+	m.mu.Lock()
+	instance, ok := m.instances[instanceID]
+	m.mu.Unlock()
+	if !ok || instance == nil {
+		return
+	}
+	instance.ReleaseDBConnection()
+}
+
 // RollbackCPUTailReservation reverts a CPU reservation when allocation fails (tail slot only).
 func (m *Manager) RollbackCPUTailReservation(instanceID string, cpuStart, cpuEnd time.Time) {
 	m.mu.Lock()

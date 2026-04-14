@@ -111,8 +111,8 @@ func TestLoadScenario(t *testing.T) {
 	}
 
 	// Validate services
-	if len(scenario.Services) != 10 {
-		t.Errorf("Expected 10 services, got %d", len(scenario.Services))
+	if len(scenario.Services) != 13 {
+		t.Errorf("Expected 13 services, got %d", len(scenario.Services))
 	}
 
 	// Validate ingress service and v2 fields

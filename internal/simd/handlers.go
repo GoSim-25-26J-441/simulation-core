@@ -484,20 +484,62 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			}
 		}
 
+		if request.Metadata == nil {
+			request.Metadata = make(map[string]interface{})
+		}
+
 		cpuTimeMs := prof.CPUTimeMs
-		request.CPUTimeMs = cpuTimeMs
-
 		netLatencyMs := prof.NetworkLatencyMs
-		request.NetworkLatencyMs = netLatencyMs
-
 		memoryMB := prof.MemoryMB
 		if mem, ok := request.Metadata["memory_mb"].(float64); ok {
 			memoryMB = mem
 		}
 
-		if request.Metadata == nil {
-			request.Metadata = make(map[string]interface{})
+		if inst, ok := state.rm.GetServiceInstance(instanceID); ok && svc.Behavior != nil && svc.Behavior.SaturationLatencyFactor > 0 {
+			u := inst.CPUUtilizationAt(simTime)
+			f := 1.0 + svc.Behavior.SaturationLatencyFactor*u
+			cpuTimeMs *= f
+			netLatencyMs *= f
 		}
+
+		if svc.Behavior != nil && svc.Behavior.Cache != nil {
+			c := svc.Behavior.Cache
+			if state.rng.Float64() < c.HitRate {
+				request.Metadata["cache_hit"] = true
+				hitTotal := state.rng.NormFloat64(c.HitLatencyMs.Mean, c.HitLatencyMs.Sigma)
+				if hitTotal < 0 {
+					hitTotal = 0
+				}
+				cpuTimeMs = hitTotal * 0.4
+				netLatencyMs = hitTotal * 0.6
+				memoryMB *= 0.85
+			} else {
+				request.Metadata["cache_miss"] = true
+				miss := state.rng.NormFloat64(c.MissLatencyMs.Mean, c.MissLatencyMs.Sigma)
+				if miss < 0 {
+					miss = 0
+				}
+				cpuTimeMs += miss * 0.5
+				netLatencyMs += miss * 0.5
+			}
+		}
+
+		pLocal := mergedLocalFailureRate(svc, endpoint)
+		if pLocal > 0 && state.rng.Float64() < pLocal {
+			request.Status = models.RequestStatusFailed
+			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
+			rm := eng.GetRunManager()
+			if maybeRetrySyncStartFailure(state, eng, rm, request, simTime, metrics.ReasonLocalFailure) {
+				el := metrics.EndpointErrorLabels(lbl, metrics.ReasonLocalFailure)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+				return nil
+			}
+			finalizeRequestFailure(state, eng, rm, request, simTime, lbl, metrics.ReasonLocalFailure)
+			return nil
+		}
+
+		request.CPUTimeMs = cpuTimeMs
+		request.NetworkLatencyMs = netLatencyMs
 
 		var cpuStart, cpuEnd time.Time
 		deferredExec := false
@@ -627,8 +669,37 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			}
 		}
 
-		// Completion after CPU service ends, then network latency (same hop).
-		completionTime := cpuEnd.Add(time.Duration(netLatencyMs * float64(time.Millisecond)))
+		ioEnd := cpuEnd
+		if isDatastoreWorkload(svc, endpoint) {
+			maxConn := effectiveDBMaxConnections(svc, endpoint)
+			ioDur := sampleEndpointIOWorkloadMs(endpoint, state.rng)
+			ioStart, ioEndSlot, _, dbWaitMs, err := state.rm.ReserveDBWork(instanceID, cpuEnd, ioDur, maxConn)
+			if err != nil {
+				return err
+			}
+			_ = ioStart
+			ioEnd = ioEndSlot
+			if dbWaitMs > 0 {
+				metrics.RecordDbWait(state.collector, dbWaitMs, simTime, labelsForQueueWaitMetrics(request, serviceID, endpointPath, instanceID))
+			}
+			request.Metadata["db_wait_ms"] = dbWaitMs
+			if maxConn > 0 {
+				request.Metadata["db_reserved"] = true
+			}
+			if inst, ok := state.rm.GetServiceInstance(instanceID); ok {
+				metrics.RecordActiveConnections(state.collector, float64(inst.ActiveDBConnections()), simTime, metrics.CreateInstanceLabels(serviceID, instanceID))
+			}
+		}
+
+		// Completion after CPU + optional datastore IO, then network latency (same hop).
+		completionTime := ioEnd.Add(time.Duration(netLatencyMs * float64(time.Millisecond)))
+		if endpoint.TimeoutMs > 0 {
+			deadline := cpuStart.Add(time.Duration(endpoint.TimeoutMs) * time.Millisecond)
+			if completionTime.After(deadline) {
+				request.Metadata["local_timeout"] = true
+				completionTime = deadline
+			}
+		}
 		eng.ScheduleAt(engine.EventTypeRequestComplete, completionTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
 			"instance_id":   instanceID,
@@ -665,6 +736,9 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			if memoryMB, ok := request.Metadata["allocated_memory_mb"].(float64); ok {
 				state.rm.ReleaseMemory(instanceID, memoryMB)
 			}
+			if metadataBool(request.Metadata, "db_reserved") {
+				state.rm.ReleaseDBConnection(instanceID)
+			}
 
 			// Process next queued request if available
 			nextRequestID, hasNext := state.rm.DequeueRequest(instanceID)
@@ -689,6 +763,23 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		procMs := localServiceProcessingLatencyMs(request, simTime)
 		metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
 		metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+
+		if metadataBool(request.Metadata, "cache_hit") {
+			metrics.RecordCacheHitCount(state.collector, 1.0, simTime, labels)
+		}
+		if metadataBool(request.Metadata, "cache_miss") {
+			metrics.RecordCacheMissCount(state.collector, 1.0, simTime, labels)
+		}
+
+		if metadataBool(request.Metadata, "local_timeout") {
+			finalizeRequestFailure(state, eng, rm, request, simTime, labels, metrics.ReasonLocalFailure)
+			return nil
+		}
+
+		if metadataBool(request.Metadata, "cache_hit") {
+			finalizeRequestCompletion(state, eng, rm, request, simTime, labels)
+			return nil
+		}
 
 		downstreamCalls, err := state.interact.GetDownstreamCalls(serviceID, endpointPath)
 		if err != nil {

@@ -101,6 +101,25 @@ func ConfigHash(s *config.Scenario) uint64 {
 			writeB(sv.Scaling.VerticalCPU)
 			writeB(sv.Scaling.VerticalMemory)
 		}
+		if sv.Behavior == nil {
+			writeStr("beh_nil")
+		} else {
+			writeStr("beh")
+			b := sv.Behavior
+			writeF(b.FailureRate)
+			writeF(b.SaturationLatencyFactor)
+			writeI(b.MaxConnections)
+			if b.Cache == nil {
+				writeStr("cache_nil")
+			} else {
+				writeStr("cache")
+				writeF(b.Cache.HitRate)
+				writeF(b.Cache.HitLatencyMs.Mean)
+				writeF(b.Cache.HitLatencyMs.Sigma)
+				writeF(b.Cache.MissLatencyMs.Mean)
+				writeF(b.Cache.MissLatencyMs.Sigma)
+			}
+		}
 
 		// endpoints (canonical: by path, then declaration order for duplicate paths)
 		epIdx := make([]int, len(sv.Endpoints))
@@ -121,6 +140,11 @@ func ConfigHash(s *config.Scenario) uint64 {
 			writeF(ep.MeanCPUMs)
 			writeF(ep.CPUSigmaMs)
 			writeF(ep.DefaultMemoryMB)
+			writeF(ep.FailureRate)
+			writeF(ep.TimeoutMs)
+			writeF(ep.IOMs.Mean)
+			writeF(ep.IOMs.Sigma)
+			writeI(ep.ConnectionPool)
 			writeF(ep.NetLatencyMs.Mean)
 			writeF(ep.NetLatencyMs.Sigma)
 
@@ -157,6 +181,19 @@ func ConfigHash(s *config.Scenario) uint64 {
 				if a.DownstreamFractionCPU != b.DownstreamFractionCPU {
 					return a.DownstreamFractionCPU < b.DownstreamFractionCPU
 				}
+				if a.FailureRate != b.FailureRate {
+					return a.FailureRate < b.FailureRate
+				}
+				aR, bR := false, false
+				if a.Retryable != nil {
+					aR = *a.Retryable
+				}
+				if b.Retryable != nil {
+					bR = *b.Retryable
+				}
+				if aR != bR {
+					return !aR && bR
+				}
 				return dsIdx[i] < dsIdx[j]
 			})
 			writeI(len(dsIdx))
@@ -171,6 +208,12 @@ func ConfigHash(s *config.Scenario) uint64 {
 				writeF(d.CallLatencyMs.Mean)
 				writeF(d.CallLatencyMs.Sigma)
 				writeF(d.TimeoutMs)
+				writeF(d.FailureRate)
+				if d.Retryable == nil {
+					writeStr("dr_nil")
+				} else {
+					writeB(*d.Retryable)
+				}
 				writeF(d.DownstreamFractionCPU)
 			}
 		}

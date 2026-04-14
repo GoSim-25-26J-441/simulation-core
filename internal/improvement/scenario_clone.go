@@ -43,17 +43,36 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 				VerticalMemory: svc.Scaling.VerticalMemory,
 			}
 		}
+		if svc.Behavior != nil {
+			b := svc.Behavior
+			ns.Behavior = &config.ServiceBehavior{
+				FailureRate:             b.FailureRate,
+				SaturationLatencyFactor: b.SaturationLatencyFactor,
+				MaxConnections:          b.MaxConnections,
+			}
+			if b.Cache != nil {
+				ns.Behavior.Cache = &config.CacheBehavior{
+					HitRate:       b.Cache.HitRate,
+					HitLatencyMs:  b.Cache.HitLatencyMs,
+					MissLatencyMs: b.Cache.MissLatencyMs,
+				}
+			}
+		}
 		for j, ep := range svc.Endpoints {
 			ne := config.Endpoint{
 				Path:            ep.Path,
 				MeanCPUMs:       ep.MeanCPUMs,
 				CPUSigmaMs:      ep.CPUSigmaMs,
 				DefaultMemoryMB: ep.DefaultMemoryMB,
+				FailureRate:     ep.FailureRate,
+				TimeoutMs:       ep.TimeoutMs,
+				IOMs:            ep.IOMs,
+				ConnectionPool:  ep.ConnectionPool,
 				NetLatencyMs:    ep.NetLatencyMs,
 				Downstream:      make([]config.DownstreamCall, len(ep.Downstream)),
 			}
 			for k, ds := range ep.Downstream {
-				ne.Downstream[k] = config.DownstreamCall{
+				dc := config.DownstreamCall{
 					To:                    ds.To,
 					Mode:                  ds.Mode,
 					Kind:                  ds.Kind,
@@ -61,8 +80,14 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 					CallCountMean:         ds.CallCountMean,
 					CallLatencyMs:         ds.CallLatencyMs,
 					TimeoutMs:             ds.TimeoutMs,
+					FailureRate:           ds.FailureRate,
 					DownstreamFractionCPU: ds.DownstreamFractionCPU,
 				}
+				if ds.Retryable != nil {
+					v := *ds.Retryable
+					dc.Retryable = &v
+				}
+				ne.Downstream[k] = dc
 			}
 			ns.Endpoints[j] = ne
 		}

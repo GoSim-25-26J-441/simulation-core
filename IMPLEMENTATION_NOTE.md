@@ -66,6 +66,37 @@
 - **`kind` / `role`**: `api_gateway` / `ingress` classify ingress-facing work (queue class `ingress`). `database` / `datastore` use datastore IO queue class. `cache` slightly reduces CPU vs generic services; `external` nudges network latency up. **`kind: queue` is rejected at scenario validation** (not implemented). `cache` and `external` are accepted and use the generic execution path with light nudges (partially differentiated).
 - **`scaling`**: `pkg/config` scaling helpers (`ServiceAllowsBatchScalingAction`, `ServiceAllowsHorizontalScaling`, …) gate **batch** and **online** actions. **Database** services with **no** `scaling` block **horizontal** scaling by default (vertical changes still require an explicit policy when `scaling` is set; when `scaling` is nil on a database, **all** optimizer dimensions are blocked).
 
+### Service `behavior` (optional, backward compatible)
+
+- **`failure_rate` [0,1]**: Bernoulli local failure sampled in `handle_request_start` before CPU admission (combined additively with `endpoint.failure_rate`, capped at 1). Emits `request_error_count` with `reason=local_failure` and user-visible ingress failure when the logical request fails after retries (if any).
+- **`saturation_latency_factor`**: Multiplies sampled CPU and network work by `1 + factor * CPUUtilizationAt(instance)` after instance selection (light load-dependent slowdown).
+- **`max_connections`**: Default limit for a **datastore-style IO pool** on each replica (parallel FIFO slots, capped at 64 slots internally). **Endpoint** `connection_pool` overrides when `> 0`. Used only when the workload is modeled as datastore IO (see below).
+- **`cache`**: When set, the simulator samples **hit** vs **miss** with `hit_rate`; hit path reshapes CPU/net toward `hit_latency_ms`, miss path adds work from `miss_latency_ms`. **Cache hits** skip scheduling downstream edges for that hop (`cache_hit` metadata) and emit `cache_hit_count` / `cache_miss_count`.
+
+### Endpoint fields (optional)
+
+- **`failure_rate`**, **`timeout_ms`**: Local Bernoulli failure (combined with service behavior) and **local processing deadline** from `StartTime`: if CPU + datastore IO + net would finish after `StartTime + timeout_ms`, completion is moved to the deadline and recorded as `local_failure`.
+- **`io_ms`**, **`connection_pool`**: For datastore IO modeling, sampled IO duration after CPU (`io_ms` defaults to `net_latency_ms` sampling when unset). `connection_pool` overrides service `behavior.max_connections` when `> 0`.
+
+### Downstream calls (optional)
+
+- **`failure_rate` [0,1]**: After `call_latency_ms` delay, Bernoulli **transport/dependency failure** before the child request starts. Target **`kind: external`** service **`behavior.failure_rate`** is merged independently: \(1-(1-p_{edge})(1-p_{svc})\). Reasons: `dependency_failure` (generic) or `external_failure` (external target). **`retryable`**: when `false`, sync/async retries via `policies.retries` are not scheduled for that edge.
+- **`downstream_fraction_cpu`**: Reserved for future parent/child CPU sharing; not applied in this pass (still hashed for identity).
+
+### Datastore IO and connection pool (distinct from CPU FIFO)
+
+- For **database** / **datastore** / **`model: db_latency`**, and for **`kind: external`** only when **`io_ms`**, **`connection_pool`**, or **`behavior.max_connections`** is set explicitly (avoids changing legacy external one-phase hops).
+- After CPU wall time ends, a **second phase** reserves a **connection slot** for sampled **`io_ms`** (or `net_latency_ms` fallback). **`db_wait_ms`** records queueing for a slot after CPU (`io_start - cpu_end` when positive). **`active_connections`** gauge tracks in-flight pooled IO per instance. **`queue_wait_ms`** remains **CPU** wait only (Arrival → `StartTime` at CPU).
+
+### External dependency failure and timeouts
+
+- Dependency failures are evaluated at **downstream spawn** (after `call_latency_ms`). Existing **`timeout_ms`** on the edge still schedules `downstream_timeout` from child arrival. Retries follow **`policies.retries`** and **`retryable`**.
+
+### Metrics (new series / reasons)
+
+- Reasons: `external_failure`, `dependency_failure`, `local_failure`, `db_connection_timeout`, `db_connection_rejected` (reserved; pool uses FIFO wait rather than reject in the current model).
+- Series: `db_wait_ms`, `active_connections` (datastore pool gauge), `cache_hit_count`, `cache_miss_count`.
+
 ## Optimizer / scaling guards
 
 - **Online**: Primary target `p95_latency` (default) **requires** `target_p95_latency_ms > 0` when starting an online optimization run. **Utilization-primary** (`cpu_utilization`, `memory_utilization`) does **not** require a P95 target; when `target_p95_latency_ms > 0`, it acts as an optional guardrail for scale-down decisions.
@@ -88,6 +119,6 @@
 ## Scenario identity / optimizer hashing
 
 - **Single source of truth**: `internal/batchspec.ConfigHash` fingerprints the full v2 scenario for batch candidate deduplication, `CandidateStore` lookup (`hash → runID`), and deterministic per-candidate seeds (`seed = int64(ConfigHash(scenario)) ^ …` in batch evaluation). `internal/improvement.configsMatch` delegates to `batchspec.ScenarioSemanticsEqual` (hash equality) so the optimizer and orchestrator never disagree on “same scenario.”
-- **Fields included**: `metadata.schema_version`; `simulation_limits` (`max_trace_depth`, `max_async_hops`); every host (`id`, `cores`, `memory_gb`); every service (`id`, `kind`, `role`, `replicas`, `model`, `cpu_cores`, `memory_mb`, scaling flags); every endpoint (`path`, CPU stats, `default_memory_mb`, `net_latency_ms`); every downstream call (full edge: `to`, `mode`, `kind`, probabilities, latencies, `timeout_ms`, `downstream_fraction_cpu`); every workload row (`from`, `source_kind`, `traffic_class`, `to`, full `arrival` including bursty parameters); full `policies` (`autoscaling` and `retries` including `backoff` and `base_ms`).
+- **Fields included**: `metadata.schema_version`; `simulation_limits` (`max_trace_depth`, `max_async_hops`); every host (`id`, `cores`, `memory_gb`); every service (`id`, `kind`, `role`, `replicas`, `model`, `cpu_cores`, `memory_mb`, scaling flags, full optional `behavior` including `cache`); every endpoint (`path`, CPU stats, `default_memory_mb`, `failure_rate`, `timeout_ms`, `io_ms`, `connection_pool`, `net_latency_ms`); every downstream call (full edge: `to`, `mode`, `kind`, probabilities, latencies, `timeout_ms`, `failure_rate`, `retryable`, `downstream_fraction_cpu`); every workload row (`from`, `source_kind`, `traffic_class`, `to`, full `arrival` including bursty parameters); full `policies` (`autoscaling` and `retries` including `backoff` and `base_ms`).
 - **Ordering**: Hosts, services, endpoints, downstream edges, and workload rows are hashed in **canonical** sorted order (hosts by `id`, services by `id`, endpoints by `path` with stable tie-break on slice index for duplicate paths, downstream by full tuple + index, workload by full semantic tuple + index). **Service slice order in YAML is not part of identity**—only the multiset of services by `id` matters. If two workload rows are fully identical, relative order is preserved via stable sort so multiplicity stays consistent.
 - **Why it matters**: If two behaviorally different scenarios collapsed to the same hash, batch optimization could dedupe them incorrectly, reuse metrics, or reuse seeds, producing wrong recommendations even when the DES is accurate.

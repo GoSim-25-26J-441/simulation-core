@@ -8,3 +8,11 @@ func (d DownstreamCall) IsAsync() bool {
 	m := strings.ToLower(strings.TrimSpace(d.Mode))
 	return m == "async" || m == "event"
 }
+
+// IsRetryable reports whether downstream retries are allowed for this edge (default true).
+func (d DownstreamCall) IsRetryable() bool {
+	if d.Retryable == nil {
+		return true
+	}
+	return *d.Retryable
+}

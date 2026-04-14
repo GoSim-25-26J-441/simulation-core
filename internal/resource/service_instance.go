@@ -49,9 +49,17 @@ type ServiceInstance struct {
 	// reserved [cpuStart, cpuEnd) interval). Zero means no backlog from prior reservations.
 	cpuNextFree time.Time
 
+	// dbSlotFree tracks per-slot next-free times for datastore connection pools (parallel FIFO).
+	// Each slot schedules sequential work; the pool picks the earliest available slot.
+	dbSlotFree []time.Time
+	// dbActiveConnections is a gauge-friendly count of in-flight pooled DB operations on this instance.
+	dbActiveConnections int
+
 	// Timestamps
 	lastUpdate time.Time
 }
+
+const maxDBSlotsCap = 64
 
 // NewServiceInstance creates a new service instance
 func NewServiceInstance(id, serviceName, hostID string, cpuCores, memoryMB float64) *ServiceInstance {
@@ -343,6 +351,68 @@ func (s *ServiceInstance) ReserveCPUWork(arrivalTime time.Time, cpuDemandMs floa
 	return cpuStart, cpuEnd
 }
 
+// ReserveDBWork schedules IO-style work on a logical connection pool after CPU completes.
+// maxSlots <= 0 disables pooling (immediate start at arrival). durMs is wall time for the IO phase.
+func (s *ServiceInstance) ReserveDBWork(arrival time.Time, durMs float64, maxSlots int) (start, end time.Time, slotIdx int, waitMs float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if durMs < 0 {
+		durMs = 0
+	}
+	dur := time.Duration(math.Round(durMs * float64(time.Millisecond)))
+	if maxSlots <= 0 {
+		start = arrival
+		end = arrival.Add(dur)
+		return start, end, -1, 0
+	}
+	if maxSlots > maxDBSlotsCap {
+		maxSlots = maxDBSlotsCap
+	}
+	if len(s.dbSlotFree) < maxSlots {
+		next := make([]time.Time, maxSlots)
+		copy(next, s.dbSlotFree)
+		s.dbSlotFree = next
+	}
+	bestIdx := 0
+	bestStart := arrival
+	first := true
+	for i := 0; i < maxSlots; i++ {
+		slotStart := arrival
+		if !s.dbSlotFree[i].IsZero() && s.dbSlotFree[i].After(slotStart) {
+			slotStart = s.dbSlotFree[i]
+		}
+		if first || slotStart.Before(bestStart) {
+			bestStart = slotStart
+			bestIdx = i
+			first = false
+		}
+	}
+	waitMs = float64(bestStart.Sub(arrival).Nanoseconds()) / 1e6
+	if waitMs < 0 {
+		waitMs = 0
+	}
+	end = bestStart.Add(dur)
+	s.dbSlotFree[bestIdx] = end
+	s.dbActiveConnections++
+	return bestStart, end, bestIdx, waitMs
+}
+
+// ReleaseDBConnection decrements the in-flight DB connection gauge after IO completes.
+func (s *ServiceInstance) ReleaseDBConnection() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dbActiveConnections > 0 {
+		s.dbActiveConnections--
+	}
+}
+
+// ActiveDBConnections returns the current DB pool in-flight count (gauge).
+func (s *ServiceInstance) ActiveDBConnections() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbActiveConnections
+}
+
 // RollbackCPUTailReservation reverts the last reservation if cpuEnd is still the tail
 // of the schedule (cpuNextFree == cpuEnd). Used when memory allocation fails after ReserveCPUWork.
 func (s *ServiceInstance) RollbackCPUTailReservation(cpuStart, cpuEnd time.Time) {
@@ -381,6 +451,8 @@ func (s *ServiceInstance) EvictResourceState(simTime time.Time) []string {
 	s.cpuUsageInWindow = 0
 	s.windowStartTime = simTime
 	s.cpuNextFree = time.Time{}
+	s.dbSlotFree = nil
+	s.dbActiveConnections = 0
 	s.lastUpdate = simTime
 	return dropped
 }

@@ -308,6 +308,76 @@ services:
           sigma: 3
         downstream: []
 
+  # --- Optional v2 behavior examples (not on the default hot path unless wired into edges above) ---
+  - id: demo-payments-external
+    kind: external
+    role: internal
+    replicas: 1
+    model: cpu
+    behavior:
+      failure_rate: 0.001
+      max_connections: 16
+    endpoints:
+      - path: /charge
+        mean_cpu_ms: 2
+        cpu_sigma_ms: 0.5
+        default_memory_mb: 8
+        net_latency_ms:
+          mean: 25
+          sigma: 8
+        downstream: []
+
+  - id: demo-orders-db
+    kind: database
+    role: datastore
+    replicas: 1
+    model: db_latency
+    behavior:
+      max_connections: 4
+    cpu_cores: 2.0
+    memory_mb: 4096
+    scaling:
+      horizontal: false
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /orders
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 24
+        io_ms:
+          mean: 6
+          sigma: 2
+        connection_pool: 4
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream: []
+
+  - id: demo-product-cache
+    kind: cache
+    role: internal
+    replicas: 2
+    model: cpu
+    behavior:
+      cache:
+        hit_rate: 0.78
+        hit_latency_ms:
+          mean: 1.2
+          sigma: 0.3
+        miss_latency_ms:
+          mean: 8
+          sigma: 2
+    endpoints:
+      - path: /product
+        mean_cpu_ms: 3
+        cpu_sigma_ms: 1
+        default_memory_mb: 32
+        net_latency_ms:
+          mean: 1
+          sigma: 0.3
+        downstream: []
+
 workload:
   - from: web-client
     source_kind: client

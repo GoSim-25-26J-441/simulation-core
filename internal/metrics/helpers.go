@@ -23,6 +23,10 @@ const (
 	MetricConcurrentRequests        = "concurrent_requests"
 	// MetricIngressLogicalFailure counts user-visible ingress/root trace failures (SLO error rate numerator).
 	MetricIngressLogicalFailure = "ingress_logical_failure_count"
+	MetricDbWaitMs                = "db_wait_ms"
+	MetricActiveConnections       = "active_connections"
+	MetricCacheHitCount           = "cache_hit_count"
+	MetricCacheMissCount          = "cache_miss_count"
 )
 
 // RecordLatency records end-to-end latency for a completed request (per-hop total duration when the request node finishes).
@@ -85,6 +89,26 @@ func RecordThroughput(collector *Collector, rps float64, timestamp time.Time, la
 // RecordConcurrentRequests records the current in-flight request count (gauge) per instance.
 func RecordConcurrentRequests(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricConcurrentRequests, count, timestamp, labels)
+}
+
+// RecordDbWait records time spent waiting for a datastore connection slot after CPU work.
+func RecordDbWait(collector *Collector, dbWaitMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricDbWaitMs, dbWaitMs, timestamp, labels)
+}
+
+// RecordActiveConnections records pooled connection usage (e.g. datastore pool gauge).
+func RecordActiveConnections(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricActiveConnections, count, timestamp, labels)
+}
+
+// RecordCacheHitCount records cache hit events (low-cardinality endpoint labels).
+func RecordCacheHitCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricCacheHitCount, count, timestamp, labels)
+}
+
+// RecordCacheMissCount records cache miss events.
+func RecordCacheMissCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricCacheMissCount, count, timestamp, labels)
 }
 
 // RecordIngressLogicalFailure records one user-visible ingress/root logical failure (for SLO error rate).

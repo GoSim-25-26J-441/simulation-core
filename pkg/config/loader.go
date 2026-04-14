@@ -288,6 +288,31 @@ func validateScenario(s *Scenario) error {
 			return fmt.Errorf("service %s: at least one endpoint must be defined", svc.ID)
 		}
 
+		if svc.Behavior != nil {
+			b := svc.Behavior
+			if b.FailureRate < 0 || b.FailureRate > 1 {
+				return fmt.Errorf("service %s: behavior.failure_rate must be in [0,1], got %v", svc.ID, b.FailureRate)
+			}
+			if b.SaturationLatencyFactor < 0 {
+				return fmt.Errorf("service %s: behavior.saturation_latency_factor cannot be negative", svc.ID)
+			}
+			if b.MaxConnections < 0 {
+				return fmt.Errorf("service %s: behavior.max_connections cannot be negative", svc.ID)
+			}
+			if b.Cache != nil {
+				c := b.Cache
+				if c.HitRate < 0 || c.HitRate > 1 {
+					return fmt.Errorf("service %s: behavior.cache.hit_rate must be in [0,1], got %v", svc.ID, c.HitRate)
+				}
+				if c.HitLatencyMs.Mean < 0 || c.HitLatencyMs.Sigma < 0 {
+					return fmt.Errorf("service %s: behavior.cache.hit_latency_ms mean/sigma cannot be negative", svc.ID)
+				}
+				if c.MissLatencyMs.Mean < 0 || c.MissLatencyMs.Sigma < 0 {
+					return fmt.Errorf("service %s: behavior.cache.miss_latency_ms mean/sigma cannot be negative", svc.ID)
+				}
+			}
+		}
+
 		for _, ep := range svc.Endpoints {
 			if ep.Path == "" {
 				return fmt.Errorf("service %s: endpoint path cannot be empty", svc.ID)
@@ -304,6 +329,18 @@ func validateScenario(s *Scenario) error {
 			if ep.NetLatencyMs.Sigma < 0 {
 				return fmt.Errorf("service %s, endpoint %s: net_latency_ms.sigma cannot be negative", svc.ID, ep.Path)
 			}
+			if ep.FailureRate < 0 || ep.FailureRate > 1 {
+				return fmt.Errorf("service %s, endpoint %s: failure_rate must be in [0,1], got %v", svc.ID, ep.Path, ep.FailureRate)
+			}
+			if ep.TimeoutMs < 0 {
+				return fmt.Errorf("service %s, endpoint %s: timeout_ms cannot be negative", svc.ID, ep.Path)
+			}
+			if ep.IOMs.Mean < 0 || ep.IOMs.Sigma < 0 {
+				return fmt.Errorf("service %s, endpoint %s: io_ms mean/sigma cannot be negative", svc.ID, ep.Path)
+			}
+			if ep.ConnectionPool < 0 {
+				return fmt.Errorf("service %s, endpoint %s: connection_pool cannot be negative", svc.ID, ep.Path)
+			}
 		}
 	}
 
@@ -318,7 +355,7 @@ func validateScenario(s *Scenario) error {
 		"": true, "sync": true, "async": true, "event": true,
 	}
 	validDownstreamKinds := map[string]bool{
-		"": true, "rest": true, "grpc": true, "db": true, "queue": true,
+		"": true, "rest": true, "grpc": true, "db": true, "queue": true, "external": true,
 	}
 
 	// Second pass: validate downstream calls now that all service IDs are known
@@ -351,6 +388,9 @@ func validateScenario(s *Scenario) error {
 				}
 				if ds.TimeoutMs < 0 {
 					return fmt.Errorf("service %s, endpoint %s: downstream timeout_ms cannot be negative", svc.ID, ep.Path)
+				}
+				if ds.FailureRate < 0 || ds.FailureRate > 1 {
+					return fmt.Errorf("service %s, endpoint %s: downstream failure_rate must be in [0,1], got %v", svc.ID, ep.Path, ds.FailureRate)
 				}
 			}
 		}

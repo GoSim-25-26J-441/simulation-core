@@ -3,12 +3,14 @@ package simd
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
@@ -66,6 +68,27 @@ func labelsForRequestMetricsWithRetry(req *models.Request, serviceID, endpointPa
 	return labelsForRequestMetrics(req, serviceID, endpointPath)
 }
 
+func resolveDownstreamCallSpec(state *scenarioState, parent *models.Request, childSvc, childPath string) (config.DownstreamCall, bool) {
+	if parent == nil || state == nil {
+		return config.DownstreamCall{}, false
+	}
+	edges := state.interact.GetGraph().GetDownstreamEdges(parent.ServiceName, parent.Endpoint)
+	for _, e := range edges {
+		if e.ToServiceID == childSvc && e.ToPath == childPath {
+			return e.Call, true
+		}
+	}
+	return config.DownstreamCall{}, false
+}
+
+// maybeRetrySyncDependencyFailure schedules a downstream retry after transport/dependency failure (respects retryable=false).
+func maybeRetrySyncDependencyFailure(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, simTime time.Time, reason string, dsCall config.DownstreamCall) bool {
+	if !dsCall.IsRetryable() {
+		return false
+	}
+	return maybeRetrySyncStartFailure(state, eng, rm, child, simTime, reason)
+}
+
 // execDownstreamSpawn creates a downstream request, records request_count, schedules start and optional timeout.
 func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, retryAttempt int, logicalCallID string) error {
 	simTime := eng.GetSimTime()
@@ -73,6 +96,49 @@ func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest
 	downstreamRequest, err := state.interact.CreateDownstreamRequest(parentRequest, resolvedCall)
 	if err != nil {
 		return err
+	}
+
+	dsCall, _ := resolveDownstreamCallSpec(state, parentRequest, downstreamServiceID, endpointPath)
+	tgtSvc := state.services[downstreamServiceID]
+	pFail := mergedDependencyFailureRate(dsCall, tgtSvc)
+	if pFail > 0 && state.rng.Float64() < pFail {
+		downstreamRequest.Metadata["trace_depth"] = traceDepth
+		downstreamRequest.Metadata["async_depth"] = asyncDepth
+		downstreamRequest.Metadata[metaDownstreamAsync] = isAsync
+		downstreamRequest.Metadata[metaRetryAttempt] = retryAttempt
+		if logicalCallID != "" {
+			downstreamRequest.Metadata[metaLogicalCallID] = logicalCallID
+		} else {
+			downstreamRequest.Metadata[metaLogicalCallID] = downstreamRequest.ID
+		}
+		if retryAttempt > 0 {
+			downstreamRequest.Metadata[metaIsRetry] = true
+		}
+		for _, k := range []string{"workload_from", "workload_source_kind", "workload_traffic_class"} {
+			if v, ok := parentRequest.Metadata[k]; ok {
+				downstreamRequest.Metadata[k] = v
+			}
+		}
+		downstreamRequest.ArrivalTime = simTime
+		downstreamRequest.Status = models.RequestStatusFailed
+		if timeoutMs > 0 {
+			downstreamRequest.Metadata["downstream_timeout_ms"] = timeoutMs
+		}
+		reason := metrics.ReasonDependencyFailure
+		if tgtSvc != nil && strings.ToLower(strings.TrimSpace(tgtSvc.Kind)) == "external" {
+			reason = metrics.ReasonExternalFailure
+		}
+		rm := eng.GetRunManager()
+		rm.AddRequest(downstreamRequest)
+		dsLabels := labelsForRequestMetricsWithRetry(downstreamRequest, downstreamServiceID, endpointPath)
+		metrics.RecordRequestCount(state.collector, 1.0, simTime, dsLabels)
+		if maybeRetrySyncDependencyFailure(state, eng, rm, downstreamRequest, simTime, reason, dsCall) {
+			el := metrics.EndpointErrorLabels(dsLabels, reason)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+			return nil
+		}
+		finalizeRequestFailure(state, eng, rm, downstreamRequest, simTime, dsLabels, reason)
+		return nil
 	}
 
 	downstreamRequest.Metadata["trace_depth"] = traceDepth
