@@ -50,23 +50,11 @@ func TestEnqueuePathRecordsQueueLengthGauge(t *testing.T) {
 	}
 
 	simTime := eng.GetSimTime()
-	// Saturate instance CPU so the next arrival enqueues instead of starting (capacity-full path).
-	for i := 0; i < 10; i++ {
-		if err := rm.AllocateCPU(instance.ID(), 100.0, simTime); err != nil {
-			t.Fatalf("AllocateCPU: %v", err)
-		}
+	// Admission no longer uses HasCapacityAt; manually enqueue a pending ID to exercise queue_length gauges.
+	if err := rm.EnqueueRequest(instance.ID(), "queued-synthetic"); err != nil {
+		t.Fatalf("EnqueueRequest: %v", err)
 	}
-	if instance.HasCapacityAt(simTime) {
-		t.Fatal("expected instance at CPU capacity so arrival uses enqueue path")
-	}
-
-	eng.ScheduleAt(engine.EventTypeRequestArrival, simTime, nil, "svc1", map[string]interface{}{
-		"service_id":    "svc1",
-		"endpoint_path": "/test",
-	})
-	if err := eng.Run(50 * time.Millisecond); err != nil {
-		t.Fatalf("Engine run error: %v", err)
-	}
+	recordInstanceAndHostGauges(state, "svc1", instance.ID(), simTime)
 
 	if rm.GetQueueLength(instance.ID()) != 1 {
 		t.Fatalf("expected queue depth 1, got %d", rm.GetQueueLength(instance.ID()))
@@ -114,34 +102,16 @@ func TestHandleRequestArrivalWithQueueing(t *testing.T) {
 	}
 	RegisterHandlers(eng, state)
 
-	// Get instance and fill it to capacity
-	instance, err := rm.SelectInstanceForService("svc1")
-	if err != nil {
-		t.Fatalf("failed to get instance: %v", err)
-	}
-
-	// Fill instance to capacity by allocating resources
-	for i := 0; i < 10; i++ {
-		_ = rm.AllocateCPU(instance.ID(), 100.0, time.Now())
-		_ = rm.AllocateMemory(instance.ID(), 50.0)
-	}
-
-	// Schedule a request arrival - should be queued
+	// Admission no longer enqueues on CPU saturation; CPU FIFO defers RequestStart instead.
+	// Smoke-test that a normal arrival completes without error.
 	eng.ScheduleAt(engine.EventTypeRequestArrival, eng.GetSimTime(), nil, "svc1", map[string]interface{}{
 		"service_id":    "svc1",
 		"endpoint_path": "/test",
 	})
 
-	// Run simulation
 	err = eng.Run(50 * time.Millisecond)
 	if err != nil {
 		t.Fatalf("Engine run error: %v", err)
-	}
-
-	// Check that request was queued
-	queueLength := rm.GetQueueLength(instance.ID())
-	if queueLength == 0 {
-		t.Logf("Queue may have been processed, but queueing should have occurred")
 	}
 }
 
@@ -367,8 +337,20 @@ func TestHandleRequestCompleteWithQueueProcessing(t *testing.T) {
 		t.Fatalf("failed to get instance: %v", err)
 	}
 
-	// Queue a request
-	_ = rm.EnqueueRequest(instance.ID(), "queued-req-1")
+	// Queue a request ID that exists in the run manager (dequeue schedules RequestStart).
+	queued := &models.Request{
+		ID:          "queued-req-1",
+		TraceID:     "trace-q",
+		ServiceName: "svc1",
+		Endpoint:    "/test",
+		Status:      models.RequestStatusPending,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata:    make(map[string]interface{}),
+	}
+	eng.GetRunManager().AddRequest(queued)
+	if err := rm.EnqueueRequest(instance.ID(), queued.ID); err != nil {
+		t.Fatalf("EnqueueRequest: %v", err)
+	}
 
 	// Create and complete a request to trigger queue processing
 	request := &models.Request{

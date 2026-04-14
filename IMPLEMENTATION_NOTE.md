@@ -34,10 +34,18 @@
 - **Run-level** latency percentiles in `ConvertToRunMetrics` prefer **root_request_latency_ms** samples when present; otherwise **request_latency_ms**. Per-service rollups in `ServiceMetrics` use **service_request_latency_ms** aggregates (hop totals including queue wait).
 - **request_count** continues to use `origin` (`ingress`/`downstream`) plus optional `traffic_class` and `source_kind` labels when present on the request.
 
-## Queueing (FIFO DES)
+## CPU scheduling (per-instance FIFO)
 
-- Waiting is modeled as **elapsed simulation time** while a request is **pending** on an instance (after arrival/admission, before **RequestStart**). Completion work duration is **CPU + net** only; queue time is **not** added again inside processing duration.
-- The simulator does **not** implement a full **M/M/c** or analytical queueing formula; capacity is enforced via **CPU windows** and **FIFO** instance queues. Dropped or drain-evicted **pending** requests never reach **RequestStart**, so they do not emit **queue_wait_ms** or success-path service latency.
+- **`mean_cpu_ms` / sampled CPU demand** is **total work** for the hop in **core·ms** (or equivalently “milliseconds of CPU time if this instance had exactly one core”). It feeds **`AllocateCPU`** accounting (sliding utilization window) and the **admission scheduler**.
+- **`cpu_cores`** on the service instance is modeled as a **single logical FCFS server** whose **service rate** scales with cores: wall-clock CPU interval is **`cpuDemandMs / max(cpu_cores, ε)`** (duration rounded to integer milliseconds). This is **not** “N independent single-core workers” running unrelated jobs in parallel; it is a deterministic **throughput multiplier** for the same demand distribution.
+- **Atomic admission**: **`ReserveCPUWork`** runs in **`handleRequestStart`**. It sets **`cpuStart = max(request.ArrivalTime, cpuNextFree)`**, **`cpuEnd = cpuStart + duration`**, and commits **`cpuNextFree = cpuEnd`**. Same-simulation-time **`request_arrival`** events all schedule **`RequestStart`** at the same time; **FIFO reservation order** (event sequence) prevents duplicate “free CPU” observations before work is committed.
+- If **`cpuStart > simTime`**, the handler **defers** processing by scheduling **`RequestStart`** at **`cpuStart`** (request stays **pending** until then). **`StartTime`** is set to **`cpuStart`** (not the first event time when deferred).
+- **Metrics**: **`queue_wait_ms` = `StartTime − ArrivalTime`** (DES wait before CPU service begins). **`service_processing_latency_ms` = `CompletionTime − StartTime`** (CPU wall interval for the hop + sampled network latency on that hop). **`service_request_latency_ms`** is hop **total** time **`ArrivalTime → CompletionTime`** (includes queue wait). **`cpu_utilization`** (instance and host) still uses the **sliding window** fed by **`AllocateCPU`/`ReleaseCPU`**; **`concurrent_requests` / memory** track **in-flight** work and release on completion.
+
+## Queueing (FIFO DES + optional instance queue)
+
+- Waiting for CPU is modeled as **elapsed simulation time** until **`cpuStart`** (see above). The legacy **instance `requestQueue`** is still used for explicit enqueue paths (e.g. gauges); it is **not** the primary CPU admission mechanism.
+- The simulator does **not** implement **M/M/c** closed-form queueing; **capacity** is enforced by the **CPU FIFO scheduler** plus **memory/host** limits. Dropped or drain-evicted **pending** requests never reach **`RequestStart`**, so they do not emit **`queue_wait_ms`** or success-path service latency.
 
 ## Service model, kind, and role
 

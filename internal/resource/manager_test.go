@@ -875,11 +875,16 @@ func TestServiceInstanceMethods(t *testing.T) {
 		t.Fatalf("expected active requests > 0")
 	}
 
-	// Test capacity check
-	hasCapacity := instance.HasCapacity()
-	// Should be false since CPU is at 100%
-	if hasCapacity {
-		t.Fatalf("expected no capacity when CPU at 100%%")
+	// HasCapacity reflects FIFO CPU scheduler backlog (cpuNextFree), not sliding-window utilization.
+	if !instance.HasCapacityAt(simTime) {
+		t.Fatal("expected no backlog before reserve")
+	}
+	_, cpuTail := instance.ReserveCPUWork(simTime, 2000.0) // 1000ms wall with 2 cores
+	if instance.HasCapacityAt(simTime) {
+		t.Fatal("expected scheduler backlog when next free is after simTime")
+	}
+	if !instance.HasCapacityAt(cpuTail) {
+		t.Fatal("expected capacity at tail of reserved interval")
 	}
 
 	// Test release CPU - note that with time-window tracking, releasing

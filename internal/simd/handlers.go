@@ -132,6 +132,13 @@ func recordInstanceAndHostGauges(state *scenarioState, serviceID, instanceID str
 
 const drainSweepInterval = 100 * time.Millisecond
 
+// CPU scheduler metadata (DES): deferred RequestStart until cpu_service_start simulation time.
+const (
+	metaCpuDeferredStart = "cpu_deferred_start"
+	metaCpuServiceStart  = "cpu_service_start"
+	metaCpuServiceEnd    = "cpu_service_end"
+)
+
 func metadataInt(m map[string]interface{}, key string) int {
 	if m == nil {
 		return 0
@@ -164,6 +171,18 @@ func metadataBool(m map[string]interface{}, key string) bool {
 	}
 	b, ok := v.(bool)
 	return ok && b
+}
+
+func metadataTime(m map[string]interface{}, key string) (time.Time, bool) {
+	if m == nil {
+		return time.Time{}, false
+	}
+	v, ok := m[key]
+	if !ok {
+		return time.Time{}, false
+	}
+	t, ok := v.(time.Time)
+	return t, ok
 }
 
 func metadataFloat64(m map[string]interface{}, key string) float64 {
@@ -397,23 +416,9 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 		}
 
-		// Check if instance has capacity (must use simulation time, not wall clock)
-		if !instance.HasCapacityAt(simTime) {
-			// Instance is at capacity, enqueue the request
-			if err := state.rm.EnqueueRequest(instance.ID(), requestID); err != nil {
-				return fmt.Errorf("failed to enqueue request: %w", err)
-			}
-			// Request will be processed when capacity becomes available
-			// Store instance ID in request metadata for later processing
-			request.Metadata["instance_id"] = instance.ID()
-			// Refresh gauges so queue_length / concurrent_requests match backlog immediately
-			// (otherwise they stay stale until a later start/complete path records them).
-			recordInstanceAndHostGauges(state, serviceID, instance.ID(), simTime)
-			return nil
-		}
-
-		// Instance has capacity, schedule request start immediately
-		// Store instance ID in request metadata
+		// CPU admission is serialized in handleRequestStart via per-instance ReserveCPUWork
+		// (FIFO). Same-timestamp arrivals schedule RequestStart at the same sim time; the
+		// scheduler orders work without relying on HasCapacityAt + enqueue.
 		request.Metadata["instance_id"] = instance.ID()
 		eng.ScheduleAt(engine.EventTypeRequestStart, simTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
@@ -469,22 +474,6 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			}
 		}
 
-		// Update request status
-		request.Status = models.RequestStatusProcessing
-		request.StartTime = simTime
-
-		// FIFO queue wait in DES time: elapsed from ArrivalTime until this start (not queueLength × mean service).
-		queueWait := simTime.Sub(request.ArrivalTime)
-		if queueWait < 0 {
-			queueWait = 0
-		}
-		request.QueueTimeMs = float64(queueWait.Nanoseconds()) / 1e6
-		if request.Metadata == nil {
-			request.Metadata = make(map[string]interface{})
-		}
-		request.Metadata["queue_wait_ms"] = request.QueueTimeMs
-		metrics.RecordQueueWait(state.collector, request.QueueTimeMs, simTime, labelsForQueueWaitMetrics(request, serviceID, endpointPath, instanceID))
-
 		cpuTimeMs := prof.CPUTimeMs
 		request.CPUTimeMs = cpuTimeMs
 
@@ -492,31 +481,73 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		request.NetworkLatencyMs = netLatencyMs
 
 		memoryMB := prof.MemoryMB
-		// Allow override from metadata
 		if mem, ok := request.Metadata["memory_mb"].(float64); ok {
 			memoryMB = mem
 		}
 
-		// Allocate resources
-		if err := state.rm.AllocateCPU(instanceID, cpuTimeMs, simTime); err != nil {
-			request.Status = models.RequestStatusFailed
-			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, metrics.ReasonCPUCapacity))
-			if state.policies != nil {
-				circuitBreaker := state.policies.GetCircuitBreaker()
-				if circuitBreaker != nil {
-					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
-				}
+		if request.Metadata == nil {
+			request.Metadata = make(map[string]interface{})
+		}
+
+		var cpuStart, cpuEnd time.Time
+		deferredExec := false
+		if b, ok := request.Metadata[metaCpuDeferredStart].(bool); ok && b {
+			t0, ok0 := metadataTime(request.Metadata, metaCpuServiceStart)
+			t1, ok1 := metadataTime(request.Metadata, metaCpuServiceEnd)
+			if ok0 && ok1 {
+				cpuStart, cpuEnd = t0, t1
+				deferredExec = true
+				delete(request.Metadata, metaCpuDeferredStart)
+				delete(request.Metadata, metaCpuServiceStart)
+				delete(request.Metadata, metaCpuServiceEnd)
 			}
-			rm := eng.GetRunManager()
-			if maybeRetrySyncStartFailure(state, eng, rm, request, simTime, metrics.ReasonCPUCapacity) {
+		}
+		if !deferredExec {
+			var err error
+			cpuStart, cpuEnd, err = state.rm.ReserveCPUWork(instanceID, request.ArrivalTime, cpuTimeMs)
+			if err != nil {
+				request.Status = models.RequestStatusFailed
+				lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, metrics.ReasonNoInstance))
+				if state.policies != nil {
+					circuitBreaker := state.policies.GetCircuitBreaker()
+					if circuitBreaker != nil {
+						circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
+					}
+				}
+				rm := eng.GetRunManager()
+				if maybeRetrySyncStartFailure(state, eng, rm, request, simTime, metrics.ReasonNoInstance) {
+					return nil
+				}
+				propagateSyncChildFailureFromStartFailure(state, eng, request, simTime, metrics.ReasonNoInstance)
 				return nil
 			}
-			propagateSyncChildFailureFromStartFailure(state, eng, request, simTime, metrics.ReasonCPUCapacity)
-			return fmt.Errorf("failed to allocate CPU: %w", err)
+			if cpuStart.After(simTime) {
+				request.Metadata[metaCpuDeferredStart] = true
+				request.Metadata[metaCpuServiceStart] = cpuStart
+				request.Metadata[metaCpuServiceEnd] = cpuEnd
+				eng.ScheduleAt(engine.EventTypeRequestStart, cpuStart, request, serviceID, map[string]interface{}{
+					"endpoint_path": endpointPath,
+					"instance_id":   instanceID,
+				})
+				return nil
+			}
 		}
+
+		// CPU service interval begins at cpuStart (simTime matches for this invocation).
+		request.Status = models.RequestStatusProcessing
+		request.StartTime = cpuStart
+
+		queueWait := cpuStart.Sub(request.ArrivalTime)
+		if queueWait < 0 {
+			queueWait = 0
+		}
+		request.QueueTimeMs = float64(queueWait.Nanoseconds()) / 1e6
+		request.Metadata["queue_wait_ms"] = request.QueueTimeMs
+		metrics.RecordQueueWait(state.collector, request.QueueTimeMs, simTime, labelsForQueueWaitMetrics(request, serviceID, endpointPath, instanceID))
+
 		if err := state.rm.AllocateMemory(instanceID, memoryMB); err != nil {
-			state.rm.ReleaseCPU(instanceID, cpuTimeMs, simTime)
+			state.rm.RollbackCPUTailReservation(instanceID, cpuStart, cpuEnd)
 			request.Status = models.RequestStatusFailed
 			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
 			reason := metrics.ReasonMemoryCapacity
@@ -544,11 +575,29 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			return fmt.Errorf("failed to allocate memory: %w", err)
 		}
 
-		// Store resource allocation in metadata for cleanup
+		if err := state.rm.AllocateCPU(instanceID, cpuTimeMs, cpuStart); err != nil {
+			state.rm.ReleaseMemory(instanceID, memoryMB)
+			state.rm.RollbackCPUTailReservation(instanceID, cpuStart, cpuEnd)
+			request.Status = models.RequestStatusFailed
+			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, metrics.ReasonCPUCapacity))
+			if state.policies != nil {
+				circuitBreaker := state.policies.GetCircuitBreaker()
+				if circuitBreaker != nil {
+					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
+				}
+			}
+			rm := eng.GetRunManager()
+			if maybeRetrySyncStartFailure(state, eng, rm, request, simTime, metrics.ReasonCPUCapacity) {
+				return nil
+			}
+			propagateSyncChildFailureFromStartFailure(state, eng, request, simTime, metrics.ReasonCPUCapacity)
+			return fmt.Errorf("failed to allocate CPU: %w", err)
+		}
+
 		request.Metadata["allocated_cpu_ms"] = cpuTimeMs
 		request.Metadata["allocated_memory_mb"] = memoryMB
 
-		// Record resource utilization metrics
 		if _, ok := state.rm.GetServiceInstance(instanceID); ok {
 			recordInstanceAndHostGauges(state, serviceID, instanceID, simTime)
 			if prof.QueueClass != "" {
@@ -556,11 +605,8 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			}
 		}
 
-		// Local processing duration (CPU + network). Queue wait is already reflected in sim time before start.
-		processingTime := time.Duration(cpuTimeMs+netLatencyMs) * time.Millisecond
-
-		// Schedule completion
-		completionTime := simTime.Add(processingTime)
+		// Completion after CPU service ends, then network latency (same hop).
+		completionTime := cpuEnd.Add(time.Duration(netLatencyMs * float64(time.Millisecond)))
 		eng.ScheduleAt(engine.EventTypeRequestComplete, completionTime, request, serviceID, map[string]interface{}{
 			"endpoint_path": endpointPath,
 			"instance_id":   instanceID,

@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"math"
 	"sync"
 	"time"
 )
@@ -43,6 +44,10 @@ type ServiceInstance struct {
 
 	// Queue
 	requestQueue []string // Queue of request IDs waiting to be processed
+
+	// cpuNextFree is simulation time when the next CPU work may begin (end of the last
+	// reserved [cpuStart, cpuEnd) interval). Zero means no backlog from prior reservations.
+	cpuNextFree time.Time
 
 	// Timestamps
 	lastUpdate time.Time
@@ -299,15 +304,54 @@ func (s *ServiceInstance) HasCapacity() bool {
 	return s.HasCapacityAt(time.Now())
 }
 
-// HasCapacityAt returns true if the instance can accept another request immediately,
-// using CPU utilization evaluated at at (simulation time).
+// HasCapacityAt returns true if there is no CPU scheduler backlog at sim time at
+// (next CPU work can start at or before at). Prefer this for placement heuristics;
+// admission no longer gates RequestStart on this value.
 func (s *ServiceInstance) HasCapacityAt(at time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if s.cpuCores <= 0 {
 		return false
 	}
-	return s.cpuUtilizationAtLocked(at) < 1.0
+	if s.cpuNextFree.IsZero() {
+		return true
+	}
+	return !s.cpuNextFree.After(at)
+}
+
+// ReserveCPUWork schedules one FIFO CPU service interval for cpuDemandMs of work.
+// Service duration in simulation time is cpuDemandMs / max(cpuCores, ε) (single logical
+// server with rate proportional to cores). Commits cpuNextFree to cpuEnd.
+func (s *ServiceInstance) ReserveCPUWork(arrivalTime time.Time, cpuDemandMs float64) (cpuStart, cpuEnd time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cores := s.cpuCores
+	if cores < 1e-9 {
+		cores = 1e-9
+	}
+	durMs := cpuDemandMs / cores
+	if durMs < 0 {
+		durMs = 0
+	}
+	dur := time.Duration(math.Round(durMs * float64(time.Millisecond)))
+	cpuStart = arrivalTime
+	if !s.cpuNextFree.IsZero() && s.cpuNextFree.After(cpuStart) {
+		cpuStart = s.cpuNextFree
+	}
+	cpuEnd = cpuStart.Add(dur)
+	s.cpuNextFree = cpuEnd
+	return cpuStart, cpuEnd
+}
+
+// RollbackCPUTailReservation reverts the last reservation if cpuEnd is still the tail
+// of the schedule (cpuNextFree == cpuEnd). Used when memory allocation fails after ReserveCPUWork.
+func (s *ServiceInstance) RollbackCPUTailReservation(cpuStart, cpuEnd time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cpuNextFree.IsZero() || !s.cpuNextFree.Equal(cpuEnd) {
+		return
+	}
+	s.cpuNextFree = cpuStart
 }
 
 // ActiveMemoryMB returns the active memory usage in MB (for internal use)
@@ -336,6 +380,7 @@ func (s *ServiceInstance) EvictResourceState(simTime time.Time) []string {
 	s.requestQueue = nil
 	s.cpuUsageInWindow = 0
 	s.windowStartTime = simTime
+	s.cpuNextFree = time.Time{}
 	s.lastUpdate = simTime
 	return dropped
 }

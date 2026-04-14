@@ -817,6 +817,29 @@ func (m *Manager) ListServiceIDs() []string {
 	return ids
 }
 
+// ReserveCPUWork reserves the next FIFO CPU interval on the instance (see ServiceInstance.ReserveCPUWork).
+func (m *Manager) ReserveCPUWork(instanceID string, arrivalTime time.Time, cpuDemandMs float64) (cpuStart, cpuEnd time.Time, err error) {
+	m.mu.Lock()
+	instance, ok := m.instances[instanceID]
+	m.mu.Unlock()
+	if !ok {
+		return time.Time{}, time.Time{}, fmt.Errorf("instance not found: %s", instanceID)
+	}
+	cpuStart, cpuEnd = instance.ReserveCPUWork(arrivalTime, cpuDemandMs)
+	return cpuStart, cpuEnd, nil
+}
+
+// RollbackCPUTailReservation reverts a CPU reservation when allocation fails (tail slot only).
+func (m *Manager) RollbackCPUTailReservation(instanceID string, cpuStart, cpuEnd time.Time) {
+	m.mu.Lock()
+	instance, ok := m.instances[instanceID]
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	instance.RollbackCPUTailReservation(cpuStart, cpuEnd)
+}
+
 // AllocateCPU allocates CPU resources for a request
 func (m *Manager) AllocateCPU(instanceID string, cpuTimeMs float64, simTime time.Time) error {
 	// Collect references while holding Manager lock

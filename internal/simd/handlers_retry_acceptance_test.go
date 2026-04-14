@@ -34,6 +34,7 @@ func TestSyncDownstreamMemoryStartFailureRetriesThenSucceeds(t *testing.T) {
 			{
 				ID:       "svcA",
 				Replicas: 1,
+				MemoryMB: 32,
 				Endpoints: []config.Endpoint{
 					{
 						Path:            "/fan",
@@ -50,7 +51,8 @@ func TestSyncDownstreamMemoryStartFailureRetriesThenSucceeds(t *testing.T) {
 			},
 			{
 				ID:       "svcB",
-				Replicas: 1,
+				Replicas: 2,
+				MemoryMB: 256,
 				Endpoints: []config.Endpoint{
 					{
 						Path:            "/b1",
