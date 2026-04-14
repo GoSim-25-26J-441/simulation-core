@@ -26,6 +26,19 @@
 
 ## Metrics
 
+### Aggregates (RunMetrics / ServiceMetrics)
+
+- **Run-level latency** (`latency_p50_ms`, …, `latency_mean_ms`): Prefer **`root_request_latency_ms`** samples when present (ingress SLO); else **`request_latency_ms`** (per-node finalize).
+- **`failed_requests` / `attempt_failed_requests`**: Sum of **`request_error_count`** samples (attempt-level): includes downstream internal failures and **failed retry attempts** that are later superseded by a successful retry. Use for diagnostics, not as the sole user-visible SLO error rate.
+- **`ingress_failed_requests` / `ingress_error_rate`**: **User-visible** ingress/root logical failures. **`ingress_logical_failure_count`** is incremented once per failed **external** trace (rate limit, admission failure, subtree failure on ingress, drain eviction on ingress, etc.). **`ingress_error_rate` = ingress_failed_requests / ingress_requests** when **`ingress_requests > 0`**. **Workload arrivals** are counted as **`request_count`** with **`origin=ingress`** at admission (including arrivals rejected by policy or placement) so the denominator matches all ingress attempts.
+- **`attempt_error_rate`**: **`attempt_failed_requests / total_requests`** where **`total_requests`** is the sum of all **`request_count`** samples (ingress + downstream hops).
+- **`retry_attempts`**: Sum of **`request_count`** samples with **`is_retry=true`**.
+- **`timeout_errors`**: Sum of **`request_error_count`** with **`reason=timeout`**.
+- **Per-service latency breakdown** (in **`ServiceMetrics`**): Existing **`latency_*`** fields remain **hop total** (**`service_request_latency_ms`**: queue wait + CPU + net). **`queue_wait_*`** aggregates **`queue_wait_ms`**; **`processing_latency_*`** aggregates **`service_processing_latency_ms`** (CPU + net for the hop, excluding queue wait).
+- **Batch optimization** **`max_error_rate`** guardrail uses **`ingress_error_rate`** when **`ingress_requests > 0`**; otherwise it falls back to **`failed_requests / total_requests`** (legacy attempt-level ratio).
+
+### Time series
+
 - **queue_wait_ms**: Emitted at **request_start** (simulation time). Value is **StartTime − ArrivalTime** for that hop—the actual DES wait before service processing begins. Labels include `service`, `endpoint`, `instance`, `origin`, optional `traffic_class` / `source_kind`, and retry labels (`is_retry`, `attempt`) when applicable. **queue_length** remains a **gauge** (current backlog depth per instance); it is **not** multiplied by mean service time to infer latency.
 - **service_request_latency_ms**: Per-hop **total** local time from **ArrivalTime** to **CompletionTime** at that service (queue wait + CPU + network for this hop). **Not** “start to complete” processing-only.
 - **service_processing_latency_ms**: Per-hop **processing** time only (**StartTime** → **CompletionTime**): CPU + sampled network latency, **excluding** queue wait.

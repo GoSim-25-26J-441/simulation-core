@@ -221,12 +221,7 @@ func (o *ErrorRateObjective) Evaluate(metrics *simulationv1.RunMetrics) (float64
 	if metrics == nil {
 		return 0, &InvalidMetricsError{Reason: "metrics is nil"}
 	}
-	if metrics.TotalRequests == 0 {
-		// If no requests, return 0 error rate
-		return 0, nil
-	}
-	errorRate := float64(metrics.FailedRequests) / float64(metrics.TotalRequests)
-	return errorRate, nil
+	return UserVisibleErrorRate(metrics), nil
 }
 
 // CostObjective minimizes cost (weighted combination of resources).

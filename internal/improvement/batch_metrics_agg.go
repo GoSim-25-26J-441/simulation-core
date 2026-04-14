@@ -38,10 +38,12 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	out := &simulationv1.RunMetrics{}
 	var tr, sr, fr int64
 	var ir, intr int64
+	var ifail, attFail, retry, timeout int64
 	var p50, p95, p99 float64
 	var meanNum, meanDen float64
 	var tput float64
 	var ingressTput float64
+	var maxIngressErr, maxAttemptErr float64
 	firstPerc := true
 	for _, m := range runs {
 		if m == nil {
@@ -52,6 +54,16 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 		fr += m.GetFailedRequests()
 		ir += m.GetIngressRequests()
 		intr += m.GetInternalRequests()
+		ifail += m.GetIngressFailedRequests()
+		attFail += m.GetAttemptFailedRequests()
+		retry += m.GetRetryAttempts()
+		timeout += m.GetTimeoutErrors()
+		if v := m.GetIngressErrorRate(); v > maxIngressErr {
+			maxIngressErr = v
+		}
+		if v := m.GetAttemptErrorRate(); v > maxAttemptErr {
+			maxAttemptErr = v
+		}
 		if firstPerc {
 			p50 = m.GetLatencyP50Ms()
 			p95 = m.GetLatencyP95Ms()
@@ -75,6 +87,12 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	out.FailedRequests = int64(float64(fr) / n)
 	out.IngressRequests = int64(float64(ir) / n)
 	out.InternalRequests = int64(float64(intr) / n)
+	out.IngressFailedRequests = int64(float64(ifail) / n)
+	out.AttemptFailedRequests = int64(float64(attFail) / n)
+	out.RetryAttempts = int64(float64(retry) / n)
+	out.TimeoutErrors = int64(float64(timeout) / n)
+	out.IngressErrorRate = maxIngressErr
+	out.AttemptErrorRate = maxAttemptErr
 	out.LatencyP50Ms = p50
 	out.LatencyP95Ms = p95
 	out.LatencyP99Ms = p99
@@ -117,6 +135,8 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 		var lp50, lp95, lp99 float64
 		var lmeanNum, lmeanDen float64
 		var cpu, mem float64
+		var qw50, qw95, qw99, qwMeanNum, qwMeanDen float64
+		var pr50, pr95, pr99, prMeanNum, prMeanDen float64
 		firstL := true
 		for _, sm := range list {
 			rc += sm.GetRequestCount()
@@ -125,11 +145,23 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 				lp50 = sm.GetLatencyP50Ms()
 				lp95 = sm.GetLatencyP95Ms()
 				lp99 = sm.GetLatencyP99Ms()
+				qw50 = sm.GetQueueWaitP50Ms()
+				qw95 = sm.GetQueueWaitP95Ms()
+				qw99 = sm.GetQueueWaitP99Ms()
+				pr50 = sm.GetProcessingLatencyP50Ms()
+				pr95 = sm.GetProcessingLatencyP95Ms()
+				pr99 = sm.GetProcessingLatencyP99Ms()
 				firstL = false
 			} else {
 				lp50 = maxFloat(lp50, sm.GetLatencyP50Ms())
 				lp95 = maxFloat(lp95, sm.GetLatencyP95Ms())
 				lp99 = maxFloat(lp99, sm.GetLatencyP99Ms())
+				qw50 = maxFloat(qw50, sm.GetQueueWaitP50Ms())
+				qw95 = maxFloat(qw95, sm.GetQueueWaitP95Ms())
+				qw99 = maxFloat(qw99, sm.GetQueueWaitP99Ms())
+				pr50 = maxFloat(pr50, sm.GetProcessingLatencyP50Ms())
+				pr95 = maxFloat(pr95, sm.GetProcessingLatencyP95Ms())
+				pr99 = maxFloat(pr99, sm.GetProcessingLatencyP99Ms())
 			}
 			w := sm.GetRequestCount() - sm.GetErrorCount()
 			if w < 0 {
@@ -138,6 +170,10 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 			if w > 0 {
 				lmeanNum += sm.GetLatencyMeanMs() * float64(w)
 				lmeanDen += float64(w)
+				qwMeanNum += sm.GetQueueWaitMeanMs() * float64(w)
+				qwMeanDen += float64(w)
+				prMeanNum += sm.GetProcessingLatencyMeanMs() * float64(w)
+				prMeanDen += float64(w)
 			}
 			cpu += sm.GetCpuUtilization()
 			mem += sm.GetMemoryUtilization()
@@ -151,6 +187,24 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 			}
 			lmean /= k
 		}
+		qwMean := 0.0
+		if qwMeanDen > 0 {
+			qwMean = qwMeanNum / qwMeanDen
+		} else if k > 0 {
+			for _, sm := range list {
+				qwMean += sm.GetQueueWaitMeanMs()
+			}
+			qwMean /= k
+		}
+		prMean := 0.0
+		if prMeanDen > 0 {
+			prMean = prMeanNum / prMeanDen
+		} else if k > 0 {
+			for _, sm := range list {
+				prMean += sm.GetProcessingLatencyMeanMs()
+			}
+			prMean /= k
+		}
 		var ar, cr, ql int32
 		for _, sm := range list {
 			ar += sm.GetActiveReplicas()
@@ -158,18 +212,26 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 			ql += sm.GetQueueLength()
 		}
 		out.ServiceMetrics = append(out.ServiceMetrics, &simulationv1.ServiceMetrics{
-			ServiceName:        name,
-			RequestCount:       int64(float64(rc) / k),
-			ErrorCount:         int64(float64(ec) / k),
-			LatencyP50Ms:       lp50,
-			LatencyP95Ms:       lp95,
-			LatencyP99Ms:       lp99,
-			LatencyMeanMs:      lmean,
-			CpuUtilization:     cpu / k,
-			MemoryUtilization:  mem / k,
-			ActiveReplicas:     int32(float64(ar) / k),
-			ConcurrentRequests: int32(float64(cr) / k),
-			QueueLength:        int32(float64(ql) / k),
+			ServiceName:             name,
+			RequestCount:            int64(float64(rc) / k),
+			ErrorCount:              int64(float64(ec) / k),
+			LatencyP50Ms:            lp50,
+			LatencyP95Ms:            lp95,
+			LatencyP99Ms:            lp99,
+			LatencyMeanMs:           lmean,
+			CpuUtilization:          cpu / k,
+			MemoryUtilization:       mem / k,
+			ActiveReplicas:          int32(float64(ar) / k),
+			ConcurrentRequests:      int32(float64(cr) / k),
+			QueueLength:             int32(float64(ql) / k),
+			QueueWaitP50Ms:          qw50,
+			QueueWaitP95Ms:          qw95,
+			QueueWaitP99Ms:          qw99,
+			QueueWaitMeanMs:         qwMean,
+			ProcessingLatencyP50Ms:  pr50,
+			ProcessingLatencyP95Ms:  pr95,
+			ProcessingLatencyP99Ms:  pr99,
+			ProcessingLatencyMeanMs: prMean,
 		})
 	}
 

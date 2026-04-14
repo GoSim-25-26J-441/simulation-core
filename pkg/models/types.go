@@ -43,7 +43,17 @@ type RunMetrics struct {
 	InternalRequests int64   `json:"internal_requests,omitempty"`
 	// IngressThroughputRPS is ingress RPS (SLOs, batch guardrails). ThroughputRPS remains aggregate work over all hops.
 	IngressThroughputRPS float64 `json:"ingress_throughput_rps,omitempty"`
-	CPUUtilization       float64 `json:"cpu_utilization"`
+	// IngressFailedRequests counts user-visible root/ingress logical failures (one per failed external trace).
+	IngressFailedRequests int64 `json:"ingress_failed_requests,omitempty"`
+	// IngressErrorRate is ingress_failed_requests / ingress_requests when ingress_requests > 0.
+	IngressErrorRate float64 `json:"ingress_error_rate,omitempty"`
+	// AttemptFailedRequests is the sum of request_error_count samples (attempt-level, includes retries).
+	AttemptFailedRequests int64 `json:"attempt_failed_requests,omitempty"`
+	// AttemptErrorRate is attempt_failed_requests / total_requests when total_requests > 0.
+	AttemptErrorRate float64 `json:"attempt_error_rate,omitempty"`
+	RetryAttempts    int64   `json:"retry_attempts,omitempty"`
+	TimeoutErrors    int64   `json:"timeout_errors,omitempty"`
+	CPUUtilization   float64 `json:"cpu_utilization"`
 	MemoryUtilization  float64                    `json:"memory_utilization"`
 	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
 	HostMetrics        map[string]*HostMetrics    `json:"host_metrics,omitempty"`
@@ -71,6 +81,16 @@ type ServiceMetrics struct {
 	ConcurrentRequests int     `json:"concurrent_requests"`
 	// QueueLength is the sum of the latest queue_length gauge per instance (current state).
 	QueueLength int `json:"queue_length"`
+	// Queue wait (DES ArrivalTime → StartTime) aggregates for this service (all endpoints).
+	QueueWaitP50Ms float64 `json:"queue_wait_p50_ms,omitempty"`
+	QueueWaitP95Ms float64 `json:"queue_wait_p95_ms,omitempty"`
+	QueueWaitP99Ms float64 `json:"queue_wait_p99_ms,omitempty"`
+	QueueWaitMeanMs float64 `json:"queue_wait_mean_ms,omitempty"`
+	// Processing latency (StartTime → completion, CPU + net for the hop) aggregates.
+	ProcessingLatencyP50Ms  float64 `json:"processing_latency_p50_ms,omitempty"`
+	ProcessingLatencyP95Ms  float64 `json:"processing_latency_p95_ms,omitempty"`
+	ProcessingLatencyP99Ms  float64 `json:"processing_latency_p99_ms,omitempty"`
+	ProcessingLatencyMeanMs float64 `json:"processing_latency_mean_ms,omitempty"`
 }
 
 // RequestStatus represents the status of a request

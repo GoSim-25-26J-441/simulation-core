@@ -1644,17 +1644,23 @@ func attachHostMetrics(scenario *config.Scenario, rm *resource.Manager, engineMe
 // convertMetricsToProto converts engine RunMetrics to protobuf RunMetrics
 func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMetrics {
 	pbMetrics := &simulationv1.RunMetrics{
-		TotalRequests:        engineMetrics.TotalRequests,
-		SuccessfulRequests:   engineMetrics.SuccessfulRequests,
-		FailedRequests:       engineMetrics.FailedRequests,
-		LatencyP50Ms:         engineMetrics.LatencyP50,
-		LatencyP95Ms:         engineMetrics.LatencyP95,
-		LatencyP99Ms:         engineMetrics.LatencyP99,
-		LatencyMeanMs:        engineMetrics.LatencyMean,
-		ThroughputRps:        engineMetrics.ThroughputRPS,
-		IngressRequests:      engineMetrics.IngressRequests,
-		InternalRequests:     engineMetrics.InternalRequests,
-		IngressThroughputRps: engineMetrics.IngressThroughputRPS,
+		TotalRequests:         engineMetrics.TotalRequests,
+		SuccessfulRequests:    engineMetrics.SuccessfulRequests,
+		FailedRequests:        engineMetrics.FailedRequests,
+		LatencyP50Ms:          engineMetrics.LatencyP50,
+		LatencyP95Ms:          engineMetrics.LatencyP95,
+		LatencyP99Ms:          engineMetrics.LatencyP99,
+		LatencyMeanMs:         engineMetrics.LatencyMean,
+		ThroughputRps:         engineMetrics.ThroughputRPS,
+		IngressRequests:       engineMetrics.IngressRequests,
+		InternalRequests:      engineMetrics.InternalRequests,
+		IngressThroughputRps:  engineMetrics.IngressThroughputRPS,
+		IngressFailedRequests: engineMetrics.IngressFailedRequests,
+		IngressErrorRate:      engineMetrics.IngressErrorRate,
+		AttemptFailedRequests: engineMetrics.AttemptFailedRequests,
+		AttemptErrorRate:      engineMetrics.AttemptErrorRate,
+		RetryAttempts:         engineMetrics.RetryAttempts,
+		TimeoutErrors:         engineMetrics.TimeoutErrors,
 	}
 
 	// Convert service metrics
@@ -1689,18 +1695,26 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 				queueLen = int32(svcMetrics.QueueLength)
 			}
 			pbSvcMetrics := &simulationv1.ServiceMetrics{
-				ServiceName:        serviceName,
-				RequestCount:       svcMetrics.RequestCount,
-				ErrorCount:         svcMetrics.ErrorCount,
-				LatencyP50Ms:       svcMetrics.LatencyP50,
-				LatencyP95Ms:       svcMetrics.LatencyP95,
-				LatencyP99Ms:       svcMetrics.LatencyP99,
-				LatencyMeanMs:      svcMetrics.LatencyMean,
-				CpuUtilization:     svcMetrics.CPUUtilization,
-				MemoryUtilization:  svcMetrics.MemoryUtilization,
-				ActiveReplicas:     activeReplicas,
-				ConcurrentRequests: concurrentReqs,
-				QueueLength:        queueLen,
+				ServiceName:               serviceName,
+				RequestCount:              svcMetrics.RequestCount,
+				ErrorCount:                svcMetrics.ErrorCount,
+				LatencyP50Ms:              svcMetrics.LatencyP50,
+				LatencyP95Ms:              svcMetrics.LatencyP95,
+				LatencyP99Ms:              svcMetrics.LatencyP99,
+				LatencyMeanMs:             svcMetrics.LatencyMean,
+				CpuUtilization:            svcMetrics.CPUUtilization,
+				MemoryUtilization:         svcMetrics.MemoryUtilization,
+				ActiveReplicas:            activeReplicas,
+				ConcurrentRequests:        concurrentReqs,
+				QueueLength:               queueLen,
+				QueueWaitP50Ms:            svcMetrics.QueueWaitP50Ms,
+				QueueWaitP95Ms:            svcMetrics.QueueWaitP95Ms,
+				QueueWaitP99Ms:            svcMetrics.QueueWaitP99Ms,
+				QueueWaitMeanMs:           svcMetrics.QueueWaitMeanMs,
+				ProcessingLatencyP50Ms:    svcMetrics.ProcessingLatencyP50Ms,
+				ProcessingLatencyP95Ms:    svcMetrics.ProcessingLatencyP95Ms,
+				ProcessingLatencyP99Ms:    svcMetrics.ProcessingLatencyP99Ms,
+				ProcessingLatencyMeanMs:   svcMetrics.ProcessingLatencyMeanMs,
 			}
 			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
 		}

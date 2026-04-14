@@ -10,28 +10,42 @@ import (
 
 func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 	engineMetrics := &models.RunMetrics{
-		TotalRequests:      100,
-		SuccessfulRequests: 95,
-		FailedRequests:     5,
-		LatencyP50:         10.5,
-		LatencyP95:         25.3,
-		LatencyP99:         50.1,
-		LatencyMean:        15.2,
-		ThroughputRPS:      10.0,
+		TotalRequests:         100,
+		SuccessfulRequests:      95,
+		FailedRequests:          5,
+		LatencyP50:              10.5,
+		LatencyP95:              25.3,
+		LatencyP99:              50.1,
+		LatencyMean:             15.2,
+		ThroughputRPS:           10.0,
+		IngressFailedRequests:   1,
+		IngressErrorRate:        0.02,
+		AttemptFailedRequests:   5,
+		AttemptErrorRate:        0.05,
+		RetryAttempts:           2,
+		TimeoutErrors:           1,
 		ServiceMetrics: map[string]*models.ServiceMetrics{
 			"service1": {
-				ServiceName:        "service1",
-				RequestCount:       50,
-				ErrorCount:         2,
-				LatencyP50:         8.0,
-				LatencyP95:         20.0,
-				LatencyP99:         40.0,
-				LatencyMean:        12.0,
-				CPUUtilization:     0.75,
-				MemoryUtilization:  0.60,
-				ActiveReplicas:     3,
-				ConcurrentRequests: 5,
-				QueueLength:        7,
+				ServiceName:               "service1",
+				RequestCount:              50,
+				ErrorCount:                2,
+				LatencyP50:                8.0,
+				LatencyP95:                20.0,
+				LatencyP99:                40.0,
+				LatencyMean:               12.0,
+				QueueWaitP50Ms:            1.0,
+				QueueWaitP95Ms:            2.0,
+				QueueWaitP99Ms:            3.0,
+				QueueWaitMeanMs:           1.5,
+				ProcessingLatencyP50Ms:    7.0,
+				ProcessingLatencyP95Ms:    18.0,
+				ProcessingLatencyP99Ms:    36.0,
+				ProcessingLatencyMeanMs:   10.0,
+				CPUUtilization:            0.75,
+				MemoryUtilization:         0.60,
+				ActiveReplicas:            3,
+				ConcurrentRequests:        5,
+				QueueLength:               7,
 			},
 			"service2": {
 				ServiceName:        "service2",
@@ -67,6 +81,9 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 	if pbMetrics.ThroughputRps != 10.0 {
 		t.Fatalf("expected ThroughputRps 10.0, got %f", pbMetrics.ThroughputRps)
 	}
+	if pbMetrics.IngressFailedRequests != 1 || pbMetrics.RetryAttempts != 2 {
+		t.Fatalf("expected ingress failed / retry on RunMetrics, got ingress_failed=%d retry=%d", pbMetrics.IngressFailedRequests, pbMetrics.RetryAttempts)
+	}
 
 	if len(pbMetrics.ServiceMetrics) != 2 {
 		t.Fatalf("expected 2 service metrics, got %d", len(pbMetrics.ServiceMetrics))
@@ -91,6 +108,9 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 			}
 			if svc.CpuUtilization != 0.75 {
 				t.Fatalf("expected service1 CpuUtilization 0.75, got %f", svc.CpuUtilization)
+			}
+			if svc.QueueWaitP50Ms != 1.0 || svc.ProcessingLatencyMeanMs != 10.0 {
+				t.Fatalf("expected queue/processing fields on service1, got qw50=%v procMean=%v", svc.QueueWaitP50Ms, svc.ProcessingLatencyMeanMs)
 			}
 		}
 	}

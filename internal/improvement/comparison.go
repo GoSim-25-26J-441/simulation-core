@@ -75,15 +75,8 @@ func CompareMetrics(metrics1, metrics2 *simulationv1.RunMetrics, objective Objec
 		ThroughputDiff: metrics2.ThroughputRps - metrics1.ThroughputRps,
 	}
 
-	// Calculate error rate difference
-	errorRate1 := 0.0
-	if metrics1.TotalRequests > 0 {
-		errorRate1 = float64(metrics1.FailedRequests) / float64(metrics1.TotalRequests)
-	}
-	errorRate2 := 0.0
-	if metrics2.TotalRequests > 0 {
-		errorRate2 = float64(metrics2.FailedRequests) / float64(metrics2.TotalRequests)
-	}
+	errorRate1 := UserVisibleErrorRate(metrics1)
+	errorRate2 := UserVisibleErrorRate(metrics2)
 	comparison.ErrorRateDiff = errorRate2 - errorRate1
 
 	// Compare resource utilization (aggregate from service metrics)

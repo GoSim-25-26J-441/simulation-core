@@ -322,8 +322,12 @@ func failDroppedQueueRequests(eng *engine.Engine, state *scenarioState, simTime 
 			continue
 		}
 		req.Status = models.RequestStatusFailed
-		labels := metrics.CreateEndpointLabels(req.ServiceName, req.Endpoint)
-		metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+		lbl := labelsForRequestMetrics(req, req.ServiceName, req.Endpoint)
+		el := metrics.EndpointErrorLabels(lbl, metrics.ReasonDrainEvicted)
+		metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+		if req.ParentID == "" {
+			metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
+		}
 	}
 }
 
@@ -388,31 +392,37 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
 
+		// Count every workload arrival as ingress (including those rejected below) so ingress_error_rate has a correct denominator.
+		metrics.RecordRequestCount(state.collector, 1.0, simTime, ingressLabels)
+
 		// Check rate limiting policy
 		if state.policies != nil {
 			rateLimiting := state.policies.GetRateLimiting()
 			if rateLimiting != nil && !rateLimiting.AllowRequest(serviceID, endpointPath, simTime) {
 				request.Status = models.RequestStatusFailed
-				metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonRateLimited))
+				el := metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonRateLimited)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+				metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
 				return fmt.Errorf("rate limit exceeded for %s:%s", serviceID, endpointPath)
 			}
 
 			circuitBreaker := state.policies.GetCircuitBreaker()
 			if circuitBreaker != nil && !circuitBreaker.AllowRequest(serviceID, endpointPath, simTime) {
 				request.Status = models.RequestStatusFailed
-				metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonCircuitOpen))
+				el := metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonCircuitOpen)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+				metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
 				return fmt.Errorf("circuit breaker open for %s:%s", serviceID, endpointPath)
 			}
 		}
-
-		// Record request arrival metric
-		metrics.RecordRequestCount(state.collector, 1.0, simTime, ingressLabels)
 
 		// Select an instance for this service
 		instance, err := state.rm.SelectInstanceForService(serviceID)
 		if err != nil {
 			request.Status = models.RequestStatusFailed
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonNoInstance))
+			el := metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonNoInstance)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+			metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
 			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 		}
 
@@ -508,7 +518,11 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			if err != nil {
 				request.Status = models.RequestStatusFailed
 				lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
-				metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, metrics.ReasonNoInstance))
+				el := metrics.EndpointErrorLabels(lbl, metrics.ReasonNoInstance)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+				if request.ParentID == "" {
+					metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
+				}
 				if state.policies != nil {
 					circuitBreaker := state.policies.GetCircuitBreaker()
 					if circuitBreaker != nil {
@@ -554,7 +568,11 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			if errors.Is(err, resource.ErrHostMemoryCapacity) {
 				reason = metrics.ReasonMemoryCapacity
 			}
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, reason))
+			el := metrics.EndpointErrorLabels(lbl, reason)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+			if request.ParentID == "" {
+				metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
+			}
 			if state.policies != nil {
 				circuitBreaker := state.policies.GetCircuitBreaker()
 				if circuitBreaker != nil {
@@ -580,7 +598,11 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			state.rm.RollbackCPUTailReservation(instanceID, cpuStart, cpuEnd)
 			request.Status = models.RequestStatusFailed
 			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, metrics.ReasonCPUCapacity))
+			el := metrics.EndpointErrorLabels(lbl, metrics.ReasonCPUCapacity)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+			if request.ParentID == "" {
+				metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, el)
+			}
 			if state.policies != nil {
 				circuitBreaker := state.policies.GetCircuitBreaker()
 				if circuitBreaker != nil {

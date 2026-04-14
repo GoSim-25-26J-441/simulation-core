@@ -81,3 +81,62 @@ func TestHostBandUsesHostMetricsWhenPresent(t *testing.T) {
 		t.Fatalf("expected host balance term to change when host_metrics diverge from service aggregate, got %v vs %v", s1.HostCPUBal, s2.HostCPUBal)
 	}
 }
+
+func TestComputeBatchScoreUsesIngressErrorRateNotAttemptRate(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 32}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{MaxErrorRate: 0.05}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Many attempt-level errors but 0 user-visible ingress failures.
+	m := &simulationv1.RunMetrics{
+		LatencyP95Ms:          1,
+		LatencyP99Ms:          1,
+		IngressRequests:       100,
+		IngressFailedRequests: 0,
+		FailedRequests:        80,
+		TotalRequests:         1000,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc1", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	sc := ComputeBatchScore(spec, base, base, m)
+	if !sc.Feasible {
+		t.Fatalf("expected feasible: ingress error rate 0 but attempt errors high, got %+v", sc)
+	}
+}
+
+func TestComputeBatchScoreIngressErrorRateViolation(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 32}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{MaxErrorRate: 0.05}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &simulationv1.RunMetrics{
+		LatencyP95Ms:          1,
+		LatencyP99Ms:          1,
+		IngressRequests:       100,
+		IngressFailedRequests:   10,
+		FailedRequests:        10,
+		TotalRequests:         100,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc1", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	sc := ComputeBatchScore(spec, base, base, m)
+	if sc.Feasible || sc.ErrViolation <= 0 {
+		t.Fatalf("expected infeasible error-rate from ingress 10 percent, got feasible=%v errV=%v", sc.Feasible, sc.ErrViolation)
+	}
+}

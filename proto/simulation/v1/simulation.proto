@@ -529,6 +529,17 @@ message RunMetrics {
   int64 internal_requests = 12;
   double ingress_throughput_rps = 13;
 
+  // User-visible ingress/root logical failures (one per failed external trace).
+  int64 ingress_failed_requests = 14;
+  // ingress_failed_requests / ingress_requests when ingress_requests > 0.
+  double ingress_error_rate = 15;
+  // Sum of request_error_count samples (attempt-level, includes internal retries).
+  int64 attempt_failed_requests = 16;
+  // attempt_failed_requests / total_requests when total_requests > 0.
+  double attempt_error_rate = 17;
+  int64 retry_attempts = 18;
+  int64 timeout_errors = 19;
+
   repeated ServiceMetrics service_metrics = 9;
   // Per-host utilization when the simulator records host-level CPU/memory gauges.
   repeated HostMetrics host_metrics = 10;
@@ -556,6 +567,16 @@ message ServiceMetrics {
   int32 concurrent_requests = 11;
   // Sum of latest queue_length gauge per instance (current state, not time-averaged).
   int32 queue_length = 12;
+  // Queue wait (DES ArrivalTime → StartTime) percentiles/mean for this service (all endpoints).
+  double queue_wait_p50_ms = 13;
+  double queue_wait_p95_ms = 14;
+  double queue_wait_p99_ms = 15;
+  double queue_wait_mean_ms = 16;
+  // Processing latency (StartTime → completion, CPU + net for the hop).
+  double processing_latency_p50_ms = 17;
+  double processing_latency_p95_ms = 18;
+  double processing_latency_p99_ms = 19;
+  double processing_latency_mean_ms = 20;
 }
 
 message RunEvent {

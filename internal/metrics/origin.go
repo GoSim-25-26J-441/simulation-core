@@ -23,6 +23,7 @@ const (
 	ReasonRateLimited         = "rate_limited"
 	ReasonCircuitOpen         = "circuit_open"
 	ReasonNoInstance          = "no_instance"
+	ReasonDrainEvicted        = "drain_evicted"
 )
 
 // EndpointLabelsWithOrigin adds an origin label to endpoint-scoped metrics.

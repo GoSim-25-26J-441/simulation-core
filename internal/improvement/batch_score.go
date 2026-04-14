@@ -190,10 +190,7 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 		if tput <= 0 {
 			tput = m.GetThroughputRps()
 		}
-		tr := float64(m.GetTotalRequests())
-		if tr > 0 {
-			errRate = float64(m.GetFailedRequests()) / tr
-		}
+		errRate = UserVisibleErrorRate(m)
 	}
 
 	if spec.MaxP95Ms > 0 {

@@ -2202,3 +2202,35 @@ func TestHTTPServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
 		t.Fatalf("expected status 409, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
+	pb := &simulationv1.RunMetrics{
+		TotalRequests:         10,
+		IngressRequests:       4,
+		IngressFailedRequests: 1,
+		IngressErrorRate:      0.25,
+		AttemptFailedRequests: 3,
+		AttemptErrorRate:      0.3,
+		RetryAttempts:         2,
+		TimeoutErrors:         1,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{
+				ServiceName:             "svc1",
+				QueueWaitP50Ms:          1,
+				ProcessingLatencyP50Ms:  9,
+				ProcessingLatencyMeanMs: 10,
+			},
+		},
+	}
+	j := convertMetricsToJSON(pb)
+	if j["ingress_error_rate"].(float64) != 0.25 {
+		t.Fatalf("json ingress_error_rate: %v", j["ingress_error_rate"])
+	}
+	sm := j["service_metrics"].([]map[string]any)[0]
+	if sm["queue_wait_p50_ms"].(float64) != 1 {
+		t.Fatalf("json queue_wait_p50_ms: %v", sm["queue_wait_p50_ms"])
+	}
+	if sm["processing_latency_mean_ms"].(float64) != 10 {
+		t.Fatalf("json processing_latency_mean_ms: %v", sm["processing_latency_mean_ms"])
+	}
+}

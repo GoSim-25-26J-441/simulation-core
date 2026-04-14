@@ -21,6 +21,8 @@ const (
 	MetricQueueLength               = "queue_length"
 	MetricThroughputRPS             = "throughput_rps"
 	MetricConcurrentRequests        = "concurrent_requests"
+	// MetricIngressLogicalFailure counts user-visible ingress/root trace failures (SLO error rate numerator).
+	MetricIngressLogicalFailure = "ingress_logical_failure_count"
 )
 
 // RecordLatency records end-to-end latency for a completed request (per-hop total duration when the request node finishes).
@@ -85,6 +87,11 @@ func RecordConcurrentRequests(collector *Collector, count float64, timestamp tim
 	collector.Record(MetricConcurrentRequests, count, timestamp, labels)
 }
 
+// RecordIngressLogicalFailure records one user-visible ingress/root logical failure (for SLO error rate).
+func RecordIngressLogicalFailure(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricIngressLogicalFailure, count, timestamp, labels)
+}
+
 // CreateServiceLabels creates a labels map for a service
 func CreateServiceLabels(serviceName string) map[string]string {
 	return map[string]string{
@@ -129,6 +136,48 @@ func optsInstanceIDs(opts *RunMetricsOptions, serviceName string) []string {
 		return nil
 	}
 	return opts.InstanceIDsByService[serviceName]
+}
+
+// sumSampleValuesForMetric sums all recorded samples for a counter-like metric across label combinations.
+func sumSampleValuesForMetric(collector *Collector, metricName string) float64 {
+	var sum float64
+	for _, labels := range collector.GetLabelsForMetric(metricName) {
+		for _, p := range collector.GetTimeSeries(metricName, labels) {
+			sum += p.Value
+		}
+	}
+	for _, p := range collector.GetTimeSeries(metricName, nil) {
+		sum += p.Value
+	}
+	return sum
+}
+
+// sumRequestCountWithLabel sums request_count samples where labels[key] == value.
+func sumRequestCountWithLabel(collector *Collector, key, value string) int64 {
+	var sum float64
+	for _, labels := range collector.GetLabelsForMetric(MetricRequestCount) {
+		if labels[key] != value {
+			continue
+		}
+		for _, p := range collector.GetTimeSeries(MetricRequestCount, labels) {
+			sum += p.Value
+		}
+	}
+	return int64(sum)
+}
+
+// sumErrorCountWithReason sums request_error_count samples for a given reason label.
+func sumErrorCountWithReason(collector *Collector, reason string) int64 {
+	var sum float64
+	for _, labels := range collector.GetLabelsForMetric(MetricRequestErrorCount) {
+		if labels[LabelReason] != reason {
+			continue
+		}
+		for _, p := range collector.GetTimeSeries(MetricRequestErrorCount, labels) {
+			sum += p.Value
+		}
+	}
+	return int64(sum)
 }
 
 // meanLatestGaugePerInstanceWithInventory averages the latest sample per instance ID;
@@ -274,11 +323,15 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		totalRequests += int64(v)
 	}
 
-	// Sum error counts
+	// Sum error counts (attempt-level: includes downstream retries and internal failures).
 	failedRequests := int64(0)
 	for _, v := range allErrorCountValues {
 		failedRequests += int64(v)
 	}
+
+	ingressFailed := int64(sumSampleValuesForMetric(collector, MetricIngressLogicalFailure))
+	retryAttempts := sumRequestCountWithLabel(collector, LabelIsRetry, "true")
+	timeoutErrors := sumErrorCountWithReason(collector, ReasonTimeout)
 
 	successfulRequests := totalRequests - failedRequests
 
@@ -310,6 +363,8 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		if svcLatencyAgg == nil {
 			svcLatencyAgg = collector.GetOrComputeAggregationForLabelSubset(MetricRequestLatency, labels)
 		}
+		svcQueueAgg := collector.GetOrComputeAggregationForLabelSubset(MetricQueueWait, labels)
+		svcProcAgg := collector.GetOrComputeAggregationForLabelSubset(MetricServiceProcessingLatency, labels)
 		svcRequestAgg := collector.GetOrComputeAggregationForLabelSubset(MetricRequestCount, labels)
 		svcErrorAgg := collector.GetOrComputeAggregationForLabelSubset(MetricRequestErrorCount, labels)
 		svcCPUAgg := collector.GetOrComputeAggregationForLabelSubset(MetricCPUUtilization, labels)
@@ -336,6 +391,18 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 			svcMetrics.LatencyP95 = svcLatencyAgg.P95
 			svcMetrics.LatencyP99 = svcLatencyAgg.P99
 			svcMetrics.LatencyMean = svcLatencyAgg.Mean
+		}
+		if svcQueueAgg != nil {
+			svcMetrics.QueueWaitP50Ms = svcQueueAgg.P50
+			svcMetrics.QueueWaitP95Ms = svcQueueAgg.P95
+			svcMetrics.QueueWaitP99Ms = svcQueueAgg.P99
+			svcMetrics.QueueWaitMeanMs = svcQueueAgg.Mean
+		}
+		if svcProcAgg != nil {
+			svcMetrics.ProcessingLatencyP50Ms = svcProcAgg.P50
+			svcMetrics.ProcessingLatencyP95Ms = svcProcAgg.P95
+			svcMetrics.ProcessingLatencyP99Ms = svcProcAgg.P99
+			svcMetrics.ProcessingLatencyMeanMs = svcProcAgg.Mean
 		}
 		instIDs := optsInstanceIDs(opts, serviceName)
 		// CPU/memory: gauges recorded per instance — mean of latest sample per instance.
@@ -373,19 +440,33 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		serviceMetrics[serviceName] = svcMetrics
 	}
 
+	var ingressErrRate, attemptErrRate float64
+	if ingressReq > 0 {
+		ingressErrRate = float64(ingressFailed) / float64(ingressReq)
+	}
+	if totalRequests > 0 {
+		attemptErrRate = float64(failedRequests) / float64(totalRequests)
+	}
+
 	return &models.RunMetrics{
-		TotalRequests:        totalRequests,
-		SuccessfulRequests:   successfulRequests,
-		FailedRequests:       failedRequests,
-		LatencyP50:           latencyP50,
-		LatencyP95:           latencyP95,
-		LatencyP99:           latencyP99,
-		LatencyMean:          latencyMean,
-		ThroughputRPS:        throughputRPS,
-		IngressRequests:      ingressReq,
-		InternalRequests:     internalReq,
-		IngressThroughputRPS: ingressThroughputRPS,
-		ServiceMetrics:       serviceMetrics,
+		TotalRequests:         totalRequests,
+		SuccessfulRequests:    successfulRequests,
+		FailedRequests:        failedRequests,
+		LatencyP50:            latencyP50,
+		LatencyP95:            latencyP95,
+		LatencyP99:            latencyP99,
+		LatencyMean:           latencyMean,
+		ThroughputRPS:         throughputRPS,
+		IngressRequests:       ingressReq,
+		InternalRequests:      internalReq,
+		IngressThroughputRPS:  ingressThroughputRPS,
+		IngressFailedRequests: ingressFailed,
+		IngressErrorRate:      ingressErrRate,
+		AttemptFailedRequests: failedRequests,
+		AttemptErrorRate:      attemptErrRate,
+		RetryAttempts:         retryAttempts,
+		TimeoutErrors:         timeoutErrors,
+		ServiceMetrics:        serviceMetrics,
 	}
 }
 

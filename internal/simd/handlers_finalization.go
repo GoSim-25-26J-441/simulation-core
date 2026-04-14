@@ -94,6 +94,9 @@ func finalizeRequestFailure(state *scenarioState, eng *engine.Engine, rm *engine
 
 	errLabels := metrics.EndpointErrorLabels(labels, reason)
 	metrics.RecordErrorCount(state.collector, 1.0, simTime, errLabels)
+	if request.ParentID == "" {
+		metrics.RecordIngressLogicalFailure(state.collector, 1.0, simTime, errLabels)
+	}
 
 	if state.policies != nil {
 		if cb := state.policies.GetCircuitBreaker(); cb != nil {
