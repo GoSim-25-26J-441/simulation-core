@@ -38,7 +38,12 @@ type RunMetrics struct {
 	LatencyP99         float64                    `json:"latency_p99_ms"`
 	LatencyMean        float64                    `json:"latency_mean_ms"`
 	ThroughputRPS      float64                    `json:"throughput_rps"`
-	CPUUtilization     float64                    `json:"cpu_utilization"`
+	// IngressRequests counts workload arrivals (origin=ingress). InternalRequests counts downstream hops.
+	IngressRequests  int64   `json:"ingress_requests,omitempty"`
+	InternalRequests int64   `json:"internal_requests,omitempty"`
+	// IngressThroughputRPS is ingress RPS (SLOs, batch guardrails). ThroughputRPS remains aggregate work over all hops.
+	IngressThroughputRPS float64 `json:"ingress_throughput_rps,omitempty"`
+	CPUUtilization       float64 `json:"cpu_utilization"`
 	MemoryUtilization  float64                    `json:"memory_utilization"`
 	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
 	HostMetrics        map[string]*HostMetrics    `json:"host_metrics,omitempty"`
@@ -64,6 +69,8 @@ type ServiceMetrics struct {
 	MemoryUtilization  float64 `json:"memory_utilization"`
 	ActiveReplicas     int     `json:"active_replicas"`
 	ConcurrentRequests int     `json:"concurrent_requests"`
+	// QueueLength is the sum of the latest queue_length gauge per instance (current state).
+	QueueLength int `json:"queue_length"`
 }
 
 // RequestStatus represents the status of a request

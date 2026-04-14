@@ -12,6 +12,7 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 )
 
@@ -33,7 +34,8 @@ type NotificationPayload struct {
 	Iterations    int32    `json:"iterations,omitempty"`
 	TopCandidates []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
 
-	// FinalConfig is the settled run configuration for online optimization (last step's current_config). Omitted if no optimization steps.
+	// FinalConfig is the settled run configuration: prefer RunRecord.FinalConfig (snapshot before cleanup);
+	// otherwise last optimization step's current_config when optimization history exists.
 	FinalConfig map[string]any `json:"final_config,omitempty"`
 }
 
@@ -124,11 +126,18 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 		}
 	}
 
-	// Include final/settled config for online optimization (last step's current_config)
-	if len(rec.OptimizationHistory) > 0 {
+	var scen *config.Scenario
+	if rec.Input != nil && rec.Input.ScenarioYaml != "" {
+		if s, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml); err == nil {
+			scen = s
+		}
+	}
+	if rec.FinalConfig != nil {
+		payload.FinalConfig = convertRunConfigurationToJSON(rec.FinalConfig, scen)
+	} else if len(rec.OptimizationHistory) > 0 {
 		lastStep := rec.OptimizationHistory[len(rec.OptimizationHistory)-1]
 		if lastStep != nil && lastStep.CurrentConfig != nil {
-			payload.FinalConfig = convertRunConfigurationToJSON(lastStep.CurrentConfig)
+			payload.FinalConfig = convertRunConfigurationToJSON(lastStep.CurrentConfig, scen)
 		}
 	}
 

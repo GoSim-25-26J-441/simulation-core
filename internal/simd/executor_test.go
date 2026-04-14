@@ -17,11 +17,21 @@ import (
 func mustScenarioState(t *testing.T, scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector) *scenarioState {
 	t.Helper()
 	policies := policy.NewPolicyManager(nil)
-	state, err := newScenarioState(scenario, rm, collector, policies)
+	state, err := newScenarioState(scenario, rm, collector, policies, 0)
 	if err != nil {
 		t.Fatalf("newScenarioState: %v", err)
 	}
 	return state
+}
+
+// recordCPUUtilizationAllSvc1Instances records the same CPU gauge on each svc1 instance
+// (per-instance labels), matching handlers and ConvertToRunMetrics(runMetricsOptsForRun).
+func recordCPUUtilizationAllSvc1Instances(t *testing.T, rm *resource.Manager, collector *metrics.Collector, value float64, ts time.Time) {
+	t.Helper()
+	for _, inst := range rm.GetInstancesForService("svc1") {
+		lbl := metrics.CreateInstanceLabels("svc1", inst.ID())
+		metrics.RecordCPUUtilization(collector, value, ts, lbl)
+	}
 }
 
 type mockOptimizationRunner struct{}
@@ -430,11 +440,11 @@ func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
 	runID := "online-scale-down"
 
 	scenario := &config.Scenario{
-		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Hosts: []config.Host{{ID: "host-1", Cores: 8}},
 		Services: []config.Service{
 			{
 				ID:       "svc1",
-				Replicas: 3,
+				Replicas: 2,
 				Model:    "cpu",
 				Endpoints: []config.Endpoint{
 					{
@@ -601,8 +611,9 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		svcLabels := metrics.CreateServiceLabels("svc1")
 		now := time.Now()
 		for i := 0; i < 10; i++ {
-			metrics.RecordCPUUtilization(collector, 0.85, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
-			metrics.RecordLatency(collector, 20.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			ts := now.Add(time.Duration(i) * time.Millisecond)
+			recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.85, ts)
+			metrics.RecordLatency(collector, 20.0, ts, svcLabels)
 		}
 		exec.mu.Lock()
 		exec.resourceManagers[runID] = rm
@@ -656,8 +667,9 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		svcLabels := metrics.CreateServiceLabels("svc1")
 		now := time.Now()
 		for i := 0; i < 10; i++ {
-			metrics.RecordCPUUtilization(collector, 0.2, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
-			metrics.RecordLatency(collector, 5.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			ts := now.Add(time.Duration(i) * time.Millisecond)
+			recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, ts)
+			metrics.RecordLatency(collector, 5.0, ts, svcLabels)
 		}
 		exec.mu.Lock()
 		exec.resourceManagers[runID] = rm
@@ -709,8 +721,9 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		svcLabels := metrics.CreateServiceLabels("svc1")
 		now := time.Now()
 		for i := 0; i < 10; i++ {
-			metrics.RecordCPUUtilization(collector, 0.2, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
-			metrics.RecordLatency(collector, 200.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			ts := now.Add(time.Duration(i) * time.Millisecond)
+			recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, ts)
+			metrics.RecordLatency(collector, 200.0, ts, svcLabels)
 		}
 		exec.mu.Lock()
 		exec.resourceManagers[runID] = rm
@@ -769,8 +782,9 @@ func TestRunExecutorOnlineControllerCPUUtilizationPrimary(t *testing.T) {
 		svcLabels := metrics.CreateServiceLabels("svc1")
 		now := time.Now()
 		for i := 0; i < 20; i++ {
-			metrics.RecordCPUUtilization(collector, 0.35, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
-			metrics.RecordLatency(collector, 10.0, now.Add(time.Duration(i)*time.Millisecond), svcLabels)
+			ts := now.Add(time.Duration(i) * time.Millisecond)
+			recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.35, ts)
+			metrics.RecordLatency(collector, 10.0, ts, svcLabels)
 		}
 		exec.mu.Lock()
 		exec.resourceManagers[runID] = rm
@@ -840,7 +854,7 @@ func TestRunExecutorOnlineControllerPrefersVerticalScaleUpOnHighCPU(t *testing.T
 	for i := 0; i < 5; i++ {
 		ts := now.Add(time.Duration(i) * time.Millisecond)
 		metrics.RecordLatency(collector, 200.0, ts, svcLabels)
-		metrics.RecordCPUUtilization(collector, 0.9, ts, svcLabels)
+		recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.9, ts)
 	}
 
 	// Make resource manager visible to controller helper methods.
@@ -996,7 +1010,7 @@ func TestRunExecutorOnlineControllerScaleInHosts(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		ts := now.Add(time.Duration(i) * time.Millisecond)
 		metrics.RecordLatency(collector, 5.0, ts, svcLabels)
-		metrics.RecordCPUUtilization(collector, 0.2, ts, svcLabels)
+		recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, ts)
 	}
 	for _, hid := range rm.HostIDs() {
 		if h, ok := rm.GetHost(hid); ok {

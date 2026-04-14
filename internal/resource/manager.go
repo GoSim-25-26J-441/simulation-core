@@ -51,6 +51,56 @@ func NewManager() *Manager {
 	}
 }
 
+func hostMemoryCapacityMB(h *Host) float64 {
+	if h == nil {
+		return 0
+	}
+	gb := h.MemoryGB()
+	if gb < 1 {
+		gb = 1
+	}
+	return float64(gb) * 1024.0
+}
+
+// pickHostForNewInstanceLocked returns a host ID that can fit another instance with the
+// given reservation, or an error if none qualify. Hosts are tried in round-robin order
+// (by existing instance count for this service) among those with capacity. Caller must hold m.mu (write lock).
+func (m *Manager) pickHostForNewInstanceLocked(serviceID string, cpuCores, memoryMB float64) (string, error) {
+	hostIDs := make([]string, 0, len(m.hosts))
+	for id := range m.hosts {
+		hostIDs = append(hostIDs, id)
+	}
+	sort.Strings(hostIDs)
+	if len(hostIDs) == 0 {
+		return "", fmt.Errorf("no hosts available")
+	}
+	var existing int
+	for _, inst := range m.instances {
+		if inst != nil && inst.ServiceName() == serviceID {
+			existing++
+		}
+	}
+	start := existing % len(hostIDs)
+	for j := 0; j < len(hostIDs); j++ {
+		hid := hostIDs[(start+j)%len(hostIDs)]
+		h := m.hosts[hid]
+		var cpuSum, memSum float64
+		for _, iid := range m.hostToInstances[hid] {
+			inst, ok := m.instances[iid]
+			if !ok || inst == nil {
+				continue
+			}
+			cpuSum += inst.CPUCores()
+			memSum += inst.MemoryMB()
+		}
+		capMem := hostMemoryCapacityMB(h)
+		if cpuSum+cpuCores <= float64(h.CPUCores())+1e-9 && memSum+memoryMB <= capMem+1e-6 {
+			return hid, nil
+		}
+	}
+	return "", fmt.Errorf("no host has capacity for new instance (need %.2f CPU cores, %.2f MB memory)", cpuCores, memoryMB)
+}
+
 // InitializeFromScenario initializes the resource manager from a scenario configuration
 func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 	m.mu.Lock()
@@ -66,38 +116,65 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 		m.hosts[hostConfig.ID] = host
 	}
 
-	// Initialize service instances
+	hostIDs := make([]string, 0, len(m.hosts))
+	for id := range m.hosts {
+		hostIDs = append(hostIDs, id)
+	}
+	sort.Strings(hostIDs)
+	if len(hostIDs) == 0 {
+		return fmt.Errorf("no hosts defined")
+	}
+	hostLoad := make(map[string]struct {
+		cpu float64
+		mem float64
+	})
+	for _, id := range hostIDs {
+		hostLoad[id] = struct {
+			cpu float64
+			mem float64
+		}{}
+	}
+
+	// Initialize service instances with per-host reservation feasibility
 	instanceID := 0
 	for _, serviceConfig := range scenario.Services {
-		// Distribute replicas across available hosts
-		hostIDs := make([]string, 0, len(m.hosts))
-		for hostID := range m.hosts {
-			hostIDs = append(hostIDs, hostID)
+		cpuCores := serviceConfig.CPUCores
+		if cpuCores == 0 {
+			cpuCores = DefaultInstanceCPUCores
 		}
-		if len(hostIDs) == 0 {
-			return fmt.Errorf("no hosts available for service %s", serviceConfig.ID)
+		memoryMB := serviceConfig.MemoryMB
+		if memoryMB == 0 {
+			memoryMB = DefaultInstanceMemoryMB
 		}
 
 		for replica := 0; replica < serviceConfig.Replicas; replica++ {
-			// Round-robin assignment of replicas to hosts
-			hostID := hostIDs[replica%len(hostIDs)]
-			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
-			instanceID++
+			placed := false
+			start := replica % len(hostIDs)
+			for j := 0; j < len(hostIDs); j++ {
+				hostID := hostIDs[(start+j)%len(hostIDs)]
+				h := m.hosts[hostID]
+				l := hostLoad[hostID]
+				capMem := hostMemoryCapacityMB(h)
+				if l.cpu+cpuCores <= float64(h.CPUCores())+1e-9 && l.mem+memoryMB <= capMem+1e-6 {
+					l.cpu += cpuCores
+					l.mem += memoryMB
+					hostLoad[hostID] = l
 
-			// Use configured values if provided, otherwise use defaults
-			cpuCores := serviceConfig.CPUCores
-			if cpuCores == 0 {
-				cpuCores = DefaultInstanceCPUCores
-			}
-			memoryMB := serviceConfig.MemoryMB
-			if memoryMB == 0 {
-				memoryMB = DefaultInstanceMemoryMB
-			}
+					instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
+					instanceID++
 
-			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
-			m.instances[instanceIDStr] = instance
-			m.hosts[hostID].AddService(instanceIDStr)
-			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
+					instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
+					m.instances[instanceIDStr] = instance
+					m.hosts[hostID].AddService(instanceIDStr)
+					m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
+					placed = true
+					break
+				}
+			}
+			if !placed {
+				return fmt.Errorf("cannot place service %s: insufficient host capacity (each instance needs %.2f CPU cores, %.2f MB memory)",
+					serviceConfig.ID, cpuCores, memoryMB)
+			}
 		}
 	}
 	m.nextInstanceID = instanceID
@@ -239,11 +316,7 @@ func (m *Manager) ScaleServiceWithOptions(serviceID string, newReplicas int, opt
 	activeN := len(activeInst)
 
 	if newReplicas > activeN {
-		hostIDs := make([]string, 0, len(m.hosts))
-		for hostID := range m.hosts {
-			hostIDs = append(hostIDs, hostID)
-		}
-		if len(hostIDs) == 0 {
+		if len(m.hosts) == 0 {
 			return fmt.Errorf("no hosts available")
 		}
 		template := activeInst[0]
@@ -254,9 +327,11 @@ func (m *Manager) ScaleServiceWithOptions(serviceID string, newReplicas int, opt
 		cpuCores := template.CPUCores()
 		memoryMB := template.MemoryMB()
 
-		physicalN := len(allInst)
 		for i := 0; i < newReplicas-activeN; i++ {
-			hostID := hostIDs[(physicalN+i)%len(hostIDs)]
+			hostID, err := m.pickHostForNewInstanceLocked(serviceID, cpuCores, memoryMB)
+			if err != nil {
+				return err
+			}
 			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceID, m.nextInstanceID)
 			m.nextInstanceID++
 
@@ -448,6 +523,7 @@ func (m *Manager) HostIDs() []string {
 	for id := range m.hosts {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 

@@ -158,6 +158,22 @@ message RunConfiguration {
   repeated ServiceConfigEntry services = 1;    // current replicas and per-instance resources per service
   repeated WorkloadPatternEntry workload = 2;  // current workload patterns (pattern_key, rate_rps)
   repeated HostConfigEntry hosts = 3;          // current host resource allocations (cores, memory)
+  // Per-instance placement and live stats (sorted by host_id, then instance_id for stable UI ordering).
+  repeated InstancePlacementEntry placements = 4;
+}
+
+message InstancePlacementEntry {
+  string instance_id = 1;
+  string service_id = 2;
+  string host_id = 3;
+  // ACTIVE or DRAINING
+  string lifecycle = 4;
+  double cpu_cores = 5;
+  double memory_mb = 6;
+  double cpu_utilization = 7;
+  double memory_utilization = 8;
+  int32 active_requests = 9;
+  int32 queue_length = 10;
 }
 
 message ServiceConfigEntry {
@@ -508,6 +524,11 @@ message RunMetrics {
 
   double throughput_rps = 8;
 
+  // Ingress-side counts and RPS (external arrivals). Aggregate total_requests / throughput_rps include downstream hops.
+  int64 ingress_requests = 11;
+  int64 internal_requests = 12;
+  double ingress_throughput_rps = 13;
+
   repeated ServiceMetrics service_metrics = 9;
   // Per-host utilization when the simulator records host-level CPU/memory gauges.
   repeated HostMetrics host_metrics = 10;
@@ -533,6 +554,8 @@ message ServiceMetrics {
   double memory_utilization = 9;
   int32 active_replicas = 10;
   int32 concurrent_requests = 11;
+  // Sum of latest queue_length gauge per instance (current state, not time-averaged).
+  int32 queue_length = 12;
 }
 
 message RunEvent {

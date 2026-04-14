@@ -601,37 +601,17 @@ func (s *HTTPServer) handleGetRunConfiguration(w http.ResponseWriter, _ *http.Re
 		s.writeError(w, http.StatusInternalServerError, "run configuration not available")
 		return
 	}
-
-	services := make([]map[string]any, 0, len(cfg.Services))
-	for _, srv := range cfg.Services {
-		services = append(services, map[string]any{
-			"service_id": srv.ServiceId,
-			"replicas":   srv.Replicas,
-			"cpu_cores":  srv.CpuCores,
-			"memory_mb":  srv.MemoryMb,
-		})
+	var scen *config.Scenario
+	if s.Executor != nil {
+		scen, _ = s.Executor.GetScenarioSnapshot(runID)
 	}
-	workload := make([]map[string]any, 0, len(cfg.Workload))
-	for _, w := range cfg.Workload {
-		workload = append(workload, map[string]any{
-			"pattern_key": w.PatternKey,
-			"rate_rps":    w.RateRps,
-		})
-	}
-	hosts := make([]map[string]any, 0, len(cfg.Hosts))
-	for _, h := range cfg.Hosts {
-		hosts = append(hosts, map[string]any{
-			"host_id":   h.HostId,
-			"cpu_cores": h.CpuCores,
-			"memory_gb": h.MemoryGb,
-		})
+	if scen == nil && rec.Input != nil && rec.Input.ScenarioYaml != "" {
+		if parsed, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml); err == nil {
+			scen = parsed
+		}
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"configuration": map[string]any{
-			"services": services,
-			"workload": workload,
-			"hosts":    hosts,
-		},
+		"configuration": convertRunConfigurationToJSON(cfg, scen),
 	})
 }
 
@@ -792,10 +772,18 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 	export := map[string]any{
 		"run": runJSON,
 	}
-	if len(rec.OptimizationHistory) > 0 {
+	var exportScenario *config.Scenario
+	if rec.Input != nil && rec.Input.ScenarioYaml != "" {
+		if s, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml); err == nil {
+			exportScenario = s
+		}
+	}
+	if rec.FinalConfig != nil {
+		export["final_config"] = convertRunConfigurationToJSON(rec.FinalConfig, exportScenario)
+	} else if len(rec.OptimizationHistory) > 0 {
 		lastStep := rec.OptimizationHistory[len(rec.OptimizationHistory)-1]
 		if lastStep != nil && lastStep.CurrentConfig != nil {
-			export["final_config"] = convertRunConfigurationToJSON(lastStep.CurrentConfig)
+			export["final_config"] = convertRunConfigurationToJSON(lastStep.CurrentConfig, exportScenario)
 		}
 	}
 
@@ -901,6 +889,88 @@ func parseTime(timeStr string) (time.Time, error) {
 	return time.Time{}, errors.New("unable to parse time format")
 }
 
+// sseWriteMetricsSnapshot sends a metrics_snapshot SSE event when persisted final metrics exist
+// or (for real-time runs) live aggregates from the collector.
+func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string, rec *RunRecord, streamLive, hasCollector bool, collector *metrics.Collector) {
+	var metricsToSend *simulationv1.RunMetrics
+	if rec.Metrics != nil {
+		metricsToSend = rec.Metrics
+	} else if streamLive && hasCollector && collector != nil {
+		serviceLabels := serviceLabelsFromInput(rec.Input)
+		var convOpts *metrics.RunMetricsOptions
+		if s.Executor != nil {
+			convOpts = s.Executor.runMetricsOptsForRun(runID)
+		}
+		engineMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels, convOpts)
+		metricsToSend = convertMetricsToProto(engineMetrics)
+	}
+	if metricsToSend == nil {
+		return
+	}
+	cfg, cfgOk := s.Executor.GetRunConfiguration(runID)
+	if cfgOk && cfg != nil {
+		for _, sm := range metricsToSend.ServiceMetrics {
+			for _, svc := range cfg.Services {
+				if svc.ServiceId == sm.ServiceName {
+					replicas := svc.Replicas
+					if replicas < 0 {
+						replicas = 0
+					}
+					sm.ActiveReplicas = replicas
+					break
+				}
+			}
+		}
+	}
+	metricsJSON := convertMetricsToJSON(metricsToSend)
+	payload := map[string]any{"metrics": metricsJSON}
+	if cfgOk && cfg != nil {
+		var scen *config.Scenario
+		if s.Executor != nil {
+			scen, _ = s.Executor.GetScenarioSnapshot(runID)
+		}
+		if scen == nil && rec.Input != nil && rec.Input.ScenarioYaml != "" {
+			if parsed, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml); err == nil {
+				scen = parsed
+			}
+		}
+		serviceResources := make([]map[string]any, 0, len(cfg.Services))
+		for _, svc := range cfg.Services {
+			entry := map[string]any{
+				"service_id": svc.ServiceId,
+				"replicas":   svc.Replicas,
+				"cpu_cores":  svc.CpuCores,
+				"memory_mb":  svc.MemoryMb,
+			}
+			enrichServiceConfigEntryJSON(entry, scen, svc.ServiceId)
+			serviceResources = append(serviceResources, entry)
+		}
+		hostResources := make([]map[string]any, 0, len(cfg.Hosts))
+		for _, h := range cfg.Hosts {
+			hostResources = append(hostResources, map[string]any{
+				"host_id":   h.HostId,
+				"cpu_cores": h.CpuCores,
+				"memory_gb": h.MemoryGb,
+			})
+		}
+		payload["resources"] = map[string]any{
+			"services":   serviceResources,
+			"hosts":      hostResources,
+			"placements": instancePlacementsToJSON(cfg.Placements),
+		}
+	}
+	if streamLive && hasCollector && collector != nil {
+		var invHostIDs []string
+		if s.Executor != nil {
+			invHostIDs = s.Executor.hostIDsForRun(runID)
+		}
+		if hostMetrics := hostMetricsFromCollector(collector, invHostIDs); len(hostMetrics) > 0 {
+			payload["host_metrics"] = hostMetrics
+		}
+	}
+	s.sendSSEEvent(w, "metrics_snapshot", payload)
+}
+
 // handleMetricsStream handles GET /v1/runs/{id}/metrics/stream (SSE)
 func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request, runID string) {
 	// Check if run exists
@@ -995,6 +1065,8 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				}
 			}
 
+			streamLive := rec.Input != nil && rec.Input.GetRealTimeMode()
+
 			// Check for status changes
 			if rec.Run.Status != previousStatus {
 				s.sendSSEEvent(w, "status_change", map[string]any{
@@ -1007,9 +1079,22 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
 					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
 					rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
+					// Refresh record so final metrics persisted with completion are visible before complete.
+					if r2, ok2 := s.store.Get(runID); ok2 {
+						rec = r2
+					}
+					s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector)
 					s.sendSSEEvent(w, "complete", map[string]any{
 						"status": rec.Run.Status.String(),
 					})
+					if rc != nil {
+						if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+							logger.Debug("SetWriteDeadline failed", "error", err)
+						}
+					}
+					if flusher, ok := w.(http.Flusher); ok {
+						flusher.Flush()
+					}
 					return
 				}
 			}
@@ -1042,68 +1127,13 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				}
 			}
 
-			// Send aggregated metrics snapshot: from store when run has ended, or from collector during run
-			var metricsToSend *simulationv1.RunMetrics
-			if rec.Metrics != nil {
-				metricsToSend = rec.Metrics
-			} else if hasCollector && collector != nil {
-				// During run: compute aggregates from collector so frontend gets totals without client-side accumulation
-				serviceLabels := serviceLabelsFromInput(rec.Input)
-				engineMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
-				metricsToSend = convertMetricsToProto(engineMetrics)
-			}
-			if metricsToSend != nil {
-				cfg, cfgOk := s.Executor.GetRunConfiguration(runID)
-				if cfgOk && cfg != nil {
-					// Populate active_replicas in metrics snapshot from run configuration (in-run snapshot from collector has no replica data)
-					for _, sm := range metricsToSend.ServiceMetrics {
-						for _, svc := range cfg.Services {
-							if svc.ServiceId == sm.ServiceName {
-								replicas := svc.Replicas
-								if replicas < 0 {
-									replicas = 0
-								}
-								sm.ActiveReplicas = replicas
-								break
-							}
-						}
-					}
-				}
-				metricsJSON := convertMetricsToJSON(metricsToSend)
-				payload := map[string]any{"metrics": metricsJSON}
-				if cfgOk && cfg != nil {
-					serviceResources := make([]map[string]any, 0, len(cfg.Services))
-					for _, svc := range cfg.Services {
-						serviceResources = append(serviceResources, map[string]any{
-							"service_id": svc.ServiceId,
-							"replicas":   svc.Replicas,
-							"cpu_cores":  svc.CpuCores,
-							"memory_mb":  svc.MemoryMb,
-						})
-					}
-					hostResources := make([]map[string]any, 0, len(cfg.Hosts))
-					for _, h := range cfg.Hosts {
-						hostResources = append(hostResources, map[string]any{
-							"host_id":   h.HostId,
-							"cpu_cores": h.CpuCores,
-							"memory_gb": h.MemoryGb,
-						})
-					}
-					payload["resources"] = map[string]any{
-						"services": serviceResources,
-						"hosts":    hostResources,
-					}
-				}
-				if hasCollector && collector != nil {
-					if hostMetrics := hostMetricsFromCollector(collector); len(hostMetrics) > 0 {
-						payload["host_metrics"] = hostMetrics
-					}
-				}
-				s.sendSSEEvent(w, "metrics_snapshot", payload)
-			}
+			// Send aggregated metrics snapshot: final metrics from store when persisted; during run, live
+			// collector snapshots only for real-time runs (non-real-time runs can take wall-clock time to
+			// finish simulation work without throttling — partial metrics would be misleading as "live").
+			s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector)
 
-			// Send time-series metric updates if collector is available
-			if hasCollector && collector != nil {
+			// Send time-series metric updates if collector is available (real-time runs only)
+			if streamLive && hasCollector && collector != nil {
 				// Get all metrics and send new/updated points
 				metricNames := collector.GetMetricNames()
 				if len(metricNames) == 0 {
@@ -1369,28 +1399,66 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 		result["batch_efficiency_score"] = run.GetBatchEfficiencyScore()
 		result["batch_recommendation_summary"] = run.GetBatchRecommendationSummary()
 		result["batch_score_breakdown"] = map[string]any{
-			"feasible":          run.GetBatchRecommendationFeasible(),
-			"violation_score":   run.GetBatchViolationScore(),
-			"efficiency_score":  run.GetBatchEfficiencyScore(),
-			"summary":           run.GetBatchRecommendationSummary(),
+			"feasible":         run.GetBatchRecommendationFeasible(),
+			"violation_score":  run.GetBatchViolationScore(),
+			"efficiency_score": run.GetBatchEfficiencyScore(),
+			"summary":          run.GetBatchRecommendationSummary(),
 		}
 	}
 
 	return result
 }
 
-func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration) map[string]any {
+func scalingPolicyToJSON(p *config.ScalingPolicy) map[string]any {
+	if p == nil {
+		return nil
+	}
+	return map[string]any{
+		"horizontal":      p.Horizontal,
+		"vertical_cpu":    p.VerticalCPU,
+		"vertical_memory": p.VerticalMemory,
+	}
+}
+
+func enrichServiceConfigEntryJSON(m map[string]any, scenario *config.Scenario, serviceID string) {
+	if scenario == nil || serviceID == "" {
+		return
+	}
+	for i := range scenario.Services {
+		if scenario.Services[i].ID != serviceID {
+			continue
+		}
+		svc := &scenario.Services[i]
+		if svc.Kind != "" {
+			m["kind"] = svc.Kind
+		}
+		if svc.Role != "" {
+			m["role"] = svc.Role
+		}
+		if svc.Model != "" {
+			m["model"] = svc.Model
+		}
+		if sp := scalingPolicyToJSON(svc.Scaling); sp != nil {
+			m["scaling"] = sp
+		}
+		return
+	}
+}
+
+func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario *config.Scenario) map[string]any {
 	if cfg == nil {
 		return nil
 	}
 	services := make([]map[string]any, 0, len(cfg.Services))
 	for _, srv := range cfg.Services {
-		services = append(services, map[string]any{
+		entry := map[string]any{
 			"service_id": srv.ServiceId,
 			"replicas":   srv.Replicas,
 			"cpu_cores":  srv.CpuCores,
 			"memory_mb":  srv.MemoryMb,
-		})
+		}
+		enrichServiceConfigEntryJSON(entry, scenario, srv.ServiceId)
+		services = append(services, entry)
 	}
 	workload := make([]map[string]any, 0, len(cfg.Workload))
 	for _, w := range cfg.Workload {
@@ -1407,11 +1475,38 @@ func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration) map[strin
 			"memory_gb": h.MemoryGb,
 		})
 	}
+	placements := instancePlacementsToJSON(cfg.Placements)
 	return map[string]any{
-		"services": services,
-		"workload": workload,
-		"hosts":    hosts,
+		"services":   services,
+		"workload":   workload,
+		"hosts":      hosts,
+		"placements": placements,
 	}
+}
+
+func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry) []map[string]any {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(entries))
+	for _, p := range entries {
+		if p == nil {
+			continue
+		}
+		out = append(out, map[string]any{
+			"instance_id":        p.InstanceId,
+			"service_id":         p.ServiceId,
+			"host_id":            p.HostId,
+			"lifecycle":          p.Lifecycle,
+			"cpu_cores":          p.CpuCores,
+			"memory_mb":          p.MemoryMb,
+			"cpu_utilization":    p.CpuUtilization,
+			"memory_utilization": p.MemoryUtilization,
+			"active_requests":    p.ActiveRequests,
+			"queue_length":       p.QueueLength,
+		})
+	}
+	return out
 }
 
 func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[string]any {
@@ -1425,10 +1520,10 @@ func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[stri
 		"reason":          step.Reason,
 	}
 	if step.PreviousConfig != nil {
-		result["previous_config"] = convertRunConfigurationToJSON(step.PreviousConfig)
+		result["previous_config"] = convertRunConfigurationToJSON(step.PreviousConfig, nil)
 	}
 	if step.CurrentConfig != nil {
-		result["current_config"] = convertRunConfigurationToJSON(step.CurrentConfig)
+		result["current_config"] = convertRunConfigurationToJSON(step.CurrentConfig, nil)
 	}
 	return result
 }
@@ -1447,8 +1542,11 @@ func convertOptimizationHistoryToJSON(history []*simulationv1.OptimizationStep) 
 }
 
 // hostMetricsFromCollector builds a list of per-host metrics from the collector's
-// host-labelled time series (cpu_utilization, memory_utilization). Returns nil if none.
-func hostMetricsFromCollector(collector *metrics.Collector) []map[string]any {
+// host-labelled time series (cpu_utilization, memory_utilization).
+// When inventoryHostIDs is non-nil, the list is exactly those IDs (resource-manager order);
+// hosts with no samples yet appear with cpu/memory utilization 0.
+// When inventoryHostIDs is nil, only hosts that have emitted host-labelled samples are included.
+func hostMetricsFromCollector(collector *metrics.Collector, inventoryHostIDs []string) []map[string]any {
 	type hostVals struct {
 		cpuUtil float64
 		memUtil float64
@@ -1477,6 +1575,23 @@ func hostMetricsFromCollector(collector *metrics.Collector) []map[string]any {
 				byHost[hostID].memUtil = latest
 			}
 		}
+	}
+
+	if len(inventoryHostIDs) > 0 {
+		out := make([]map[string]any, 0, len(inventoryHostIDs))
+		for _, hostID := range inventoryHostIDs {
+			v := byHost[hostID]
+			cpu, mem := 0.0, 0.0
+			if v != nil {
+				cpu, mem = v.cpuUtil, v.memUtil
+			}
+			out = append(out, map[string]any{
+				"host_id":            hostID,
+				"cpu_utilization":    cpu,
+				"memory_utilization": mem,
+			})
+		}
+		return out
 	}
 
 	if len(byHost) == 0 {
@@ -1509,6 +1624,9 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		"latency_p99_ms":      metrics.LatencyP99Ms,
 		"latency_mean_ms":     metrics.LatencyMeanMs,
 		"throughput_rps":      metrics.ThroughputRps,
+		"ingress_requests":      metrics.IngressRequests,
+		"internal_requests":     metrics.InternalRequests,
+		"ingress_throughput_rps": metrics.IngressThroughputRps,
 	}
 
 	if len(metrics.ServiceMetrics) > 0 {
@@ -1526,6 +1644,7 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 				"memory_utilization":  sm.MemoryUtilization,
 				"active_replicas":     sm.ActiveReplicas,
 				"concurrent_requests": sm.ConcurrentRequests,
+				"queue_length":        sm.QueueLength,
 			})
 		}
 		result["service_metrics"] = serviceMetrics
@@ -1538,9 +1657,9 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 				continue
 			}
 			hm = append(hm, map[string]any{
-				"host_id":             h.HostId,
-				"cpu_utilization":     h.CpuUtilization,
-				"memory_utilization":  h.MemoryUtilization,
+				"host_id":            h.HostId,
+				"cpu_utilization":    h.CpuUtilization,
+				"memory_utilization": h.MemoryUtilization,
 			})
 		}
 		if len(hm) > 0 {

@@ -113,6 +113,11 @@ func (pm *Manager) GetCircuitBreaker() CircuitBreakerPolicy {
 	return pm.circuitBreaker
 }
 
+// SetCircuitBreaker attaches a circuit breaker policy (e.g. integration tests).
+func (pm *Manager) SetCircuitBreaker(cb CircuitBreakerPolicy) {
+	pm.circuitBreaker = cb
+}
+
 // UpdateAutoscaling replaces the autoscaling policy with one built from cfg (for dynamic config).
 // If cfg is nil or cfg.Enabled is false, autoscaling is cleared.
 func (pm *Manager) UpdateAutoscaling(cfg *config.AutoscalingPolicy) {

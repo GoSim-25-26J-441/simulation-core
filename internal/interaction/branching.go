@@ -24,6 +24,17 @@ func (s *DefaultBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *rand.R
 	selected := make([]ResolvedCall, 0)
 
 	for _, call := range calls {
+		prob := call.Call.Probability
+		if prob <= 0 {
+			prob = 1.0
+		}
+		if prob > 1 {
+			prob = 1.0
+		}
+		if prob < 1 && rng.Float64() >= prob {
+			continue
+		}
+
 		// Use call_count_mean to determine how many times to call this downstream service
 		countMean := call.Call.CallCountMean
 		if countMean <= 0 {

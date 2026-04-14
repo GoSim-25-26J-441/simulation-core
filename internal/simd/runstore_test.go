@@ -154,6 +154,38 @@ func TestRunStoreSetMetrics(t *testing.T) {
 	}
 }
 
+func TestRunStoreSetFinalConfiguration(t *testing.T) {
+	store := NewRunStore()
+	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	cfg := &simulationv1.RunConfiguration{
+		Placements: []*simulationv1.InstancePlacementEntry{
+			{InstanceId: "svc1-instance-0", ServiceId: "svc1", HostId: "host-1", Lifecycle: "ACTIVE"},
+		},
+	}
+	if err := store.SetFinalConfiguration("run-1", cfg); err != nil {
+		t.Fatalf("SetFinalConfiguration: %v", err)
+	}
+	got, ok := store.Get("run-1")
+	if !ok {
+		t.Fatal("expected run")
+	}
+	if got.FinalConfig == nil || len(got.FinalConfig.Placements) != 1 {
+		t.Fatalf("expected FinalConfig with one placement, got %+v", got.FinalConfig)
+	}
+	if got.FinalConfig.Placements[0].InstanceId != "svc1-instance-0" {
+		t.Fatalf("clone mismatch")
+	}
+	// Mutate original; store must keep independent copy
+	cfg.Placements[0].InstanceId = "mutated"
+	got2, _ := store.Get("run-1")
+	if got2.FinalConfig.Placements[0].InstanceId != "svc1-instance-0" {
+		t.Fatal("expected stored proto to be cloned")
+	}
+}
+
 func TestRunStoreListLimit(t *testing.T) {
 	store := NewRunStore()
 	for i := 0; i < 10; i++ {

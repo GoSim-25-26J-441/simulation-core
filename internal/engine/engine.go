@@ -60,6 +60,9 @@ func (e *Engine) ScheduleEvent(event *Event) {
 	if event.ID == "" {
 		event.ID = fmt.Sprintf("evt-%d", counter)
 	}
+	if event.Sequence == 0 {
+		event.Sequence = counter
+	}
 	e.eventQueue.Schedule(event)
 
 	e.logger.Debug("Event scheduled",
@@ -71,10 +74,15 @@ func (e *Engine) ScheduleEvent(event *Event) {
 
 // ScheduleAt schedules an event at a specific simulation time
 func (e *Engine) ScheduleAt(eventType EventType, simTime time.Time, request *models.Request, serviceID string, data map[string]interface{}) {
+	e.ScheduleAtPriority(eventType, simTime, 0, request, serviceID, data)
+}
+
+// ScheduleAtPriority schedules an event at simTime with a priority (lower value = processed earlier when times tie).
+func (e *Engine) ScheduleAtPriority(eventType EventType, simTime time.Time, priority int, request *models.Request, serviceID string, data map[string]interface{}) {
 	event := &Event{
 		Type:      eventType,
 		Time:      simTime,
-		Priority:  0,
+		Priority:  priority,
 		Request:   request,
 		ServiceID: serviceID,
 		Data:      data,

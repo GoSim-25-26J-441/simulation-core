@@ -31,7 +31,7 @@ func TestNewScenarioState(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestRegisterHandlers(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestScheduleWorkloadInvalidTarget(t *testing.T) {
 	}
 }
 
-func TestScheduleWorkloadDefaultArrivalType(t *testing.T) {
+func TestScheduleWorkloadInvalidArrivalType(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	scenario := &config.Scenario{
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
@@ -270,7 +270,7 @@ func TestScheduleWorkloadDefaultArrivalType(t *testing.T) {
 				From: "client",
 				To:   "svc1:/test",
 				Arrival: config.ArrivalSpec{
-					Type:    "unknown", // Unknown type defaults to poisson
+					Type:    "unknown",
 					RateRPS: 10,
 				},
 			},
@@ -278,7 +278,7 @@ func TestScheduleWorkloadDefaultArrivalType(t *testing.T) {
 	}
 
 	err := ScheduleWorkload(eng, scenario, 100*time.Millisecond)
-	if err != nil {
-		t.Fatalf("ScheduleWorkload error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for unsupported arrival type")
 	}
 }

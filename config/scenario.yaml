@@ -1,84 +1,346 @@
+metadata:
+  schema_version: "0.2.0"
+
+simulation_limits:
+  max_trace_depth: 48
+  max_async_hops: 12
+
 hosts:
-  # memory_gb is optional; omit or 0 means simulator default (16 GB)
   - id: host-1
-    cores: 2
-    memory_gb: 16
+    cores: 8
+    memory_gb: 32
+  - id: host-2
+    cores: 8
+    memory_gb: 32
+  - id: host-3
+    cores: 8
+    memory_gb: 32
 
 services:
-  - id: auth
+  - id: api-gateway
+    kind: api_gateway
+    role: ingress
     replicas: 2
     model: cpu
-    cpu_cores: 2.0
-    memory_mb: 1024.0
+    cpu_cores: 1.0
+    memory_mb: 768
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
     endpoints:
-      - path: /auth/login
-        mean_cpu_ms: 50
-        cpu_sigma_ms: 20
-        default_memory_mb: 15.0
-        downstream: []
+      - path: /REST
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 8
         net_latency_ms:
           mean: 2
-          sigma: 1
-      - path: /auth/verify
-        mean_cpu_ms: 5
-        cpu_sigma_ms: 3
-        default_memory_mb: 5.0
-        downstream: []
-        net_latency_ms:
-          mean: 1
           sigma: 0.5
+        downstream:
+          - to: customer-core:/checkout
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 500
+            call_latency_ms:
+              mean: 3
+              sigma: 1
+          - to: analytics-core:/ingest
+            mode: async
+            kind: rest
+            probability: 1
+            call_count_mean: 0.25
+            timeout_ms: 250
+            call_latency_ms:
+              mean: 2
+              sigma: 0.5
 
-  - id: user
+  - id: customer-core
+    kind: service
+    role: internal
+    replicas: 3
+    model: mixed
+    cpu_cores: 1.5
+    memory_mb: 1024
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /checkout
+        mean_cpu_ms: 12
+        cpu_sigma_ms: 4
+        default_memory_mb: 24
+        net_latency_ms:
+          mean: 3
+          sigma: 1
+        downstream:
+          - to: profile:/lookup
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 300
+            call_latency_ms:
+              mean: 4
+              sigma: 1
+          - to: loyalty:/points
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 350
+            call_latency_ms:
+              mean: 5
+              sigma: 1.5
+          - to: messaging:/notify
+            mode: async
+            kind: rest
+            probability: 1
+            call_count_mean: 0.4
+            timeout_ms: 200
+            call_latency_ms:
+              mean: 3
+              sigma: 1
+
+  - id: profile
+    kind: service
+    role: internal
     replicas: 2
     model: mixed
+    cpu_cores: 1.0
+    memory_mb: 768
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
     endpoints:
-      - path: /user/get
-        mean_cpu_ms: 12
-        cpu_sigma_ms: 6
-        downstream:
-          - to: db:/db/query
-            call_count_mean: 1
-            call_latency_ms:
-              mean: 10
-              sigma: 5
-            downstream_fraction_cpu: 0.6
+      - path: /lookup
+        mean_cpu_ms: 8
+        cpu_sigma_ms: 2
+        default_memory_mb: 16
         net_latency_ms:
-          mean: 3
-          sigma: 1
-      - path: /user/update
-        mean_cpu_ms: 25
-        cpu_sigma_ms: 12
+          mean: 2
+          sigma: 0.5
         downstream:
-          - to: db:/db/query
+          - to: profile-db:/query
+            mode: sync
+            kind: db
+            probability: 1
             call_count_mean: 1
+            timeout_ms: 250
             call_latency_ms:
-              mean: 15
-              sigma: 8
-            downstream_fraction_cpu: 0.7
-        net_latency_ms:
-          mean: 3
-          sigma: 1
+              mean: 4
+              sigma: 1
 
-  - id: db
+  - id: loyalty
+    kind: service
+    role: internal
+    replicas: 2
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 768
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /points
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 3
+        default_memory_mb: 18
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream:
+          - to: loyalty-db:/query
+            mode: sync
+            kind: db
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 300
+            call_latency_ms:
+              mean: 6
+              sigma: 2
+          - to: recommendations:/rank
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 0.3
+            timeout_ms: 400
+            call_latency_ms:
+              mean: 4
+              sigma: 1
+
+  - id: recommendations
+    kind: service
+    role: internal
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 1024
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /rank
+        mean_cpu_ms: 25
+        cpu_sigma_ms: 8
+        default_memory_mb: 32
+        net_latency_ms:
+          mean: 3
+          sigma: 1
+        downstream:
+          - to: recommendations-db:/query
+            mode: sync
+            kind: db
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 450
+            call_latency_ms:
+              mean: 7
+              sigma: 2
+
+  - id: analytics-core
+    kind: service
+    role: internal
+    replicas: 2
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 1024
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /ingest
+        mean_cpu_ms: 18
+        cpu_sigma_ms: 6
+        default_memory_mb: 28
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream: []
+
+  - id: messaging
+    kind: service
+    role: internal
+    replicas: 1
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 512
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /notify
+        mean_cpu_ms: 14
+        cpu_sigma_ms: 4
+        default_memory_mb: 20
+        net_latency_ms:
+          mean: 4
+          sigma: 1
+        downstream: []
+
+  - id: profile-db
+    kind: database
+    role: datastore
     replicas: 1
     model: db_latency
+    cpu_cores: 2.0
+    memory_mb: 4096
+    scaling:
+      horizontal: false
+      vertical_cpu: true
+      vertical_memory: true
     endpoints:
-      - path: /db/query
-        mean_cpu_ms: 5
-        cpu_sigma_ms: 2
-        downstream: []
+      - path: /query
+        mean_cpu_ms: 3
+        cpu_sigma_ms: 1
+        default_memory_mb: 12
         net_latency_ms:
-          mean: 1
-          sigma: 0.5
+          mean: 6
+          sigma: 1.5
+        downstream: []
+
+  - id: loyalty-db
+    kind: database
+    role: datastore
+    replicas: 1
+    model: db_latency
+    cpu_cores: 2.0
+    memory_mb: 4096
+    scaling:
+      horizontal: false
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /query
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 16
+        net_latency_ms:
+          mean: 8
+          sigma: 2
+        downstream: []
+
+  - id: recommendations-db
+    kind: database
+    role: datastore
+    replicas: 1
+    model: db_latency
+    cpu_cores: 2.0
+    memory_mb: 4096
+    scaling:
+      horizontal: false
+      vertical_cpu: true
+      vertical_memory: true
+    endpoints:
+      - path: /query
+        mean_cpu_ms: 5
+        cpu_sigma_ms: 1.5
+        default_memory_mb: 18
+        net_latency_ms:
+          mean: 10
+          sigma: 3
+        downstream: []
 
 workload:
-  - from: client
-    to: auth:/auth/login
+  - from: web-client
+    source_kind: client
+    traffic_class: ingress
+    to: api-gateway:/REST
     arrival:
       type: poisson
-      rate_rps: 20.0
-  - from: client
-    to: user:/user/get
+      rate_rps: 80
+  - from: mobile-client
+    source_kind: client
+    traffic_class: ingress
+    to: api-gateway:/REST
     arrival:
-      type: poisson
-      rate_rps: 5.0
+      type: bursty
+      rate_rps: 20
+      burst_rate_rps: 80
+      burst_duration_seconds: 10
+      quiet_duration_seconds: 30
+  - from: analytics-replay
+    source_kind: batch_job
+    traffic_class: background
+    to: analytics-core:/ingest
+    arrival:
+      type: constant
+      rate_rps: 5
+
+policies:
+  autoscaling:
+    enabled: true
+    target_cpu_util: 0.65
+    scale_step: 1
+  retries:
+    enabled: true
+    max_retries: 2
+    backoff: exponential
+    base_ms: 50

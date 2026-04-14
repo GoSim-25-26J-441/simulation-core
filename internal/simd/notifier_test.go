@@ -437,6 +437,69 @@ func TestNotifierNotify_OnlineOptimizationIncludesFinalConfig(t *testing.T) {
 	}
 }
 
+func TestNotifierNotify_PrefersFinalConfigOnRecordOverOptimizationHistory(t *testing.T) {
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "pref-run",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+		FinalConfig: &simulationv1.RunConfiguration{
+			Placements: []*simulationv1.InstancePlacementEntry{
+				{InstanceId: "from-final-config", ServiceId: "svc1", HostId: "host-1", Lifecycle: "ACTIVE"},
+			},
+		},
+		OptimizationHistory: []*simulationv1.OptimizationStep{
+			{
+				CurrentConfig: &simulationv1.RunConfiguration{
+					Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 9}},
+				},
+			},
+		},
+	}
+
+	NewNotifier().Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		fc, ok := payload["final_config"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected final_config, got %v", payload["final_config"])
+		}
+		pl, ok := fc["placements"].([]interface{})
+		if !ok || len(pl) != 1 {
+			t.Fatalf("expected final_config.placements from FinalConfig field, got %v", fc["placements"])
+		}
+		p0 := pl[0].(map[string]interface{})
+		if p0["instance_id"] != "from-final-config" {
+			t.Fatalf("expected instance from FinalConfig, got %v", p0["instance_id"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
 func TestNotifierNotify_EmptyURL(t *testing.T) {
 	notifier := NewNotifier()
 	rec := &RunRecord{

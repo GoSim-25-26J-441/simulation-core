@@ -63,7 +63,11 @@ func neighborStress(spec *batchspec.BatchSpec, m *simulationv1.RunMetrics) bool 
 	if n > 0 && maxCPU > spec.ServiceCPUBandHigh {
 		return true
 	}
-	if spec.MinThroughput > 0 && m.GetThroughputRps() < spec.MinThroughput*0.95 {
+	tput := m.GetIngressThroughputRps()
+	if tput <= 0 {
+		tput = m.GetThroughputRps()
+	}
+	if spec.MinThroughput > 0 && tput < spec.MinThroughput*0.95 {
 		return true
 	}
 	return false
@@ -131,6 +135,9 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 		switch act {
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_OUT:
 			for i := range cur.Services {
+				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
+					continue
+				}
 				ns := cloneScenario(cur)
 				if int32(ns.Services[i].Replicas) >= spec.MaxReplicasPerSvc {
 					continue
@@ -143,6 +150,9 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_IN:
 			for i := range cur.Services {
+				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
+					continue
+				}
 				ns := cloneScenario(cur)
 				if ns.Services[i].Replicas-int(spec.ReplicaStep) < int(spec.MinReplicasPerSvc) {
 					continue
@@ -155,6 +165,9 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_UP_CPU:
 			for i := range cur.Services {
+				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
+					continue
+				}
 				ns := cloneScenario(cur)
 				cpu := ns.Services[i].CPUCores
 				if cpu <= 0 {
@@ -168,6 +181,9 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_DOWN_CPU:
 			for i := range cur.Services {
+				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
+					continue
+				}
 				ns := cloneScenario(cur)
 				cpu := ns.Services[i].CPUCores
 				if cpu <= 0 {
@@ -181,6 +197,9 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_UP_MEMORY:
 			for i := range cur.Services {
+				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
+					continue
+				}
 				ns := cloneScenario(cur)
 				mb := ns.Services[i].MemoryMB
 				if mb <= 0 {
@@ -194,6 +213,9 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_DOWN_MEMORY:
 			for i := range cur.Services {
+				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
+					continue
+				}
 				ns := cloneScenario(cur)
 				mb := ns.Services[i].MemoryMB
 				if mb <= 0 {

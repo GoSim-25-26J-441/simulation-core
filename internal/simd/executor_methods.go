@@ -3,9 +3,11 @@ package simd
 import (
 	"fmt"
 	"math"
+	"sort"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
@@ -166,6 +168,20 @@ func (e *RunExecutor) GetWorkloadPattern(runID string, patternKey string) (*Work
 	return workloadState.GetPattern(patternKey)
 }
 
+// GetScenarioSnapshot returns the parsed scenario for an active run when available.
+func (e *RunExecutor) GetScenarioSnapshot(runID string) (*config.Scenario, bool) {
+	if runID == "" {
+		return nil, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.runScenarios[runID]
+	if !ok || s == nil {
+		return nil, false
+	}
+	return s, true
+}
+
 // GetRunConfiguration returns the current effective configuration for a running run (replicas per service, workload rates).
 func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfiguration, bool) {
 	if runID == "" {
@@ -228,7 +244,13 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 		}
 	}
 	patterns := ws.GetAllPatterns()
-	for key, state := range patterns {
+	keys := make([]string, 0, len(patterns))
+	for key := range patterns {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		state := patterns[key]
 		if state != nil && state.Pattern.Arrival.RateRPS > 0 {
 			cfg.Workload = append(cfg.Workload, &simulationv1.WorkloadPatternEntry{
 				PatternKey: key,
@@ -236,6 +258,26 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 			})
 		}
 	}
+
+	simTime := time.Now()
+	if eng := ws.Engine(); eng != nil {
+		simTime = eng.GetSimTime()
+	}
+	for _, p := range rm.GetInstancePlacements(simTime) {
+		cfg.Placements = append(cfg.Placements, &simulationv1.InstancePlacementEntry{
+			InstanceId:        p.InstanceID,
+			ServiceId:         p.ServiceID,
+			HostId:            p.HostID,
+			Lifecycle:         p.Lifecycle,
+			CpuCores:          p.CPUCores,
+			MemoryMb:          p.MemoryMB,
+			CpuUtilization:    p.CPUUtilization,
+			MemoryUtilization: p.MemoryUtilization,
+			ActiveRequests:    p.ActiveRequests,
+			QueueLength:       p.QueueLength,
+		})
+	}
+
 	return cfg, true
 }
 
@@ -250,4 +292,47 @@ func clampIntToInt32(n int) int32 {
 		return min
 	}
 	return int32(n)
+}
+
+func instanceIDsByServiceFromRM(rm *resource.Manager) map[string][]string {
+	if rm == nil {
+		return nil
+	}
+	out := make(map[string][]string)
+	for _, svcID := range rm.ListServiceIDs() {
+		names := make([]string, 0)
+		for _, inst := range rm.GetInstancesForService(svcID) {
+			names = append(names, inst.ID())
+		}
+		sort.Strings(names)
+		out[svcID] = names
+	}
+	return out
+}
+
+// runMetricsOptsForRun builds conversion options so service CPU/memory/concurrent rollups include idle replicas (0 when no samples).
+func (e *RunExecutor) runMetricsOptsForRun(runID string) *metrics.RunMetricsOptions {
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+	if !ok || rm == nil {
+		return nil
+	}
+	bySvc := instanceIDsByServiceFromRM(rm)
+	if len(bySvc) == 0 {
+		return nil
+	}
+	return &metrics.RunMetricsOptions{InstanceIDsByService: bySvc}
+}
+
+// hostIDsForRun returns the resource manager's host IDs for a run (sorted), or nil when
+// there is no manager for the run. Used for live SSE host_metrics to match RM inventory.
+func (e *RunExecutor) hostIDsForRun(runID string) []string {
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+	if !ok || rm == nil {
+		return nil
+	}
+	return rm.HostIDs()
 }

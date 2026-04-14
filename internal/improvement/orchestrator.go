@@ -356,80 +356,11 @@ func (o *Orchestrator) findRunContextForConfig(scenario *config.Scenario) *RunCo
 	return nil
 }
 
-// configsMatch checks if two configurations match by comparing all relevant parameters
+// configsMatch reports whether two scenarios are identical for optimizer identity and runtime
+// semantics. It delegates to batchspec.ConfigHash so there is a single definition of
+// "same scenario" for deduplication, candidate lookup, and seed derivation.
 func configsMatch(c1, c2 *config.Scenario) bool {
-	if c1 == nil || c2 == nil {
-		return c1 == c2
-	}
-
-	// Compare hosts
-	if len(c1.Hosts) != len(c2.Hosts) {
-		return false
-	}
-	for i := range c1.Hosts {
-		h1, h2 := c1.Hosts[i], c2.Hosts[i]
-		if h1.ID != h2.ID || h1.Cores != h2.Cores || h1.MemoryGB != h2.MemoryGB {
-			return false
-		}
-	}
-
-	// Compare services
-	if len(c1.Services) != len(c2.Services) {
-		return false
-	}
-	for i := range c1.Services {
-		s1, s2 := &c1.Services[i], &c2.Services[i]
-		if s1.ID != s2.ID || s1.Replicas != s2.Replicas ||
-			s1.CPUCores != s2.CPUCores || s1.MemoryMB != s2.MemoryMB ||
-			s1.Model != s2.Model {
-			return false
-		}
-	}
-
-	// Compare workload patterns
-	if len(c1.Workload) != len(c2.Workload) {
-		return false
-	}
-	for i := range c1.Workload {
-		w1, w2 := &c1.Workload[i], &c2.Workload[i]
-		if w1.From != w2.From || w1.To != w2.To ||
-			w1.Arrival.Type != w2.Arrival.Type ||
-			w1.Arrival.RateRPS != w2.Arrival.RateRPS {
-			return false
-		}
-	}
-
-	// Compare policies if present
-	if (c1.Policies == nil) != (c2.Policies == nil) {
-		return false
-	}
-	if c1.Policies != nil && c2.Policies != nil {
-		// Compare autoscaling policy
-		if (c1.Policies.Autoscaling == nil) != (c2.Policies.Autoscaling == nil) {
-			return false
-		}
-		if c1.Policies.Autoscaling != nil && c2.Policies.Autoscaling != nil {
-			a1, a2 := c1.Policies.Autoscaling, c2.Policies.Autoscaling
-			if a1.Enabled != a2.Enabled || a1.TargetCPUUtil != a2.TargetCPUUtil ||
-				a1.ScaleStep != a2.ScaleStep {
-				return false
-			}
-		}
-
-		// Compare retry policy
-		if (c1.Policies.Retries == nil) != (c2.Policies.Retries == nil) {
-			return false
-		}
-		if c1.Policies.Retries != nil && c2.Policies.Retries != nil {
-			r1, r2 := c1.Policies.Retries, c2.Policies.Retries
-			if r1.Enabled != r2.Enabled || r1.MaxRetries != r2.MaxRetries ||
-				r1.Backoff != r2.Backoff || r1.BaseMs != r2.BaseMs {
-				return false
-			}
-		}
-	}
-
-	return true
+	return batchspec.ScenarioSemanticsEqual(c1, c2)
 }
 
 // GetActiveRuns returns all currently active runs

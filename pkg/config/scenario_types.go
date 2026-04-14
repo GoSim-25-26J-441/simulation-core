@@ -3,10 +3,24 @@ package config
 // Scenario represents a complete simulation scenario and is the primary
 // configuration format for simulation runs (see pkg/config/doc.go).
 type Scenario struct {
-	Hosts    []Host            `yaml:"hosts"`
-	Services []Service         `yaml:"services"`
-	Workload []WorkloadPattern `yaml:"workload"`
-	Policies *Policies         `yaml:"policies,omitempty"`
+	Metadata         *ScenarioMetadata  `yaml:"metadata,omitempty"`
+	SimulationLimits *SimulationLimits  `yaml:"simulation_limits,omitempty"`
+	Hosts            []Host             `yaml:"hosts"`
+	Services         []Service          `yaml:"services"`
+	Workload         []WorkloadPattern  `yaml:"workload"`
+	Policies         *Policies          `yaml:"policies,omitempty"`
+}
+
+// SimulationLimits caps downstream trace expansion (async cycles, deep call chains).
+// Zero values mean unlimited (backward compatible).
+type SimulationLimits struct {
+	MaxTraceDepth int `yaml:"max_trace_depth,omitempty"`
+	MaxAsyncHops  int `yaml:"max_async_hops,omitempty"`
+}
+
+// ScenarioMetadata holds optional scenario versioning (e.g. schema 0.2.0 extensions).
+type ScenarioMetadata struct {
+	SchemaVersion string `yaml:"schema_version,omitempty"`
 }
 
 // Host represents a physical host
@@ -18,12 +32,22 @@ type Host struct {
 
 // Service represents a microservice
 type Service struct {
-	ID        string     `yaml:"id"`
-	Replicas  int        `yaml:"replicas"`
-	Model     string     `yaml:"model"`               // cpu, mixed, db_latency
-	CPUCores  float64    `yaml:"cpu_cores,omitempty"` // CPU cores per instance (optional, defaults to 1.0)
-	MemoryMB  float64    `yaml:"memory_mb,omitempty"` // Memory in MB per instance (optional, defaults to 512.0)
-	Endpoints []Endpoint `yaml:"endpoints"`
+	ID        string          `yaml:"id"`
+	Kind      string          `yaml:"kind,omitempty"`   // api_gateway, service, database, queue, cache, ...
+	Role      string          `yaml:"role,omitempty"`   // ingress, internal, datastore, external
+	Replicas  int             `yaml:"replicas"`
+	Model     string          `yaml:"model"` // cpu, mixed, db_latency
+	CPUCores  float64         `yaml:"cpu_cores,omitempty"`
+	MemoryMB  float64         `yaml:"memory_mb,omitempty"`
+	Scaling   *ScalingPolicy  `yaml:"scaling,omitempty"`
+	Endpoints []Endpoint      `yaml:"endpoints"`
+}
+
+// ScalingPolicy declares which scaling dimensions are allowed for batch/online optimizers.
+type ScalingPolicy struct {
+	Horizontal     bool `yaml:"horizontal,omitempty"`
+	VerticalCPU    bool `yaml:"vertical_cpu,omitempty"`
+	VerticalMemory bool `yaml:"vertical_memory,omitempty"`
 }
 
 // Endpoint represents a service endpoint
@@ -39,8 +63,12 @@ type Endpoint struct {
 // DownstreamCall represents a call to a downstream service
 type DownstreamCall struct {
 	To                    string      `yaml:"to"`
+	Mode                  string      `yaml:"mode,omitempty"` // sync (default), async, event
+	Kind                  string      `yaml:"kind,omitempty"` // rest, grpc, db, queue
+	Probability           float64     `yaml:"probability,omitempty"`
 	CallCountMean         float64     `yaml:"call_count_mean,omitempty"`
 	CallLatencyMs         LatencySpec `yaml:"call_latency_ms,omitempty"`
+	TimeoutMs             float64     `yaml:"timeout_ms,omitempty"`
 	DownstreamFractionCPU float64     `yaml:"downstream_fraction_cpu,omitempty"`
 }
 
@@ -52,9 +80,11 @@ type LatencySpec struct {
 
 // WorkloadPattern represents a workload entry point
 type WorkloadPattern struct {
-	From    string      `yaml:"from"` // e.g., "client"
-	To      string      `yaml:"to"`   // e.g., "auth:/auth/login"
-	Arrival ArrivalSpec `yaml:"arrival"`
+	From         string      `yaml:"from"`
+	SourceKind   string      `yaml:"source_kind,omitempty"`   // e.g. client
+	TrafficClass string      `yaml:"traffic_class,omitempty"`   // ingress, background, replay
+	To           string      `yaml:"to"`
+	Arrival      ArrivalSpec `yaml:"arrival"`
 }
 
 // ArrivalSpec represents arrival process specification

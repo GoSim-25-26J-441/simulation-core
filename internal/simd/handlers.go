@@ -3,7 +3,9 @@ package simd
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
@@ -29,6 +31,10 @@ type scenarioState struct {
 	interact  *interaction.Manager // Interaction manager for service graph and downstream calls
 	// simEndTime is the simulation horizon for scheduling drain sweeps (zero disables rescheduling).
 	simEndTime time.Time
+
+	pendingSyncMu sync.Mutex
+	// pendingSync counts synchronous downstream subtrees not yet reported complete for a request ID.
+	pendingSync map[string]int
 }
 
 // SetSimEndTime sets the simulation end time used by periodic drain sweeps.
@@ -36,10 +42,14 @@ func (s *scenarioState) SetSimEndTime(t time.Time) {
 	s.simEndTime = t
 }
 
-// newScenarioState creates a new scenario state from a parsed scenario
-func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector, policies *policy.Manager) (*scenarioState, error) {
-	// Create interaction manager
-	interact, err := interaction.NewManager(scenario)
+// newScenarioState creates a new scenario state from a parsed scenario.
+// seed 0 selects a non-deterministic RNG base (wall clock); non-zero seeds derive stable RNG streams.
+func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector, policies *policy.Manager, seed int64) (*scenarioState, error) {
+	rngSeed := seed
+	if rngSeed == 0 {
+		rngSeed = time.Now().UnixNano()
+	}
+	interact, err := interaction.NewManagerWithSeed(scenario, rngSeed+2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create interaction manager: %w", err)
 	}
@@ -48,11 +58,12 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 		scenario:  scenario,
 		services:  make(map[string]*config.Service),
 		endpoints: make(map[string]*config.Endpoint),
-		rng:       utils.NewRandSource(time.Now().UnixNano()),
+		rng:       utils.NewRandSource(rngSeed),
 		rm:        rm,
 		collector: collector,
 		policies:  policies,
 		interact:  interact,
+		pendingSync: make(map[string]int),
 	}
 
 	// Build service and endpoint maps (kept for backward compatibility and quick lookups)
@@ -95,10 +106,165 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeRequestStart, handleRequestStart(state))
 	eng.RegisterHandler(engine.EventTypeRequestComplete, handleRequestComplete(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamCall, handleDownstreamCall(state, eng))
+	eng.RegisterHandler(engine.EventTypeDownstreamRetry, handleDownstreamRetry(state, eng))
+	eng.RegisterHandler(engine.EventTypeDownstreamTimeout, handleDownstreamTimeout(state, eng))
 	eng.RegisterHandler(engine.EventTypeDrainSweep, handleDrainSweep(state))
 }
 
+func recordInstanceAndHostGauges(state *scenarioState, serviceID, instanceID string, simTime time.Time) {
+	instance, ok := state.rm.GetServiceInstance(instanceID)
+	if !ok {
+		return
+	}
+	instanceLabels := metrics.CreateInstanceLabels(serviceID, instanceID)
+	metrics.RecordCPUUtilization(state.collector, instance.CPUUtilizationAt(simTime), simTime, instanceLabels)
+	metrics.RecordMemoryUtilization(state.collector, instance.MemoryUtilization(), simTime, instanceLabels)
+	metrics.RecordQueueLength(state.collector, float64(instance.QueueLength()), simTime, instanceLabels)
+	metrics.RecordConcurrentRequests(state.collector, float64(instance.ActiveRequests()), simTime, instanceLabels)
+
+	hostID := instance.HostID()
+	if host, hostOk := state.rm.GetHost(hostID); hostOk {
+		hostLabels := metrics.CreateHostLabels(hostID)
+		metrics.RecordCPUUtilization(state.collector, host.CPUUtilization(), simTime, hostLabels)
+		metrics.RecordMemoryUtilization(state.collector, host.MemoryUtilization(), simTime, hostLabels)
+	}
+}
+
 const drainSweepInterval = 100 * time.Millisecond
+
+func metadataInt(m map[string]interface{}, key string) int {
+	if m == nil {
+		return 0
+	}
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch t := v.(type) {
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	default:
+		return 0
+	}
+}
+
+func metadataBool(m map[string]interface{}, key string) bool {
+	if m == nil {
+		return false
+	}
+	v, ok := m[key]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
+}
+
+func metadataFloat64(m map[string]interface{}, key string) float64 {
+	if m == nil {
+		return 0
+	}
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	default:
+		return 0
+	}
+}
+
+func labelsForRequestMetrics(req *models.Request, serviceID, endpointPath string) map[string]string {
+	var origin string
+	if req.ParentID == "" {
+		origin = metrics.OriginIngress
+	} else {
+		origin = metrics.OriginDownstream
+	}
+	lbl := metrics.EndpointLabelsWithOrigin(serviceID, endpointPath, origin)
+	if req.Metadata != nil {
+		if tc, ok := req.Metadata["workload_traffic_class"].(string); ok && tc != "" {
+			lbl[metrics.LabelTrafficClass] = tc
+		}
+		if sk, ok := req.Metadata["workload_source_kind"].(string); ok && sk != "" {
+			lbl[metrics.LabelSourceKind] = sk
+		}
+		if b, ok := req.Metadata[metaIsRetry].(bool); ok && b {
+			lbl[metrics.LabelIsRetry] = "true"
+			lbl[metrics.LabelRetryAttempt] = strconv.Itoa(metadataInt(req.Metadata, metaRetryAttempt))
+		}
+	}
+	return lbl
+}
+
+func localServiceLatencyMs(request *models.Request, simTime time.Time) float64 {
+	if !request.StartTime.IsZero() {
+		return float64(simTime.Sub(request.StartTime).Milliseconds())
+	}
+	return float64(simTime.Sub(request.ArrivalTime).Milliseconds())
+}
+
+func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interaction.ResolvedCall, td, ad int) (asyncCalls, syncCalls []interaction.ResolvedCall) {
+	lim := state.scenario.SimulationLimits
+	for _, downstreamCall := range downstreamCalls {
+		nextTD := td + 1
+		nextAD := ad
+		if downstreamCall.Call.IsAsync() {
+			nextAD++
+		}
+		if lim != nil {
+			if lim.MaxTraceDepth > 0 && nextTD > lim.MaxTraceDepth {
+				continue
+			}
+			if lim.MaxAsyncHops > 0 && downstreamCall.Call.IsAsync() && nextAD > lim.MaxAsyncHops {
+				continue
+			}
+		}
+		if downstreamCall.Call.IsAsync() {
+			asyncCalls = append(asyncCalls, downstreamCall)
+		} else {
+			syncCalls = append(syncCalls, downstreamCall)
+		}
+	}
+	return asyncCalls, syncCalls
+}
+
+func scheduleDownstreamCallEvent(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamCall interaction.ResolvedCall, simTime time.Time, nextTD, nextAD int, isAsync bool) {
+	callLatencyMs := 0.0
+	if downstreamCall.Call.CallLatencyMs.Mean > 0 {
+		sigma := downstreamCall.Call.CallLatencyMs.Sigma
+		if sigma < 0 {
+			sigma = 0
+		}
+		callLatencyMs = state.rng.NormFloat64(downstreamCall.Call.CallLatencyMs.Mean, sigma)
+		if callLatencyMs < 0 {
+			callLatencyMs = 0
+		}
+	}
+	scheduleTime := simTime.Add(time.Duration(callLatencyMs * float64(time.Millisecond)))
+	eng.ScheduleAt(engine.EventTypeDownstreamCall, scheduleTime, parentRequest, downstreamCall.ServiceID, map[string]interface{}{
+		"endpoint_path":         downstreamCall.Path,
+		"parent_request_id":     parentRequest.ID,
+		"trace_depth":           nextTD,
+		"async_depth":           nextAD,
+		"is_async_downstream":   isAsync,
+		"downstream_timeout_ms": downstreamCall.Call.TimeoutMs,
+	})
+}
 
 // ScheduleDrainSweepKickoff schedules the first simulated-time drain sweep so draining
 // replicas are processed even when request traffic stops.
@@ -159,6 +325,8 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 			return fmt.Errorf("missing endpoint_path in request arrival event")
 		}
 
+		ingressLabels := metrics.EndpointLabelsWithOrigin(serviceID, endpointPath, metrics.OriginIngress)
+
 		// Create request
 		requestID := utils.GenerateRequestID()
 		traceID := utils.GenerateTraceID()
@@ -171,6 +339,17 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 			ArrivalTime: simTime,
 			Metadata:    make(map[string]interface{}),
 		}
+		request.Metadata["trace_depth"] = 0
+		request.Metadata["async_depth"] = 0
+		if v, ok := evt.Data["from"]; ok {
+			request.Metadata["workload_from"] = v
+		}
+		if v, ok := evt.Data["source_kind"]; ok {
+			request.Metadata["workload_source_kind"] = v
+		}
+		if v, ok := evt.Data["traffic_class"]; ok {
+			request.Metadata["workload_traffic_class"] = v
+		}
 
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
@@ -179,35 +358,27 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		if state.policies != nil {
 			rateLimiting := state.policies.GetRateLimiting()
 			if rateLimiting != nil && !rateLimiting.AllowRequest(serviceID, endpointPath, simTime) {
-				// Rate limit exceeded, reject request
 				request.Status = models.RequestStatusFailed
-				labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
-				metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonRateLimited))
 				return fmt.Errorf("rate limit exceeded for %s:%s", serviceID, endpointPath)
 			}
 
-			// Check circuit breaker policy
 			circuitBreaker := state.policies.GetCircuitBreaker()
 			if circuitBreaker != nil && !circuitBreaker.AllowRequest(serviceID, endpointPath, simTime) {
-				// Circuit is open, reject request
 				request.Status = models.RequestStatusFailed
-				labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
-				metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+				metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonCircuitOpen))
 				return fmt.Errorf("circuit breaker open for %s:%s", serviceID, endpointPath)
 			}
 		}
 
 		// Record request arrival metric
-		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
-		metrics.RecordRequestCount(state.collector, 1.0, simTime, labels)
+		metrics.RecordRequestCount(state.collector, 1.0, simTime, ingressLabels)
 
 		// Select an instance for this service
 		instance, err := state.rm.SelectInstanceForService(serviceID)
 		if err != nil {
-			// No instances available, mark request as failed
 			request.Status = models.RequestStatusFailed
-			// Record error
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonNoInstance))
 			return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 		}
 
@@ -220,6 +391,9 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 			// Request will be processed when capacity becomes available
 			// Store instance ID in request metadata for later processing
 			request.Metadata["instance_id"] = instance.ID()
+			// Refresh gauges so queue_length / concurrent_requests match backlog immediately
+			// (otherwise they stay stale until a later start/complete path records them).
+			recordInstanceAndHostGauges(state, serviceID, instance.ID(), simTime)
 			return nil
 		}
 
@@ -257,6 +431,11 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		if !ok {
 			return fmt.Errorf("endpoint not found: %s", endpointKey)
 		}
+		svc, ok := state.services[serviceID]
+		if !ok {
+			return fmt.Errorf("service not found: %s", serviceID)
+		}
+		prof := resolveServiceExecutionProfile(svc, endpoint, nil, state.rng)
 
 		// Get instance ID from event data or request metadata
 		instanceID, ok := evt.Data["instance_id"].(string)
@@ -279,25 +458,13 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		request.Status = models.RequestStatusProcessing
 		request.StartTime = simTime
 
-		// Calculate CPU time (normal distribution)
-		cpuTimeMs := state.rng.NormFloat64(endpoint.MeanCPUMs, endpoint.CPUSigmaMs)
-		if cpuTimeMs < 0 {
-			cpuTimeMs = 0
-		}
+		cpuTimeMs := prof.CPUTimeMs
 		request.CPUTimeMs = cpuTimeMs
 
-		// Calculate network latency (normal distribution)
-		netLatencyMs := state.rng.NormFloat64(endpoint.NetLatencyMs.Mean, endpoint.NetLatencyMs.Sigma)
-		if netLatencyMs < 0 {
-			netLatencyMs = 0
-		}
+		netLatencyMs := prof.NetworkLatencyMs
 		request.NetworkLatencyMs = netLatencyMs
 
-		// Get memory usage from configuration or metadata
-		memoryMB := endpoint.DefaultMemoryMB
-		if memoryMB == 0 {
-			memoryMB = 10.0 // Fallback to 10MB if not configured
-		}
+		memoryMB := prof.MemoryMB
 		// Allow override from metadata
 		if mem, ok := request.Metadata["memory_mb"].(float64); ok {
 			memoryMB = mem
@@ -305,32 +472,45 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 
 		// Allocate resources
 		if err := state.rm.AllocateCPU(instanceID, cpuTimeMs, simTime); err != nil {
-			// Mark request as failed and record error metric
 			request.Status = models.RequestStatusFailed
-			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
-			// Update circuit breaker policy (record failure)
+			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, metrics.ReasonCPUCapacity))
 			if state.policies != nil {
 				circuitBreaker := state.policies.GetCircuitBreaker()
 				if circuitBreaker != nil {
 					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
 				}
 			}
+			rm := eng.GetRunManager()
+			if maybeRetrySyncStartFailure(state, eng, rm, request, simTime, metrics.ReasonCPUCapacity) {
+				return nil
+			}
+			propagateSyncChildFailureFromStartFailure(state, eng, request, simTime, metrics.ReasonCPUCapacity)
 			return fmt.Errorf("failed to allocate CPU: %w", err)
 		}
 		if err := state.rm.AllocateMemory(instanceID, memoryMB); err != nil {
-			// If memory allocation fails, release CPU and fail request
 			state.rm.ReleaseCPU(instanceID, cpuTimeMs, simTime)
 			request.Status = models.RequestStatusFailed
-			labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
-			metrics.RecordErrorCount(state.collector, 1.0, simTime, labels)
-			// Update circuit breaker policy (record failure)
+			lbl := labelsForRequestMetricsWithRetry(request, serviceID, endpointPath)
+			reason := metrics.ReasonMemoryCapacity
+			if errors.Is(err, resource.ErrHostMemoryCapacity) {
+				reason = metrics.ReasonMemoryCapacity
+			}
+			metrics.RecordErrorCount(state.collector, 1.0, simTime, metrics.EndpointErrorLabels(lbl, reason))
 			if state.policies != nil {
 				circuitBreaker := state.policies.GetCircuitBreaker()
 				if circuitBreaker != nil {
 					circuitBreaker.RecordFailure(serviceID, endpointPath, simTime)
 				}
 			}
+			rm := eng.GetRunManager()
+			if maybeRetrySyncStartFailure(state, eng, rm, request, simTime, reason) {
+				if errors.Is(err, resource.ErrHostMemoryCapacity) {
+					return nil
+				}
+				return fmt.Errorf("failed to allocate memory: %w", err)
+			}
+			propagateSyncChildFailureFromStartFailure(state, eng, request, simTime, reason)
 			if errors.Is(err, resource.ErrHostMemoryCapacity) {
 				return nil
 			}
@@ -344,31 +524,8 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		// Record resource utilization metrics
 		instance, ok := state.rm.GetServiceInstance(instanceID)
 		if ok {
-			// Record CPU utilization (instance-level) at simulation time
-			cpuUtil := instance.CPUUtilizationAt(simTime)
-			instanceLabels := metrics.CreateInstanceLabels(serviceID, instanceID)
-			metrics.RecordCPUUtilization(state.collector, cpuUtil, simTime, instanceLabels)
-
-			// Record memory utilization (instance-level)
-			memUtil := instance.MemoryUtilization()
-			metrics.RecordMemoryUtilization(state.collector, memUtil, simTime, instanceLabels)
-
-			// Record queue length (instance-level)
+			recordInstanceAndHostGauges(state, serviceID, instanceID, simTime)
 			queueLength := instance.QueueLength()
-			metrics.RecordQueueLength(state.collector, float64(queueLength), simTime, instanceLabels)
-
-			// Record concurrent requests (in-flight) per instance (gauge)
-			activeReqs := instance.ActiveRequests()
-			metrics.RecordConcurrentRequests(state.collector, float64(activeReqs), simTime, instanceLabels)
-
-			// Record host-level metrics so SSE stream includes node-level data
-			hostID := instance.HostID()
-			if host, hostOk := state.rm.GetHost(hostID); hostOk {
-				hostLabels := metrics.CreateHostLabels(hostID)
-				metrics.RecordCPUUtilization(state.collector, host.CPUUtilization(), simTime, hostLabels)
-				metrics.RecordMemoryUtilization(state.collector, host.MemoryUtilization(), simTime, hostLabels)
-			}
-
 			// Model queueing delay based on mean service time
 			// Queue delay is estimated as the sum of expected service times for all queued requests.
 			// This assumes:
@@ -386,12 +543,14 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			// (e.g., M/M/1, M/G/1) with actual service time distributions.
 			queueDelayMs := 0.0
 			if queueLength > 0 {
-				meanServiceTimeMs := endpoint.MeanCPUMs + endpoint.NetLatencyMs.Mean
-				// Ensure non-negative service time
+				meanServiceTimeMs := prof.QueueMeanWorkMs
 				if meanServiceTimeMs < 0 {
 					meanServiceTimeMs = 0
 				}
 				queueDelayMs = float64(queueLength) * meanServiceTimeMs
+			}
+			if prof.QueueClass != "" {
+				request.Metadata["queue_class"] = prof.QueueClass
 			}
 			request.Metadata["queue_delay_ms"] = queueDelayMs
 		}
@@ -456,52 +615,42 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 					"instance_id":   instanceID,
 				})
 			}
+			// Refresh gauges after release/dequeue to avoid stale service-level snapshots.
+			recordInstanceAndHostGauges(state, serviceID, instanceID, simTime)
 		}
 
-		// Mark request as completed
-		request.Status = models.RequestStatusCompleted
-		request.CompletionTime = simTime
-		request.Duration = simTime.Sub(request.ArrivalTime)
+		labels := labelsForRequestMetrics(request, serviceID, endpointPath)
+		svcLocalMs := localServiceLatencyMs(request, simTime)
+		metrics.RecordServiceRequestLatency(state.collector, svcLocalMs, simTime, labels)
 
-		// Record latency metric
-		totalLatencyMs := float64(request.Duration.Milliseconds())
-		labels := metrics.CreateEndpointLabels(serviceID, endpointPath)
-		metrics.RecordLatency(state.collector, totalLatencyMs, simTime, labels)
-
-		// Also record in run manager for backward compatibility.
-		// NOTE: The metrics collector above is the primary/source-of-truth metrics system.
-		//       This run manager metric is kept only to support legacy consumers that
-		//       still depend on RunManager-based metrics.
-		// TODO: Remove rm.RecordLatency once all metrics consumers have migrated
-		//       to the new collector-based metrics pipeline.
-		rm.RecordLatency(totalLatencyMs)
-
-		// Get downstream calls using interaction manager
 		downstreamCalls, err := state.interact.GetDownstreamCalls(serviceID, endpointPath)
 		if err != nil {
-			// Propagate error to ensure configuration/validation issues are not silently ignored
 			return fmt.Errorf("failed to get downstream calls for %s:%s: %w", serviceID, endpointPath, err)
 		}
 
-		// Schedule downstream calls (with variable call latency when CallLatencyMs is configured)
-		for _, downstreamCall := range downstreamCalls {
-			// Sample call latency from CallLatencyMs (mean, sigma) - models network/call overhead
-			callLatencyMs := 0.0
-			if downstreamCall.Call.CallLatencyMs.Mean > 0 {
-				sigma := downstreamCall.Call.CallLatencyMs.Sigma
-				if sigma < 0 {
-					sigma = 0
-				}
-				callLatencyMs = state.rng.NormFloat64(downstreamCall.Call.CallLatencyMs.Mean, sigma)
-				if callLatencyMs < 0 {
-					callLatencyMs = 0
-				}
-			}
-			scheduleTime := simTime.Add(time.Duration(callLatencyMs * float64(time.Millisecond)))
-			eng.ScheduleAt(engine.EventTypeDownstreamCall, scheduleTime, request, downstreamCall.ServiceID, map[string]interface{}{
-				"endpoint_path":     downstreamCall.Path,
-				"parent_request_id": request.ID,
-			})
+		td := metadataInt(request.Metadata, "trace_depth")
+		ad := metadataInt(request.Metadata, "async_depth")
+		asyncCalls, syncCalls := partitionDownstreamFiltered(state, downstreamCalls, td, ad)
+
+		for _, downstreamCall := range asyncCalls {
+			nextTD := td + 1
+			nextAD := ad + 1
+			scheduleDownstreamCallEvent(state, eng, request, downstreamCall, simTime, nextTD, nextAD, true)
+		}
+
+		if len(syncCalls) == 0 {
+			finalizeRequestCompletion(state, eng, rm, request, simTime, labels)
+			return nil
+		}
+
+		state.pendingSyncMu.Lock()
+		state.pendingSync[request.ID] = len(syncCalls)
+		state.pendingSyncMu.Unlock()
+
+		for _, downstreamCall := range syncCalls {
+			nextTD := td + 1
+			nextAD := ad
+			scheduleDownstreamCallEvent(state, eng, request, downstreamCall, simTime, nextTD, nextAD, false)
 		}
 
 		return nil
@@ -519,41 +668,15 @@ func handleDownstreamCall(state *scenarioState, _ *engine.Engine) engine.EventHa
 		state.rm.NoteSimTime(simTime)
 		parentRequest := evt.Request
 
-		// Extract downstream service and endpoint
-		downstreamServiceID := evt.ServiceID
-		endpointPath, ok := evt.Data["endpoint_path"].(string)
-		if !ok {
-			endpointPath = "/"
+		// First attempt: ensure retry_attempt defaults to 0 (logical_call_id set in execDownstreamSpawn)
+		if evt.Data == nil {
+			evt.Data = make(map[string]interface{})
+		}
+		if _, ok := evt.Data[metaRetryAttempt]; !ok {
+			evt.Data[metaRetryAttempt] = 0
 		}
 
-		// Create resolved call for interaction manager
-		resolvedCall := interaction.ResolvedCall{
-			ServiceID: downstreamServiceID,
-			Path:      endpointPath,
-		}
-
-		// Use interaction manager to create downstream request
-		downstreamRequest, err := state.interact.CreateDownstreamRequest(parentRequest, resolvedCall)
-		if err != nil {
-			return fmt.Errorf("failed to create downstream request: %w", err)
-		}
-
-		// Set arrival time to simulation time
-		downstreamRequest.ArrivalTime = simTime
-
-		// Record request count for the downstream service (downstream requests bypass handleRequestArrival)
-		labels := metrics.CreateEndpointLabels(downstreamServiceID, endpointPath)
-		metrics.RecordRequestCount(state.collector, 1.0, simTime, labels)
-
-		rm := eng.GetRunManager()
-		rm.AddRequest(downstreamRequest)
-
-		// Schedule downstream request start
-		eng.ScheduleAt(engine.EventTypeRequestStart, simTime, downstreamRequest, downstreamServiceID, map[string]interface{}{
-			"endpoint_path": endpointPath,
-		})
-
-		return nil
+		return execDownstreamSpawnFromEvent(state, eng, parentRequest, evt)
 	}
 }
 

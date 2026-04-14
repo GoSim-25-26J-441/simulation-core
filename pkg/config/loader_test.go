@@ -92,58 +92,68 @@ func TestLoadScenario(t *testing.T) {
 		t.Fatalf("Failed to load scenario: %v", err)
 	}
 
+	if scenario.Metadata == nil || scenario.Metadata.SchemaVersion != "0.2.0" {
+		t.Fatalf("Expected scenario schema_version 0.2.0, got %+v", scenario.Metadata)
+	}
+
 	// Validate hosts
-	if len(scenario.Hosts) != 1 {
-		t.Errorf("Expected 1 host, got %d", len(scenario.Hosts))
+	if len(scenario.Hosts) != 3 {
+		t.Errorf("Expected 3 hosts, got %d", len(scenario.Hosts))
 	}
 	if scenario.Hosts[0].ID != "host-1" {
 		t.Errorf("Expected host ID 'host-1', got '%s'", scenario.Hosts[0].ID)
 	}
-	if scenario.Hosts[0].Cores != 2 {
-		t.Errorf("Expected 2 cores, got %d", scenario.Hosts[0].Cores)
+	if scenario.Hosts[0].Cores != 8 {
+		t.Errorf("Expected 8 cores, got %d", scenario.Hosts[0].Cores)
 	}
-	if scenario.Hosts[0].MemoryGB != 16 {
-		t.Errorf("Expected host memory_gb 16, got %d", scenario.Hosts[0].MemoryGB)
+	if scenario.Hosts[0].MemoryGB != 32 {
+		t.Errorf("Expected host memory_gb 32, got %d", scenario.Hosts[0].MemoryGB)
 	}
 
 	// Validate services
-	if len(scenario.Services) != 3 {
-		t.Errorf("Expected 3 services, got %d", len(scenario.Services))
+	if len(scenario.Services) != 10 {
+		t.Errorf("Expected 10 services, got %d", len(scenario.Services))
 	}
 
-	// Validate auth service
-	authService := scenario.Services[0]
-	if authService.ID != "auth" {
-		t.Errorf("Expected service ID 'auth', got '%s'", authService.ID)
+	// Validate ingress service and v2 fields
+	gateway := scenario.Services[0]
+	if gateway.ID != "api-gateway" {
+		t.Errorf("Expected service ID 'api-gateway', got '%s'", gateway.ID)
 	}
-	if authService.Replicas != 2 {
-		t.Errorf("Expected 2 replicas, got %d", authService.Replicas)
+	if gateway.Kind != "api_gateway" || gateway.Role != "ingress" {
+		t.Errorf("Expected api_gateway ingress service, got kind=%q role=%q", gateway.Kind, gateway.Role)
 	}
-	if authService.Model != "cpu" {
-		t.Errorf("Expected model 'cpu', got '%s'", authService.Model)
+	if gateway.Scaling == nil || !gateway.Scaling.Horizontal || !gateway.Scaling.VerticalCPU || !gateway.Scaling.VerticalMemory {
+		t.Fatalf("Expected gateway scaling policy to allow horizontal and vertical scaling, got %+v", gateway.Scaling)
 	}
-	if len(authService.Endpoints) != 2 {
-		t.Errorf("Expected 2 endpoints, got %d", len(authService.Endpoints))
+	if gateway.Model != "cpu" {
+		t.Errorf("Expected model 'cpu', got '%s'", gateway.Model)
 	}
 
 	// Validate endpoint
-	loginEndpoint := authService.Endpoints[0]
-	if loginEndpoint.Path != "/auth/login" {
-		t.Errorf("Expected path '/auth/login', got '%s'", loginEndpoint.Path)
+	restEndpoint := gateway.Endpoints[0]
+	if restEndpoint.Path != "/REST" {
+		t.Errorf("Expected path '/REST', got '%s'", restEndpoint.Path)
 	}
-	if loginEndpoint.MeanCPUMs != 50 {
-		t.Errorf("Expected mean CPU 50ms, got %f", loginEndpoint.MeanCPUMs)
+	if len(restEndpoint.Downstream) != 2 {
+		t.Fatalf("Expected 2 gateway downstream calls, got %d", len(restEndpoint.Downstream))
+	}
+	if restEndpoint.Downstream[0].Mode != "sync" || restEndpoint.Downstream[1].Mode != "async" {
+		t.Errorf("Expected sync and async downstream modes, got %+v", restEndpoint.Downstream)
 	}
 
 	// Validate workload
-	if len(scenario.Workload) != 2 {
-		t.Errorf("Expected 2 workload patterns, got %d", len(scenario.Workload))
+	if len(scenario.Workload) != 3 {
+		t.Errorf("Expected 3 workload patterns, got %d", len(scenario.Workload))
 	}
-	if scenario.Workload[0].To != "auth:/auth/login" {
-		t.Errorf("Expected workload to 'auth:/auth/login', got '%s'", scenario.Workload[0].To)
+	if scenario.Workload[0].To != "api-gateway:/REST" {
+		t.Errorf("Expected workload to 'api-gateway:/REST', got '%s'", scenario.Workload[0].To)
 	}
-	if scenario.Workload[0].Arrival.RateRPS != 20 {
-		t.Errorf("Expected rate 20 RPS, got %f", scenario.Workload[0].Arrival.RateRPS)
+	if scenario.Workload[0].TrafficClass != "ingress" || scenario.Workload[0].SourceKind != "client" {
+		t.Errorf("Expected ingress client workload, got traffic_class=%q source_kind=%q", scenario.Workload[0].TrafficClass, scenario.Workload[0].SourceKind)
+	}
+	if scenario.Workload[0].Arrival.RateRPS != 80 {
+		t.Errorf("Expected rate 80 RPS, got %f", scenario.Workload[0].Arrival.RateRPS)
 	}
 }
 
@@ -317,6 +327,28 @@ func TestScenarioValidation(t *testing.T) {
 			},
 			expectError: true,
 		},
+		{
+			name: "Invalid arrival type",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "h1", Cores: 4}},
+				Services: []Service{
+					{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "burst_typo", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
+		{
+			name: "Unsupported queue service kind",
+			scenario: &Scenario{
+				Hosts: []Host{{ID: "h1", Cores: 4}},
+				Services: []Service{
+					{ID: "q", Kind: "queue", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
+				},
+				Workload: []WorkloadPattern{{From: "client", To: "q:/test", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 10}}},
+			},
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -329,6 +361,24 @@ func TestScenarioValidation(t *testing.T) {
 				t.Errorf("Unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateScenarioBurstAliasNormalizes(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/test"}}},
+		},
+		Workload: []WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "burst", RateRPS: 10}},
+		},
+	}
+	if err := validateScenario(s); err != nil {
+		t.Fatalf("validateScenario: %v", err)
+	}
+	if s.Workload[0].Arrival.Type != "bursty" {
+		t.Fatalf("burst alias: got type %q want bursty", s.Workload[0].Arrival.Type)
 	}
 }
 

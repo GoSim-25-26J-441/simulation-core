@@ -3,6 +3,8 @@ package simd
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"sync"
 	"time"
 
@@ -29,13 +31,22 @@ const (
 
 // WorkloadPatternState tracks the state of a workload pattern during simulation
 type WorkloadPatternState struct {
-	Pattern       config.WorkloadPattern
-	ServiceID     string
-	EndpointPath  string
+	Pattern      config.WorkloadPattern
+	ServiceID    string
+	EndpointPath string
+	// Epoch is simulation start time for this pattern; used to align bursty burst/quiet cycles.
+	Epoch         time.Time
 	LastEventTime time.Time
 	NextEventTime time.Time
-	Active        bool
-	mu            sync.RWMutex
+	// uniformTimes is a sorted schedule of arrivals for type "uniform" (i.i.d. uniform in [start,end)),
+	// matching internal/workload.Generator.scheduleUniformArrivals. uniformCursor indexes NextEventTime in that slice.
+	uniformTimes  []time.Time
+	uniformCursor int
+	// uniformLazy: real-time uniform loads chunks of EventGenerationLookaheadWindow instead of the full [start,endTime].
+	uniformLazy            bool
+	uniformStreamWatermark time.Time // exclusive end of simulation time range already sampled (lazy only)
+	Active                 bool
+	mu                     sync.RWMutex
 }
 
 // WorkloadState manages workload patterns for a simulation run with continuous event generation
@@ -47,16 +58,23 @@ type WorkloadState struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	endTime   time.Time // Immutable after initialization, safe to read without lock
-	mu        sync.RWMutex
+	// realTimeMode matches WorkloadState.Start(..., realTime); used for uniform chunking and updates.
+	realTimeMode bool
+	mu           sync.RWMutex
 }
 
-// NewWorkloadState creates a new workload state manager
-func NewWorkloadState(runID string, eng *engine.Engine, endTime time.Time) *WorkloadState {
+// NewWorkloadState creates a new workload state manager.
+// seed 0 uses a non-deterministic base; non-zero values derive a stable workload RNG stream (seed+1).
+func NewWorkloadState(runID string, eng *engine.Engine, endTime time.Time, seed int64) *WorkloadState {
+	wsSeed := seed
+	if wsSeed == 0 {
+		wsSeed = time.Now().UnixNano()
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &WorkloadState{
 		runID:     runID,
 		patterns:  make(map[string]*WorkloadPatternState),
-		generator: utils.NewRandSource(time.Now().UnixNano()),
+		generator: utils.NewRandSource(wsSeed + 1),
 		engine:    eng,
 		ctx:       ctx,
 		cancel:    cancel,
@@ -68,6 +86,7 @@ func NewWorkloadState(runID string, eng *engine.Engine, endTime time.Time) *Work
 // or starts continuous event generation (real-time mode).
 func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, realTime bool) error {
 	ws.mu.Lock()
+	ws.realTimeMode = realTime
 
 	// Initialize patterns from scenario
 	for _, workloadPattern := range scenario.Workload {
@@ -79,16 +98,48 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 		}
 
 		patternKey := patternKey(workloadPattern.From, workloadPattern.To)
-		// Calculate first event time immediately to start generating events
-		firstEventTime := ws.calculateNextArrivalTime(workloadPattern.Arrival, startTime)
-		ws.patterns[patternKey] = &WorkloadPatternState{
-			Pattern:       workloadPattern,
-			ServiceID:     serviceID,
-			EndpointPath:  endpointPath,
-			LastEventTime: startTime,
-			NextEventTime: firstEventTime,
-			Active:        true,
+		arrival := workloadPattern.Arrival
+		var firstEventTime time.Time
+		var uniformTimes []time.Time
+		uniformLazy := false
+		var uniformWatermark time.Time
+		if arrival.Type == "uniform" {
+			if realTime {
+				uniformLazy = true
+				uniformWatermark = startTime
+			} else {
+				uniformTimes = ws.sampleUniformArrivalTimes(startTime, ws.endTime, arrival.RateRPS)
+				if len(uniformTimes) == 0 {
+					firstEventTime = ws.endTime
+				} else {
+					firstEventTime = uniformTimes[0]
+				}
+			}
+		} else {
+			firstEventTime = ws.calculateNextArrivalTime(arrival, startTime, startTime)
 		}
+		ps := &WorkloadPatternState{
+			Pattern:                workloadPattern,
+			ServiceID:              serviceID,
+			EndpointPath:           endpointPath,
+			Epoch:                  startTime,
+			LastEventTime:          startTime,
+			NextEventTime:          firstEventTime,
+			uniformTimes:           uniformTimes,
+			uniformCursor:          0,
+			uniformLazy:            uniformLazy,
+			uniformStreamWatermark: uniformWatermark,
+			Active:                 true,
+		}
+		if arrival.Type == "uniform" && realTime {
+			ws.ensureUniformHorizon(ps, startTime.Add(EventGenerationLookaheadWindow))
+			if len(ps.uniformTimes) > 0 {
+				ps.NextEventTime = ps.uniformTimes[0]
+			} else {
+				ps.NextEventTime = ws.endTime
+			}
+		}
+		ws.patterns[patternKey] = ps
 	}
 	ws.mu.Unlock()
 
@@ -132,12 +183,12 @@ func (ws *WorkloadState) generateAllEventsUpToEndTime() {
 				map[string]interface{}{
 					"service_id":    patternState.ServiceID,
 					"endpoint_path": patternState.EndpointPath,
+					"from":          patternState.Pattern.From,
+					"source_kind":   patternState.Pattern.SourceKind,
+					"traffic_class": patternState.Pattern.TrafficClass,
 				},
 			)
-			nextTime := ws.calculateNextArrivalTime(
-				patternState.Pattern.Arrival,
-				patternState.NextEventTime,
-			)
+			nextTime := ws.advanceToNextArrival(patternState, patternState.NextEventTime)
 			patternState.LastEventTime = patternState.NextEventTime
 			patternState.NextEventTime = nextTime
 		}
@@ -176,9 +227,36 @@ func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error
 
 	// Update the rate in the pattern
 	patternState.Pattern.Arrival.RateRPS = newRateRPS
-	// Reset next event time to trigger immediate recalculation
 	currentSimTime := ws.engine.GetSimTime()
-	patternState.NextEventTime = currentSimTime
+	if patternState.Pattern.Arrival.Type == "uniform" {
+		if ws.realTimeMode {
+			patternState.uniformLazy = true
+			patternState.uniformTimes = nil
+			patternState.uniformCursor = 0
+			patternState.uniformStreamWatermark = currentSimTime
+			patternState.Epoch = currentSimTime
+			ws.ensureUniformHorizon(patternState, currentSimTime.Add(EventGenerationLookaheadWindow))
+			if len(patternState.uniformTimes) > 0 {
+				patternState.NextEventTime = patternState.uniformTimes[0]
+			} else {
+				patternState.NextEventTime = ws.endTime
+			}
+		} else {
+			patternState.uniformLazy = false
+			patternState.uniformStreamWatermark = time.Time{}
+			patternState.uniformTimes = ws.sampleUniformArrivalTimes(currentSimTime, ws.endTime, newRateRPS)
+			patternState.uniformCursor = 0
+			patternState.Epoch = currentSimTime
+			if len(patternState.uniformTimes) > 0 {
+				patternState.NextEventTime = patternState.uniformTimes[0]
+			} else {
+				patternState.NextEventTime = ws.endTime
+			}
+		}
+	} else {
+		// Reset next event time to trigger immediate recalculation
+		patternState.NextEventTime = currentSimTime
+	}
 
 	logger.Info("workload rate updated",
 		"run_id", ws.runID,
@@ -211,7 +289,39 @@ func (ws *WorkloadState) UpdatePattern(patternKey string, pattern config.Workloa
 	patternState.ServiceID = serviceID
 	patternState.EndpointPath = endpointPath
 	currentSimTime := ws.engine.GetSimTime()
-	patternState.NextEventTime = currentSimTime
+	// Restart burst/quiet cycle alignment from now so mid-run pattern changes
+	// (especially bursty timing) do not stay tied to the original simulation start.
+	patternState.Epoch = currentSimTime
+	if pattern.Arrival.Type == "uniform" {
+		if ws.realTimeMode {
+			patternState.uniformLazy = true
+			patternState.uniformTimes = nil
+			patternState.uniformCursor = 0
+			patternState.uniformStreamWatermark = currentSimTime
+			ws.ensureUniformHorizon(patternState, currentSimTime.Add(EventGenerationLookaheadWindow))
+			if len(patternState.uniformTimes) > 0 {
+				patternState.NextEventTime = patternState.uniformTimes[0]
+			} else {
+				patternState.NextEventTime = ws.endTime
+			}
+		} else {
+			patternState.uniformLazy = false
+			patternState.uniformStreamWatermark = time.Time{}
+			patternState.uniformTimes = ws.sampleUniformArrivalTimes(currentSimTime, ws.endTime, pattern.Arrival.RateRPS)
+			patternState.uniformCursor = 0
+			if len(patternState.uniformTimes) > 0 {
+				patternState.NextEventTime = patternState.uniformTimes[0]
+			} else {
+				patternState.NextEventTime = ws.endTime
+			}
+		}
+	} else {
+		patternState.uniformTimes = nil
+		patternState.uniformCursor = 0
+		patternState.uniformLazy = false
+		patternState.uniformStreamWatermark = time.Time{}
+		patternState.NextEventTime = currentSimTime
+	}
 
 	logger.Info("workload pattern updated",
 		"run_id", ws.runID,
@@ -238,12 +348,17 @@ func (ws *WorkloadState) GetPattern(patternKey string) (*WorkloadPatternState, b
 	defer pattern.mu.RUnlock()
 
 	copy := &WorkloadPatternState{
-		Pattern:       pattern.Pattern,
-		ServiceID:     pattern.ServiceID,
-		EndpointPath:  pattern.EndpointPath,
-		LastEventTime: pattern.LastEventTime,
-		NextEventTime: pattern.NextEventTime,
-		Active:        pattern.Active,
+		Pattern:                pattern.Pattern,
+		ServiceID:              pattern.ServiceID,
+		EndpointPath:           pattern.EndpointPath,
+		Epoch:                  pattern.Epoch,
+		LastEventTime:          pattern.LastEventTime,
+		NextEventTime:          pattern.NextEventTime,
+		uniformTimes:           append([]time.Time(nil), pattern.uniformTimes...),
+		uniformCursor:          pattern.uniformCursor,
+		uniformLazy:            pattern.uniformLazy,
+		uniformStreamWatermark: pattern.uniformStreamWatermark,
+		Active:                 pattern.Active,
 	}
 	return copy, true
 }
@@ -261,12 +376,17 @@ func (ws *WorkloadState) GetAllPatterns() map[string]*WorkloadPatternState {
 		// to be a read-only snapshot and callers should not perform locking operations on it.
 		v.mu.RLock()
 		copy := &WorkloadPatternState{
-			Pattern:       v.Pattern,
-			ServiceID:     v.ServiceID,
-			EndpointPath:  v.EndpointPath,
-			LastEventTime: v.LastEventTime,
-			NextEventTime: v.NextEventTime,
-			Active:        v.Active,
+			Pattern:                v.Pattern,
+			ServiceID:              v.ServiceID,
+			EndpointPath:           v.EndpointPath,
+			Epoch:                  v.Epoch,
+			LastEventTime:          v.LastEventTime,
+			NextEventTime:          v.NextEventTime,
+			uniformTimes:           append([]time.Time(nil), v.uniformTimes...),
+			uniformCursor:          v.uniformCursor,
+			uniformLazy:            v.uniformLazy,
+			uniformStreamWatermark: v.uniformStreamWatermark,
+			Active:                 v.Active,
 		}
 		v.mu.RUnlock()
 		result[k] = copy
@@ -322,6 +442,10 @@ func (ws *WorkloadState) generateNextEvents() {
 			continue
 		}
 
+		if patternState.Pattern.Arrival.Type == "uniform" && patternState.uniformLazy {
+			ws.ensureUniformHorizon(patternState, lookaheadTime)
+		}
+
 		// Generate events until we've scheduled up to lookaheadTime
 		for patternState.NextEventTime.Before(lookaheadTime) && patternState.NextEventTime.Before(ws.endTime) {
 			// Schedule the arrival event
@@ -333,14 +457,13 @@ func (ws *WorkloadState) generateNextEvents() {
 				map[string]interface{}{
 					"service_id":    patternState.ServiceID,
 					"endpoint_path": patternState.EndpointPath,
+					"from":          patternState.Pattern.From,
+					"source_kind":   patternState.Pattern.SourceKind,
+					"traffic_class": patternState.Pattern.TrafficClass,
 				},
 			)
 
-			// Calculate next event time based on arrival type and rate
-			nextTime := ws.calculateNextArrivalTime(
-				patternState.Pattern.Arrival,
-				patternState.NextEventTime,
-			)
+			nextTime := ws.advanceToNextArrival(patternState, patternState.NextEventTime)
 			patternState.LastEventTime = patternState.NextEventTime
 			patternState.NextEventTime = nextTime
 		}
@@ -348,8 +471,87 @@ func (ws *WorkloadState) generateNextEvents() {
 	}
 }
 
-// calculateNextArrivalTime calculates the next arrival time based on arrival spec
-func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, currentTime time.Time) time.Time {
+func (ws *WorkloadState) sampleUniformArrivalTimes(startTime, endTime time.Time, rateRPS float64) []time.Time {
+	duration := endTime.Sub(startTime)
+	totalSeconds := duration.Seconds()
+	if totalSeconds <= 0 {
+		return nil
+	}
+	n := int64(math.Round(rateRPS * totalSeconds))
+	if n <= 0 {
+		return nil
+	}
+	times := make([]time.Time, 0, n)
+	for i := int64(0); i < n; i++ {
+		offsetSeconds := ws.generator.UniformFloat64(0, totalSeconds)
+		arrivalTime := startTime.Add(time.Duration(offsetSeconds * float64(time.Second)))
+		if arrivalTime.After(endTime) {
+			continue
+		}
+		times = append(times, arrivalTime)
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i].Before(times[j]) })
+	return times
+}
+
+// ensureUniformHorizon extends uniformTimes for lazy real-time uniform patterns by sampling
+// additional [uniformStreamWatermark, …) chunks until simulation time coverThrough is covered
+// or endTime is reached.
+func (ws *WorkloadState) ensureUniformHorizon(ps *WorkloadPatternState, coverThrough time.Time) {
+	if !ps.uniformLazy {
+		return
+	}
+	if coverThrough.After(ws.endTime) {
+		coverThrough = ws.endTime
+	}
+	rate := ps.Pattern.Arrival.RateRPS
+	for ps.uniformStreamWatermark.Before(coverThrough) && ps.uniformStreamWatermark.Before(ws.endTime) {
+		chunkStart := ps.uniformStreamWatermark
+		chunkEnd := chunkStart.Add(EventGenerationLookaheadWindow)
+		if chunkEnd.After(ws.endTime) {
+			chunkEnd = ws.endTime
+		}
+		if !chunkStart.Before(chunkEnd) {
+			break
+		}
+		part := ws.sampleUniformArrivalTimes(chunkStart, chunkEnd, rate)
+		ps.uniformTimes = append(ps.uniformTimes, part...)
+		if len(ps.uniformTimes) > ps.uniformCursor {
+			tail := ps.uniformTimes[ps.uniformCursor:]
+			sort.Slice(tail, func(i, j int) bool { return tail[i].Before(tail[j]) })
+		}
+		ps.uniformStreamWatermark = chunkEnd
+	}
+}
+
+// advanceToNextArrival returns the next arrival instant after scheduling at scheduledAt.
+// For type "uniform" it walks the precomputed sorted schedule (see sampleUniformArrivalTimes).
+func (ws *WorkloadState) advanceToNextArrival(patternState *WorkloadPatternState, scheduledAt time.Time) time.Time {
+	if patternState.Pattern.Arrival.Type != "uniform" {
+		return ws.calculateNextArrivalTime(patternState.Pattern.Arrival, scheduledAt, patternState.Epoch)
+	}
+	if patternState.uniformLazy {
+		ws.ensureUniformHorizon(patternState, scheduledAt.Add(EventGenerationLookaheadWindow))
+	}
+	if len(patternState.uniformTimes) == 0 {
+		return ws.endTime
+	}
+	patternState.uniformCursor++
+	if patternState.uniformCursor < len(patternState.uniformTimes) {
+		return patternState.uniformTimes[patternState.uniformCursor]
+	}
+	if patternState.uniformLazy && patternState.uniformStreamWatermark.Before(ws.endTime) {
+		ws.ensureUniformHorizon(patternState, patternState.uniformStreamWatermark.Add(EventGenerationLookaheadWindow))
+		if patternState.uniformCursor < len(patternState.uniformTimes) {
+			return patternState.uniformTimes[patternState.uniformCursor]
+		}
+	}
+	return ws.endTime
+}
+
+// calculateNextArrivalTime calculates the next arrival time after the last scheduled arrival
+// at currentTime. epoch is simulation start for bursty cycle alignment (ignored for other types).
+func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, currentTime time.Time, epoch time.Time) time.Time {
 	switch arrival.Type {
 	case "poisson", "exponential":
 		// Exponential inter-arrival time
@@ -358,14 +560,13 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 			rateRPS = DefaultFallbackRateRPS
 		}
 		interArrivalSeconds := ws.generator.ExpFloat64(rateRPS)
-		if interArrivalSeconds < 0 {
-			interArrivalSeconds = 0
+		if interArrivalSeconds < MinInterArrivalTimeSeconds {
+			interArrivalSeconds = MinInterArrivalTimeSeconds
 		}
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 
-	case "uniform", "constant":
-		// Uniform/Constant distribution - deterministic constant inter-arrival time
-		// Both types produce the same behavior: fixed interval = 1/rate
+	case "constant":
+		// Fixed interval = 1/rate (deterministic).
 		rateRPS := arrival.RateRPS
 		if rateRPS <= 0 {
 			rateRPS = DefaultFallbackRateRPS
@@ -392,38 +593,96 @@ func (ws *WorkloadState) calculateNextArrivalTime(arrival config.ArrivalSpec, cu
 		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 
 	case "bursty":
-		// Bursty arrival pattern - currently uses exponential/Poisson distribution
-		// TODO: Implement full bursty logic with burst periods and idle periods
-		// For now, this is an alias for Poisson distribution
-		rateRPS := arrival.RateRPS
-		if rateRPS <= 0 {
-			rateRPS = DefaultFallbackRateRPS
-		}
-		interArrivalSeconds := ws.generator.ExpFloat64(rateRPS)
-		if interArrivalSeconds < 0 {
-			interArrivalSeconds = 0
-		}
-		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
+		return burstyNextArrivalTime(epoch, currentTime, arrival, ws.generator)
 
 	default:
-		// Default to poisson
-		rateRPS := arrival.RateRPS
-		if rateRPS <= 0 {
-			rateRPS = DefaultFallbackRateRPS
-		}
-		interArrivalSeconds := ws.generator.ExpFloat64(rateRPS)
-		if interArrivalSeconds < 0 {
-			interArrivalSeconds = 0
-		}
-		return currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
+		panic(fmt.Sprintf("workload: unsupported arrival type %q (expected validated scenario)", arrival.Type))
 	}
+}
+
+// burstyNextArrivalTime returns the time of the next arrival after lastEventTime, aligned to epoch.
+// It mirrors internal/workload.Generator.scheduleBurstyArrivals: Poisson inter-arrivals at burst rate
+// during burst windows, no arrivals during quiet (advance to the next burst start).
+func burstyNextArrivalTime(epoch, lastEventTime time.Time, arrival config.ArrivalSpec, gen *utils.RandSource) time.Time {
+	baseRate := arrival.RateRPS
+	if baseRate <= 0 {
+		baseRate = 10.0
+	}
+	burstRate := baseRate * 5.0
+	if arrival.BurstRateRPS > 0 {
+		burstRate = arrival.BurstRateRPS
+	}
+	burstDuration := 5.0
+	if arrival.BurstDurationSeconds > 0 {
+		burstDuration = arrival.BurstDurationSeconds
+	}
+	quietDuration := 10.0
+	if arrival.QuietDurationSeconds > 0 {
+		quietDuration = arrival.QuietDurationSeconds
+	}
+	cycleDuration := burstDuration + quietDuration
+	if cycleDuration <= 0 || burstDuration <= 0 {
+		interArrivalSeconds := gen.ExpFloat64(baseRate)
+		if interArrivalSeconds < MinInterArrivalTimeSeconds {
+			interArrivalSeconds = MinInterArrivalTimeSeconds
+		}
+		return lastEventTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
+	}
+
+	t := lastEventTime
+	if t.Before(epoch) {
+		t = epoch
+	}
+
+	const maxIter = 100000
+	for i := 0; i < maxIter; i++ {
+		timeSinceEpoch := t.Sub(epoch).Seconds()
+		if timeSinceEpoch < 0 {
+			timeSinceEpoch = 0
+			t = epoch
+		}
+		cycleNumber := int(math.Floor(timeSinceEpoch / cycleDuration))
+		timeInCycle := timeSinceEpoch - float64(cycleNumber)*cycleDuration
+		inBurst := timeInCycle < burstDuration
+
+		if !inBurst {
+			nextBurstStart := epoch.Add(time.Duration(float64(cycleNumber+1) * cycleDuration * float64(time.Second)))
+			if !nextBurstStart.After(t) {
+				nextBurstStart = epoch.Add(time.Duration(float64(cycleNumber+2) * cycleDuration * float64(time.Second)))
+			}
+			t = nextBurstStart
+			continue
+		}
+
+		interArrivalSeconds := gen.ExpFloat64(burstRate)
+		if interArrivalSeconds < MinInterArrivalTimeSeconds {
+			interArrivalSeconds = MinInterArrivalTimeSeconds
+		}
+		candidate := t.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
+
+		timeSinceEpoch = candidate.Sub(epoch).Seconds()
+		cycleNumber = int(math.Floor(timeSinceEpoch / cycleDuration))
+		timeInCycle = timeSinceEpoch - float64(cycleNumber)*cycleDuration
+
+		if timeInCycle < burstDuration {
+			return candidate
+		}
+
+		nextBurstStart := epoch.Add(time.Duration(float64(cycleNumber+1) * cycleDuration * float64(time.Second)))
+		if !nextBurstStart.After(t) {
+			nextBurstStart = epoch.Add(time.Duration(float64(cycleNumber+2) * cycleDuration * float64(time.Second)))
+		}
+		t = nextBurstStart
+	}
+
+	panic("bursty: exceeded iteration limit; check burst/quiet durations")
 }
 
 // newWorkloadStateWithPatternsStub returns a WorkloadState with patterns loaded from the scenario
 // so GetRunConfiguration can observe workload entries. Used by online controller tests that call
 // runOnlineController without a live engine.
 func newWorkloadStateWithPatternsStub(runID string, scenario *config.Scenario, startTime time.Time) (*WorkloadState, error) {
-	ws := NewWorkloadState(runID, nil, startTime.Add(24*time.Hour))
+	ws := NewWorkloadState(runID, nil, startTime.Add(24*time.Hour), 0)
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	for _, workloadPattern := range scenario.Workload {
@@ -436,6 +695,7 @@ func newWorkloadStateWithPatternsStub(runID string, scenario *config.Scenario, s
 			Pattern:       workloadPattern,
 			ServiceID:     serviceID,
 			EndpointPath:  endpointPath,
+			Epoch:         startTime,
 			LastEventTime: startTime,
 			NextEventTime: startTime,
 			Active:        true,

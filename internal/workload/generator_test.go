@@ -247,12 +247,12 @@ func TestGeneratorScheduleArrivalsZeroRate(t *testing.T) {
 	}
 }
 
-func TestGeneratorDefaultToPoisson(t *testing.T) {
+func TestGeneratorScheduleArrivalsUnknownTypeErrors(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	g := NewGenerator(12345)
 
 	startTime := time.Now()
-	endTime := startTime.Add(2 * time.Second) // Shorter duration for faster tests
+	endTime := startTime.Add(2 * time.Second)
 
 	arrival := config.ArrivalSpec{
 		Type:    "unknown_type",
@@ -260,12 +260,7 @@ func TestGeneratorDefaultToPoisson(t *testing.T) {
 	}
 
 	err := g.ScheduleArrivals(eng, startTime, endTime, arrival, "svc1", "/test")
-	if err != nil {
-		t.Fatalf("expected default to poisson, got error: %v", err)
-	}
-
-	// Should have scheduled events (defaults to poisson)
-	if eng.GetEventQueue().Size() == 0 {
-		t.Fatalf("expected events to be scheduled with default poisson")
+	if err == nil {
+		t.Fatal("expected error for unsupported arrival type")
 	}
 }

@@ -76,6 +76,11 @@ STORAGE_IMPLEMENTATION_GUIDE.md
 MISSING_FEATURES.md
 MVP_FUNCTIONAL_REQUIREMENTS.md
 
+# cache
+.gocache/
+
+# cusor rules
+.cursor
 
 # Test output files
 out_candidates/

@@ -126,6 +126,17 @@ func (rm *RunManager) GetRequest(requestID string) (*models.Request, bool) {
 	return request, ok
 }
 
+// ListRequests returns a snapshot of all requests (for tests and diagnostics).
+func (rm *RunManager) ListRequests() []*models.Request {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	out := make([]*models.Request, 0, len(rm.requests))
+	for _, r := range rm.requests {
+		out = append(out, r)
+	}
+	return out
+}
+
 // RecordLatency records a request latency
 func (rm *RunManager) RecordLatency(latencyMs float64) {
 	rm.mu.Lock()

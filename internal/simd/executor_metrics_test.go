@@ -31,6 +31,7 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 				MemoryUtilization:  0.60,
 				ActiveReplicas:     3,
 				ConcurrentRequests: 5,
+				QueueLength:        7,
 			},
 			"service2": {
 				ServiceName:        "service2",
@@ -44,6 +45,7 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 				MemoryUtilization:  0.70,
 				ActiveReplicas:     2,
 				ConcurrentRequests: 2,
+				QueueLength:        1,
 			},
 		},
 	}
@@ -83,6 +85,9 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 			}
 			if svc.ConcurrentRequests != 5 {
 				t.Fatalf("expected service1 ConcurrentRequests 5, got %d", svc.ConcurrentRequests)
+			}
+			if svc.QueueLength != 7 {
+				t.Fatalf("expected service1 QueueLength 7, got %d", svc.QueueLength)
 			}
 			if svc.CpuUtilization != 0.75 {
 				t.Fatalf("expected service1 CpuUtilization 0.75, got %f", svc.CpuUtilization)

@@ -69,6 +69,40 @@ func TestNewGraph(t *testing.T) {
 	}
 }
 
+func TestNewGraphAsyncCycleAccepted(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{
+				ID: "svc1",
+				Endpoints: []config.Endpoint{
+					{
+						Path: "/test",
+						Downstream: []config.DownstreamCall{
+							{To: "svc2:/api"},
+						},
+					},
+				},
+			},
+			{
+				ID: "svc2",
+				Endpoints: []config.Endpoint{
+					{
+						Path: "/api",
+						Downstream: []config.DownstreamCall{
+							{To: "svc1:/test", Mode: "async"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := NewGraph(scenario)
+	if err != nil {
+		t.Fatalf("expected async back-edge to avoid sync cycle error, got %v", err)
+	}
+}
+
 func TestNewGraphWithCycle(t *testing.T) {
 	scenario := &config.Scenario{
 		Services: []config.Service{

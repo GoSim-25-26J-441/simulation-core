@@ -149,14 +149,11 @@ func validateServiceGraph(sg *ServiceGraph, clusterNames map[string]bool) error 
 
 // validateWorkload validates the workload configuration
 func validateWorkload(w *Workload) error {
-	validArrivals := map[string]bool{
-		"poisson": true,
-		"uniform": true,
-		"burst":   true,
+	norm, err := NormalizeArrivalType(w.Arrival)
+	if err != nil {
+		return fmt.Errorf("invalid arrival: %w", err)
 	}
-	if !validArrivals[w.Arrival] {
-		return fmt.Errorf("invalid arrival type: %s (must be poisson, uniform, or burst)", w.Arrival)
-	}
+	w.Arrival = norm
 
 	if w.RateRPS <= 0 {
 		return fmt.Errorf("rate_rps must be positive, got %d", w.RateRPS)
@@ -217,6 +214,15 @@ func validateOptimization(o *Optimization) error {
 
 // validateScenario validates the scenario configuration
 func validateScenario(s *Scenario) error {
+	if s.SimulationLimits != nil {
+		if s.SimulationLimits.MaxTraceDepth < 0 {
+			return fmt.Errorf("simulation_limits.max_trace_depth cannot be negative")
+		}
+		if s.SimulationLimits.MaxAsyncHops < 0 {
+			return fmt.Errorf("simulation_limits.max_async_hops cannot be negative")
+		}
+	}
+
 	// Validate hosts
 	if len(s.Hosts) == 0 {
 		return fmt.Errorf("at least one host must be defined")
@@ -258,6 +264,17 @@ func validateScenario(s *Scenario) error {
 			return fmt.Errorf("service %s: replicas must be positive", svc.ID)
 		}
 
+		kindNorm := strings.ToLower(strings.TrimSpace(svc.Kind))
+		if kindNorm == "queue" {
+			return fmt.Errorf("service %s: kind %q is not supported yet (queue engine not implemented)", svc.ID, svc.Kind)
+		}
+		validKinds := map[string]bool{
+			"": true, "api_gateway": true, "service": true, "database": true, "cache": true, "external": true,
+		}
+		if !validKinds[kindNorm] {
+			return fmt.Errorf("service %s: unknown or unsupported kind %q", svc.ID, svc.Kind)
+		}
+
 		validModels := map[string]bool{
 			"cpu":        true,
 			"mixed":      true,
@@ -290,24 +307,50 @@ func validateScenario(s *Scenario) error {
 		}
 	}
 
+	endpointRef := make(map[string]bool)
+	for _, svc := range s.Services {
+		for _, ep := range svc.Endpoints {
+			endpointRef[svc.ID+":"+ep.Path] = true
+		}
+	}
+
+	validDownstreamModes := map[string]bool{
+		"": true, "sync": true, "async": true, "event": true,
+	}
+	validDownstreamKinds := map[string]bool{
+		"": true, "rest": true, "grpc": true, "db": true, "queue": true,
+	}
+
 	// Second pass: validate downstream calls now that all service IDs are known
-	// Import interaction package for ParseDownstreamTarget
 	for _, svc := range s.Services {
 		for _, ep := range svc.Endpoints {
 			for _, ds := range ep.Downstream {
 				if ds.To == "" {
 					return fmt.Errorf("service %s, endpoint %s: downstream 'to' cannot be empty", svc.ID, ep.Path)
 				}
-				// Parse the target to extract service ID (supports both "serviceID" and "serviceID:path" formats)
-				serviceID := ds.To
-				if strings.Contains(ds.To, ":") {
-					parts := strings.SplitN(ds.To, ":", 2)
-					if len(parts) == 2 && parts[0] != "" {
-						serviceID = strings.TrimSpace(parts[0])
-					}
+				tgtSvc, tgtPath, err := parseDownstreamTargetForValidation(ds.To)
+				if err != nil {
+					return fmt.Errorf("service %s, endpoint %s: downstream to %q: %w", svc.ID, ep.Path, ds.To, err)
 				}
-				if !serviceIDs[serviceID] {
-					return fmt.Errorf("service %s, endpoint %s: downstream service %s does not exist", svc.ID, ep.Path, serviceID)
+				if !serviceIDs[tgtSvc] {
+					return fmt.Errorf("service %s, endpoint %s: downstream service %s does not exist", svc.ID, ep.Path, tgtSvc)
+				}
+				if !endpointRef[tgtSvc+":"+tgtPath] {
+					return fmt.Errorf("service %s, endpoint %s: downstream endpoint %s:%s does not exist", svc.ID, ep.Path, tgtSvc, tgtPath)
+				}
+				mode := strings.ToLower(strings.TrimSpace(ds.Mode))
+				if !validDownstreamModes[mode] {
+					return fmt.Errorf("service %s, endpoint %s: invalid downstream mode %q", svc.ID, ep.Path, ds.Mode)
+				}
+				kind := strings.ToLower(strings.TrimSpace(ds.Kind))
+				if !validDownstreamKinds[kind] {
+					return fmt.Errorf("service %s, endpoint %s: invalid downstream kind %q", svc.ID, ep.Path, ds.Kind)
+				}
+				if ds.Probability < 0 || ds.Probability > 1 {
+					return fmt.Errorf("service %s, endpoint %s: downstream probability must be in [0,1], got %v", svc.ID, ep.Path, ds.Probability)
+				}
+				if ds.TimeoutMs < 0 {
+					return fmt.Errorf("service %s, endpoint %s: downstream timeout_ms cannot be negative", svc.ID, ep.Path)
 				}
 			}
 		}
@@ -317,7 +360,8 @@ func validateScenario(s *Scenario) error {
 	if len(s.Workload) == 0 {
 		return fmt.Errorf("at least one workload pattern must be defined")
 	}
-	for i, wl := range s.Workload {
+	for i := range s.Workload {
+		wl := &s.Workload[i]
 		if wl.From == "" {
 			return fmt.Errorf("workload %d: 'from' cannot be empty", i)
 		}
@@ -327,10 +371,45 @@ func validateScenario(s *Scenario) error {
 		if wl.Arrival.Type == "" {
 			return fmt.Errorf("workload %d: arrival type cannot be empty", i)
 		}
+		norm, err := NormalizeArrivalType(wl.Arrival.Type)
+		if err != nil {
+			return fmt.Errorf("workload %d: %w", i, err)
+		}
+		wl.Arrival.Type = norm
 		if wl.Arrival.RateRPS <= 0 {
 			return fmt.Errorf("workload %d: arrival rate_rps must be positive", i)
+		}
+		wlSvc, wlPath, err := parseDownstreamTargetForValidation(wl.To)
+		if err != nil {
+			return fmt.Errorf("workload %d: invalid to %q: %w", i, wl.To, err)
+		}
+		if !serviceIDs[wlSvc] {
+			return fmt.Errorf("workload %d: target service %s does not exist", i, wlSvc)
+		}
+		if !endpointRef[wlSvc+":"+wlPath] {
+			return fmt.Errorf("workload %d: target endpoint %s:%s does not exist", i, wlSvc, wlPath)
 		}
 	}
 
 	return nil
+}
+
+func parseDownstreamTargetForValidation(target string) (serviceID, path string, err error) {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", "", fmt.Errorf("target cannot be empty")
+	}
+	if strings.Contains(target, ":") {
+		parts := strings.SplitN(target, ":", 2)
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("invalid target format")
+		}
+		serviceID = strings.TrimSpace(parts[0])
+		path = strings.TrimSpace(parts[1])
+		if serviceID == "" || path == "" {
+			return "", "", fmt.Errorf("service and path must be non-empty")
+		}
+		return serviceID, path, nil
+	}
+	return target, "/", nil
 }

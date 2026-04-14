@@ -741,7 +741,7 @@ func TestHostMetricsFromCollector(t *testing.T) {
 	now := time.Now()
 
 	// No host-labelled metrics: should return nil
-	got := hostMetricsFromCollector(collector)
+	got := hostMetricsFromCollector(collector, nil)
 	if got != nil {
 		t.Fatalf("expected nil when no host labels, got %d entries", len(got))
 	}
@@ -752,7 +752,7 @@ func TestHostMetricsFromCollector(t *testing.T) {
 	metrics.RecordCPUUtilization(collector, 0.3, now.Add(time.Second), metrics.CreateHostLabels("host-2"))
 	metrics.RecordMemoryUtilization(collector, 0.4, now, metrics.CreateHostLabels("host-2"))
 
-	got = hostMetricsFromCollector(collector)
+	got = hostMetricsFromCollector(collector, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 host entries, got %d", len(got))
 	}
@@ -766,6 +766,100 @@ func TestHostMetricsFromCollector(t *testing.T) {
 	if got[1]["cpu_utilization"].(float64) != 0.3 || got[1]["memory_utilization"].(float64) != 0.4 {
 		t.Fatalf("host-2: expected cpu=0.3 mem=0.4, got cpu=%v mem=%v", got[1]["cpu_utilization"], got[1]["memory_utilization"])
 	}
+
+	// Inventory mode: include hosts with no samples yet (zeros), aligned with RM host list.
+	gotInv := hostMetricsFromCollector(collector, []string{"host-0", "host-1", "host-2"})
+	if len(gotInv) != 3 {
+		t.Fatalf("expected 3 inventory entries, got %d", len(gotInv))
+	}
+	if gotInv[0]["host_id"] != "host-0" {
+		t.Fatalf("expected first host host-0, got %v", gotInv[0]["host_id"])
+	}
+	if gotInv[0]["cpu_utilization"].(float64) != 0 || gotInv[0]["memory_utilization"].(float64) != 0 {
+		t.Fatalf("host-0 idle: expected cpu=0 mem=0, got cpu=%v mem=%v", gotInv[0]["cpu_utilization"], gotInv[0]["memory_utilization"])
+	}
+	if gotInv[1]["host_id"] != "host-1" || gotInv[2]["host_id"] != "host-2" {
+		t.Fatalf("unexpected inventory order: %v, %v", gotInv[1]["host_id"], gotInv[2]["host_id"])
+	}
+}
+
+// sseEventTypesFromBody returns SSE event names in order of appearance (each "event: …" line).
+func sseEventTypesFromBody(body string) []string {
+	var seq []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "event: ") {
+			seq = append(seq, strings.TrimSpace(strings.TrimPrefix(line, "event: ")))
+		}
+	}
+	return seq
+}
+
+// TestHTTPServerMetricsStreamNonRealtimeCompletionOrder asserts that when a non-realtime run
+// finishes, the stream ends with status_change(COMPLETED) → metrics_snapshot → complete so
+// clients receive final metrics before the terminal complete event.
+func TestHTTPServerMetricsStreamNonRealtimeCompletionOrder(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	const runID = "nr-sse-completion-order"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   5000,
+		RealTimeMode: false,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus RUNNING: %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		if err := store.SetMetrics(runID, &simulationv1.RunMetrics{
+			TotalRequests:      7,
+			SuccessfulRequests: 7,
+			LatencyP50Ms:       2.0,
+			LatencyMeanMs:      2.5,
+		}); err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+runID+"/metrics/stream?interval_ms=25", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req = req.WithContext(ctx)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("background store update: %v", err)
+	}
+
+	seq := sseEventTypesFromBody(rr.Body.String())
+	if len(seq) < 3 {
+		t.Fatalf("expected at least 3 SSE events, got %d: %v", len(seq), seq)
+	}
+	n := len(seq)
+	if seq[n-3] != "status_change" || seq[n-2] != "metrics_snapshot" || seq[n-1] != "complete" {
+		start := n - 6
+		if start < 0 {
+			start = 0
+		}
+		t.Fatalf("expected final triple status_change, metrics_snapshot, complete; got tail %v", seq[start:])
+	}
+	if !strings.Contains(rr.Body.String(), "RUN_STATUS_COMPLETED") {
+		t.Fatal("expected completed status in stream body")
+	}
 }
 
 func TestHTTPServerMetricsStreamSnapshotIncludesHostMetrics(t *testing.T) {
@@ -775,6 +869,7 @@ func TestHTTPServerMetricsStreamSnapshotIncludesHostMetrics(t *testing.T) {
 	rec, err := store.Create("test-run-hm", &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
+		RealTimeMode: true, // live collector enrichment (host_metrics) in SSE
 	})
 	if err != nil {
 		t.Fatalf("Create error: %v", err)
@@ -820,6 +915,45 @@ func TestHTTPServerMetricsStreamSnapshotIncludesHostMetrics(t *testing.T) {
 	}
 	if !strings.Contains(body, "host-1") {
 		t.Error("expected host-1 in SSE stream")
+	}
+}
+
+func TestHTTPServerMetricsStreamSnapshotIncludesPlacementsInResources(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	rec, err := store.Create("test-run-placements-sse", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   120000,
+		RealTimeMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := executor.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer func() { _, _ = executor.Stop(rec.Run.Id) }()
+
+	time.Sleep(150 * time.Millisecond)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+rec.Run.Id+"/metrics/stream?interval_ms=25", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+	srv.Handler().ServeHTTP(rr, req)
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "event: metrics_snapshot") {
+		t.Fatalf("expected metrics_snapshot event in stream, got: %s", body[:min(200, len(body))])
+	}
+	if !strings.Contains(body, `"placements"`) {
+		t.Fatal("expected resources.placements (placements key) in metrics_snapshot payload")
+	}
+	if !strings.Contains(body, `"resources"`) {
+		t.Fatal("expected resources object in metrics_snapshot payload")
 	}
 }
 
@@ -928,10 +1062,11 @@ func TestHTTPServerMetricsStreamTimeSeriesData(t *testing.T) {
 	executor := NewRunExecutor(store, nil)
 	srv := NewHTTPServer(store, executor)
 
-	// Create a run
+	// Create a run (live SSE metrics require real-time mode)
 	input := &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
+		RealTimeMode: true,
 	}
 	rec, err := store.Create("test-run-ts", input)
 	if err != nil {
@@ -1177,10 +1312,11 @@ func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
 	executor := NewRunExecutor(store, nil)
 	srv := NewHTTPServer(store, executor)
 
-	// Create a run
+	// Create a run (live SSE metrics require real-time mode)
 	input := &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
 		DurationMs:   100,
+		RealTimeMode: true,
 	}
 	rec, err := store.Create("test-run-multi", input)
 	if err != nil {
@@ -1511,6 +1647,69 @@ func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
 	}
 	if s0["service_id"] != "svc1" || s0["replicas"].(float64) != 3 {
 		t.Errorf("expected final_config.services[0] service_id svc1 replicas 3, got %v", s0)
+	}
+}
+
+func TestHTTPServerExportRunPrefersFinalConfigOverOptimizationHistory(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	_, err := store.Create("export-pref-run", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 100})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetMetrics("export-pref-run", &simulationv1.RunMetrics{TotalRequests: 10}); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+
+	step := &simulationv1.OptimizationStep{
+		IterationIndex: 1,
+		CurrentConfig: &simulationv1.RunConfiguration{
+			Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 3}},
+		},
+	}
+	if err := store.AppendOptimizationStep("export-pref-run", step); err != nil {
+		t.Fatalf("AppendOptimizationStep error: %v", err)
+	}
+	if err := store.SetFinalConfiguration("export-pref-run", &simulationv1.RunConfiguration{
+		Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 1}},
+		Placements: []*simulationv1.InstancePlacementEntry{
+			{InstanceId: "from-final-config", ServiceId: "svc1", HostId: "host-1", Lifecycle: "ACTIVE"},
+		},
+	}); err != nil {
+		t.Fatalf("SetFinalConfiguration error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/export-pref-run/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var export map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &export); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	finalConfig, ok := export["final_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected top-level final_config, got %T", export["final_config"])
+	}
+	services, ok := finalConfig["services"].([]any)
+	if !ok || len(services) != 1 {
+		t.Fatalf("expected final_config.services with 1 entry, got %v", finalConfig["services"])
+	}
+	s0 := services[0].(map[string]any)
+	if s0["replicas"].(float64) != 1 {
+		t.Fatalf("expected final_config from RunRecord.FinalConfig (replicas 1), not last optimization step (3), got %v", s0["replicas"])
+	}
+	pl, ok := finalConfig["placements"].([]any)
+	if !ok || len(pl) != 1 {
+		t.Fatalf("expected final_config.placements from FinalConfig, got %v", finalConfig["placements"])
+	}
+	p0 := pl[0].(map[string]any)
+	if p0["instance_id"] != "from-final-config" {
+		t.Fatalf("expected placement instance_id from FinalConfig, got %v", p0["instance_id"])
 	}
 }
 
@@ -1983,9 +2182,9 @@ func TestHTTPServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
 		DurationMs:   100,
 		Optimization: &simulationv1.OptimizationConfig{
 			Online:               true,
-			TargetP95LatencyMs:     50,
-			AllowUnboundedOnline:   true,
-			MaxOnlineDurationMs:    0,
+			TargetP95LatencyMs:   50,
+			AllowUnboundedOnline: true,
+			MaxOnlineDurationMs:  0,
 		},
 	})
 	if err != nil {

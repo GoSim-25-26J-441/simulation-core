@@ -12,6 +12,76 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
+func TestEnqueuePathRecordsQueueLengthGauge(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10.0,
+						CPUSigmaMs:   2.0,
+						NetLatencyMs: config.LatencySpec{Mean: 1.0, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
+	RegisterHandlers(eng, state)
+
+	instance, err := rm.SelectInstanceForService("svc1")
+	if err != nil {
+		t.Fatalf("failed to get instance: %v", err)
+	}
+
+	simTime := eng.GetSimTime()
+	// Saturate instance CPU so the next arrival enqueues instead of starting (capacity-full path).
+	for i := 0; i < 10; i++ {
+		if err := rm.AllocateCPU(instance.ID(), 100.0, simTime); err != nil {
+			t.Fatalf("AllocateCPU: %v", err)
+		}
+	}
+	if instance.HasCapacityAt(simTime) {
+		t.Fatal("expected instance at CPU capacity so arrival uses enqueue path")
+	}
+
+	eng.ScheduleAt(engine.EventTypeRequestArrival, simTime, nil, "svc1", map[string]interface{}{
+		"service_id":    "svc1",
+		"endpoint_path": "/test",
+	})
+	if err := eng.Run(50 * time.Millisecond); err != nil {
+		t.Fatalf("Engine run error: %v", err)
+	}
+
+	if rm.GetQueueLength(instance.ID()) != 1 {
+		t.Fatalf("expected queue depth 1, got %d", rm.GetQueueLength(instance.ID()))
+	}
+
+	labels := metrics.CreateInstanceLabels("svc1", instance.ID())
+	points := collector.GetTimeSeries(metrics.MetricQueueLength, labels)
+	if len(points) == 0 {
+		t.Fatal("expected queue_length gauge after enqueue")
+	}
+	if got := points[len(points)-1].Value; got != 1.0 {
+		t.Fatalf("expected queue_length 1.0 in collector, got %v", got)
+	}
+}
+
 func TestHandleRequestArrivalWithQueueing(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	scenario := &config.Scenario{
@@ -38,7 +108,7 @@ func TestHandleRequestArrivalWithQueueing(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -103,7 +173,7 @@ func TestHandleRequestStartWithResourceAllocationFailure(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -194,7 +264,7 @@ func TestHandleRequestStartWithCPUAllocationFailure(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -285,7 +355,7 @@ func TestHandleRequestCompleteWithQueueProcessing(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}

@@ -37,9 +37,11 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	n := float64(nonNil)
 	out := &simulationv1.RunMetrics{}
 	var tr, sr, fr int64
+	var ir, intr int64
 	var p50, p95, p99 float64
 	var meanNum, meanDen float64
 	var tput float64
+	var ingressTput float64
 	firstPerc := true
 	for _, m := range runs {
 		if m == nil {
@@ -48,6 +50,8 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 		tr += m.GetTotalRequests()
 		sr += m.GetSuccessfulRequests()
 		fr += m.GetFailedRequests()
+		ir += m.GetIngressRequests()
+		intr += m.GetInternalRequests()
 		if firstPerc {
 			p50 = m.GetLatencyP50Ms()
 			p95 = m.GetLatencyP95Ms()
@@ -64,10 +68,13 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 			meanDen += float64(suc)
 		}
 		tput += m.GetThroughputRps()
+		ingressTput += m.GetIngressThroughputRps()
 	}
 	out.TotalRequests = int64(float64(tr) / n)
 	out.SuccessfulRequests = int64(float64(sr) / n)
 	out.FailedRequests = int64(float64(fr) / n)
+	out.IngressRequests = int64(float64(ir) / n)
+	out.InternalRequests = int64(float64(intr) / n)
 	out.LatencyP50Ms = p50
 	out.LatencyP95Ms = p95
 	out.LatencyP99Ms = p99
@@ -83,6 +90,7 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 		out.LatencyMeanMs = ms / n
 	}
 	out.ThroughputRps = tput / n
+	out.IngressThroughputRps = ingressTput / n
 
 	byName := make(map[string][]*simulationv1.ServiceMetrics)
 	for _, m := range runs {
@@ -143,10 +151,11 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 			}
 			lmean /= k
 		}
-		var ar, cr int32
+		var ar, cr, ql int32
 		for _, sm := range list {
 			ar += sm.GetActiveReplicas()
 			cr += sm.GetConcurrentRequests()
+			ql += sm.GetQueueLength()
 		}
 		out.ServiceMetrics = append(out.ServiceMetrics, &simulationv1.ServiceMetrics{
 			ServiceName:        name,
@@ -160,6 +169,7 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 			MemoryUtilization:  mem / k,
 			ActiveReplicas:     int32(float64(ar) / k),
 			ConcurrentRequests: int32(float64(cr) / k),
+			QueueLength:        int32(float64(ql) / k),
 		})
 	}
 

@@ -4,6 +4,8 @@ import (
 	"sort"
 	"testing"
 	"time"
+
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 func TestNewCollector(t *testing.T) {
@@ -323,6 +325,23 @@ func TestHelperFunctions(t *testing.T) {
 	}
 }
 
+func TestConvertToRunMetricsIngressAndInternalCounts(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	RecordRequestCount(c, 1.0, now, EndpointLabelsWithOrigin("gw", "/a", OriginIngress))
+	RecordRequestCount(c, 1.0, now, EndpointLabelsWithOrigin("svc", "/b", OriginDownstream))
+	RecordRequestCount(c, 1.0, now, EndpointLabelsWithOrigin("svc", "/b", OriginDownstream))
+	c.Stop()
+	run := ConvertToRunMetrics(c, []map[string]string{{"service": "gw"}, {"service": "svc"}}, nil)
+	if run.TotalRequests != 3 {
+		t.Fatalf("total requests: %d", run.TotalRequests)
+	}
+	if run.IngressRequests != 1 || run.InternalRequests != 2 {
+		t.Fatalf("ingress=%d internal=%d", run.IngressRequests, run.InternalRequests)
+	}
+}
+
 func TestConvertToRunMetrics(t *testing.T) {
 	c := NewCollector()
 	c.Start()
@@ -346,7 +365,7 @@ func TestConvertToRunMetrics(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	c.Stop()
 
-	runMetrics := ConvertToRunMetrics(c, []map[string]string{svc1Labels, svc2Labels})
+	runMetrics := ConvertToRunMetrics(c, []map[string]string{svc1Labels, svc2Labels}, nil)
 	if runMetrics == nil {
 		t.Fatalf("expected non-nil RunMetrics")
 	}
@@ -399,7 +418,7 @@ func TestConvertToRunMetricsWithEndpointLabels(t *testing.T) {
 		{"service": "auth"},
 		{"service": "user"},
 	}
-	runMetrics := ConvertToRunMetrics(c, serviceLabels)
+	runMetrics := ConvertToRunMetrics(c, serviceLabels, nil)
 	if runMetrics == nil {
 		t.Fatalf("expected non-nil RunMetrics")
 	}
@@ -454,7 +473,7 @@ func TestConvertToRunMetricsConcurrentRequests(t *testing.T) {
 		{"service": "svc1"},
 		{"service": "svc2"},
 	}
-	runMetrics := ConvertToRunMetrics(c, serviceLabels)
+	runMetrics := ConvertToRunMetrics(c, serviceLabels, nil)
 	if runMetrics == nil {
 		t.Fatalf("expected non-nil RunMetrics")
 	}
@@ -476,5 +495,125 @@ func TestConvertToRunMetricsConcurrentRequests(t *testing.T) {
 	}
 	if svc2.ConcurrentRequests != 3 {
 		t.Fatalf("expected svc2 ConcurrentRequests 3, got %d", svc2.ConcurrentRequests)
+	}
+}
+
+func TestConvertToRunMetricsGaugeUtilizationMeanLatestPerInstance(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	t0 := time.Now()
+	t1 := t0.Add(time.Millisecond)
+	// One instance: non-zero then zero (e.g. allocation vs completion refresh)
+	RecordMemoryUtilization(c, 0.03125, t0, CreateInstanceLabels("svc1", "inst1"))
+	RecordMemoryUtilization(c, 0.0, t1, CreateInstanceLabels("svc1", "inst1"))
+	RecordCPUUtilization(c, 0.5, t0, CreateInstanceLabels("svc1", "inst1"))
+	RecordCPUUtilization(c, 0.0, t1, CreateInstanceLabels("svc1", "inst1"))
+	c.Stop()
+
+	runMetrics := ConvertToRunMetrics(c, []map[string]string{{"service": "svc1"}}, nil)
+	sm := runMetrics.ServiceMetrics["svc1"]
+	if sm == nil {
+		t.Fatal("expected svc1 metrics")
+	}
+	if sm.MemoryUtilization != 0 {
+		t.Fatalf("expected MemoryUtilization from latest instance sample (0), got %v", sm.MemoryUtilization)
+	}
+	if sm.CPUUtilization != 0 {
+		t.Fatalf("expected CPUUtilization from latest instance sample (0), got %v", sm.CPUUtilization)
+	}
+}
+
+func TestConvertToRunMetricsIdleReplicasCountedInInventoryAverage(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	// Only "busy" has samples; "idle" exists in RM but never handled traffic.
+	RecordMemoryUtilization(c, 0.6, now, CreateInstanceLabels("svc1", "busy"))
+	RecordCPUUtilization(c, 0.4, now, CreateInstanceLabels("svc1", "busy"))
+	c.Stop()
+
+	opts := &RunMetricsOptions{
+		InstanceIDsByService: map[string][]string{"svc1": {"busy", "idle"}},
+	}
+	runMetrics := ConvertToRunMetrics(c, []map[string]string{{"service": "svc1"}}, opts)
+	sm := runMetrics.ServiceMetrics["svc1"]
+	if sm == nil {
+		t.Fatal("expected svc1 metrics")
+	}
+	if sm.MemoryUtilization != 0.3 {
+		t.Fatalf("expected MemoryUtilization (0.6+0)/2 = 0.3, got %v", sm.MemoryUtilization)
+	}
+	if sm.CPUUtilization != 0.2 {
+		t.Fatalf("expected CPUUtilization (0.4+0)/2 = 0.2, got %v", sm.CPUUtilization)
+	}
+}
+
+func TestConvertToRunMetricsConcurrentRequestsSumsInventoryIncludingIdle(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	RecordConcurrentRequests(c, 2.0, now, CreateInstanceLabels("svc1", "inst1"))
+	// inst2 idle: no concurrent_requests series
+	c.Stop()
+
+	opts := &RunMetricsOptions{
+		InstanceIDsByService: map[string][]string{"svc1": {"inst1", "inst2"}},
+	}
+	runMetrics := ConvertToRunMetrics(c, []map[string]string{{"service": "svc1"}}, opts)
+	sm := runMetrics.ServiceMetrics["svc1"]
+	if sm == nil || sm.ConcurrentRequests != 2 {
+		t.Fatalf("expected ConcurrentRequests 2 (2+0), got %+v", sm)
+	}
+}
+
+func TestAttachHostUtilizationUsesLatestSample(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	t0 := time.Now()
+	RecordCPUUtilization(c, 0.9, t0, CreateHostLabels("h1"))
+	RecordCPUUtilization(c, 0.1, t0.Add(time.Millisecond), CreateHostLabels("h1"))
+	RecordMemoryUtilization(c, 0.8, t0, CreateHostLabels("h1"))
+	RecordMemoryUtilization(c, 0.2, t0.Add(time.Millisecond), CreateHostLabels("h1"))
+	c.Stop()
+
+	rm := &models.RunMetrics{}
+	AttachHostUtilization(rm, c, []string{"h1"})
+	h := rm.HostMetrics["h1"]
+	if h == nil {
+		t.Fatal("expected host metrics")
+	}
+	if h.CPUUtilization != 0.1 || h.MemoryUtilization != 0.2 {
+		t.Fatalf("expected latest host gauges cpu=0.1 mem=0.2, got cpu=%v mem=%v", h.CPUUtilization, h.MemoryUtilization)
+	}
+}
+
+func TestAttachHostUtilizationScaledOutHostNoSamplesIsZero(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	RecordCPUUtilization(c, 0.5, time.Now(), CreateHostLabels("h-known"))
+	c.Stop()
+
+	rm := &models.RunMetrics{}
+	AttachHostUtilization(rm, c, []string{"h-known", "host-auto-1"})
+	if rm.HostMetrics["host-auto-1"].CPUUtilization != 0 || rm.HostMetrics["host-auto-1"].MemoryUtilization != 0 {
+		t.Fatalf("expected zero gauges for host with no series, got %+v", rm.HostMetrics["host-auto-1"])
+	}
+}
+
+func TestConvertToRunMetricsQueueLengthSumsLatestPerInstanceWithInventory(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	RecordQueueLength(c, 3.0, now, CreateInstanceLabels("svc1", "a"))
+	RecordQueueLength(c, 1.0, now, CreateInstanceLabels("svc1", "b"))
+	c.Stop()
+
+	opts := &RunMetricsOptions{
+		InstanceIDsByService: map[string][]string{"svc1": {"a", "b", "idle"}},
+	}
+	runMetrics := ConvertToRunMetrics(c, []map[string]string{{"service": "svc1"}}, opts)
+	sm := runMetrics.ServiceMetrics["svc1"]
+	if sm == nil || sm.QueueLength != 4 {
+		t.Fatalf("expected QueueLength 3+1+0 = 4, got %+v", sm)
 	}
 }

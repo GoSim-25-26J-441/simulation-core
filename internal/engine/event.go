@@ -35,6 +35,12 @@ const (
 
 	// EventTypeDrainSweep runs periodic replica drain processing independent of request traffic.
 	EventTypeDrainSweep EventType = "drain_sweep"
+
+	// EventTypeDownstreamTimeout fires when a downstream call exceeds timeout_ms (DES deadline).
+	EventTypeDownstreamTimeout EventType = "downstream_timeout"
+
+	// EventTypeDownstreamRetry schedules a replacement downstream attempt after simulated backoff (retry policy).
+	EventTypeDownstreamRetry EventType = "downstream_retry"
 )
 
 // Event represents a discrete event in the simulation
@@ -43,6 +49,7 @@ type Event struct {
 	Type      EventType              `json:"type"`
 	Time      time.Time              `json:"time"`
 	Priority  int                    `json:"priority"` // Lower values = higher priority
+	Sequence  int64                  `json:"sequence,omitempty"`
 	Request   *models.Request        `json:"request,omitempty"`
 	ServiceID string                 `json:"service_id,omitempty"`
 	Data      map[string]interface{} `json:"data,omitempty"`
@@ -68,17 +75,19 @@ func (eq *EventQueue) Len() int {
 	return len(eq.events)
 }
 
-// Less compares two events by time and priority
+// Less compares two events by time, priority, then schedule order (Sequence).
 func (eq *EventQueue) Less(i, j int) bool {
-	// First compare by time
-	if eq.events[i].Time.Before(eq.events[j].Time) {
+	a, b := eq.events[i], eq.events[j]
+	if a.Time.Before(b.Time) {
 		return true
 	}
-	if eq.events[i].Time.After(eq.events[j].Time) {
+	if a.Time.After(b.Time) {
 		return false
 	}
-	// If times are equal, compare by priority (lower is higher priority)
-	return eq.events[i].Priority < eq.events[j].Priority
+	if a.Priority != b.Priority {
+		return a.Priority < b.Priority
+	}
+	return a.Sequence < b.Sequence
 }
 
 // Swap swaps two events in the queue

@@ -10,6 +10,9 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/utils"
 )
 
+// minInterArrivalSeconds matches simd.WorkloadState MinInterArrivalTimeSeconds (floor for Poisson draws).
+const minInterArrivalSeconds = 0.001
+
 // Generator generates workload arrival events based on arrival specifications
 type Generator struct {
 	rng *utils.RandSource
@@ -41,8 +44,7 @@ func (g *Generator) ScheduleArrivals(eng *engine.Engine, startTime, endTime time
 	case "constant":
 		return g.scheduleConstantArrivals(eng, startTime, endTime, arrival.RateRPS, serviceID, endpointPath)
 	default:
-		// Default to poisson
-		return g.schedulePoissonArrivals(eng, startTime, endTime, arrival.RateRPS, serviceID, endpointPath)
+		return fmt.Errorf("unsupported arrival type %q", arrival.Type)
 	}
 }
 
@@ -58,8 +60,8 @@ func (g *Generator) schedulePoissonArrivals(eng *engine.Engine, startTime, endTi
 	for currentTime.Before(endTime) {
 		// Generate next inter-arrival time (exponential with rate lambda)
 		interArrivalSeconds := g.rng.ExpFloat64(lambda)
-		if interArrivalSeconds < 0 {
-			interArrivalSeconds = 0
+		if interArrivalSeconds < minInterArrivalSeconds {
+			interArrivalSeconds = minInterArrivalSeconds
 		}
 		currentTime = currentTime.Add(time.Duration(interArrivalSeconds * float64(time.Second)))
 

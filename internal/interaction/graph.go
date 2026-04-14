@@ -6,7 +6,9 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
-// Graph represents a service dependency graph (DAG)
+// Graph represents a service dependency graph. Synchronous downstream edges must be
+// acyclic; async/event edges are ignored for cycle detection so messaging-style loops
+// can be modeled when explicitly marked async.
 type Graph struct {
 	services  map[string]*config.Service
 	endpoints map[string]*config.Endpoint // "serviceID:path" -> endpoint
@@ -61,9 +63,8 @@ func NewGraph(scenario *config.Scenario) (*Graph, error) {
 		}
 	}
 
-	// Validate graph is acyclic
-	if err := g.validateAcyclic(); err != nil {
-		return nil, fmt.Errorf("service graph contains cycles: %w", err)
+	if err := g.validateSyncAcyclic(); err != nil {
+		return nil, fmt.Errorf("service graph contains synchronous cycles: %w", err)
 	}
 
 	return g, nil
@@ -90,8 +91,8 @@ func (g *Graph) createEdge(fromServiceID, fromPath string, call config.Downstrea
 	}, nil
 }
 
-// validateAcyclic checks if the graph is acyclic (DAG)
-func (g *Graph) validateAcyclic() error {
+// validateSyncAcyclic checks that the subgraph formed by synchronous downstream edges is acyclic.
+func (g *Graph) validateSyncAcyclic() error {
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)
 
@@ -113,6 +114,9 @@ func (g *Graph) dfs(key string, visited, recStack map[string]bool) error {
 	recStack[key] = true
 
 	for _, edge := range g.edges[key] {
+		if edge.Call.IsAsync() {
+			continue
+		}
 		toKey := endpointKey(edge.ToServiceID, edge.ToPath)
 		if !visited[toKey] {
 			if err := g.dfs(toKey, visited, recStack); err != nil {

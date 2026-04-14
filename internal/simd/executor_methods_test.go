@@ -374,6 +374,9 @@ workload:
 	if len(cfg.Services) == 0 {
 		t.Error("expected at least one service in config")
 	}
+	if len(cfg.Placements) == 0 {
+		t.Error("expected at least one instance placement")
+	}
 	patternKey := patternKey("client", "svc1:/test")
 	patternState, ok := exec.GetWorkloadPattern("run-1", patternKey)
 	if !ok {

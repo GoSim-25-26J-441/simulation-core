@@ -21,6 +21,9 @@ type RunRecord struct {
 	Metrics             *simulationv1.RunMetrics
 	Collector           *metrics.Collector
 	OptimizationHistory []*simulationv1.OptimizationStep // Online controller steps; backend can persist to run.metadata.optimization_history
+	// FinalConfig is a snapshot of the effective RunConfiguration taken before executor cleanup
+	// (placements, replicas, workload). Populated for terminal runs when the simulator still had state.
+	FinalConfig *simulationv1.RunConfiguration
 }
 
 type RunStore struct {
@@ -282,6 +285,23 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	return nil
 }
 
+// SetFinalConfiguration stores a cloned effective run configuration (e.g. before executor cleanup).
+// Pass nil to clear; non-nil replaces any previous snapshot.
+func (s *RunStore) SetFinalConfiguration(runID string, cfg *simulationv1.RunConfiguration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	if cfg == nil {
+		rec.FinalConfig = nil
+		return nil
+	}
+	rec.FinalConfig = proto.Clone(cfg).(*simulationv1.RunConfiguration)
+	return nil
+}
+
 // SetBatchRecommendation stores batch optimization summary fields on the parent run.
 // For batch runs, Run.best_score (via SetOptimizationResult) may still reflect efficiency-only for legacy
 // compatibility; clients should treat batch_recommendation_feasible, batch_violation_score,
@@ -413,7 +433,15 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 		Metrics:             cloneRunMetrics(rec.Metrics),
 		Collector:           rec.Collector,
 		OptimizationHistory: history,
+		FinalConfig:         cloneRunConfiguration(rec.FinalConfig),
 	}
+}
+
+func cloneRunConfiguration(cfg *simulationv1.RunConfiguration) *simulationv1.RunConfiguration {
+	if cfg == nil {
+		return nil
+	}
+	return proto.Clone(cfg).(*simulationv1.RunConfiguration)
 }
 
 func cloneRun(in *simulationv1.Run) *simulationv1.Run {

@@ -20,6 +20,30 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+func applyThroughputFromSimDuration(m *models.RunMetrics, simDuration time.Duration) {
+	if m == nil || simDuration <= 0 {
+		return
+	}
+	sec := simDuration.Seconds()
+	if sec <= 0 {
+		return
+	}
+	m.ThroughputRPS = float64(m.TotalRequests) / sec
+	m.IngressThroughputRPS = float64(m.IngressRequests) / sec
+}
+
+// effectiveRunSeed returns RunInput.seed when non-zero; otherwise a single bootstrap value for the run
+// (so scenario RNG, interaction manager, and workload generator share one base per execution).
+func effectiveRunSeed(input *simulationv1.RunInput) int64 {
+	if input == nil {
+		return time.Now().UnixNano()
+	}
+	if s := input.GetSeed(); s != 0 {
+		return s
+	}
+	return time.Now().UnixNano()
+}
+
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
 	store    *RunStore
@@ -34,6 +58,8 @@ type RunExecutor struct {
 	policyManagers         map[string]*policy.Manager   // key: runID; for dynamic policy updates
 	onlineCompletionReason map[string]string            // pending COMPLETED reason for online lease limits
 	onlineLeaseDeadline    map[string]time.Time         // wall-clock heartbeat deadline per run
+	// runScenarios holds the parsed scenario per active run for configuration/metadata export.
+	runScenarios map[string]*config.Scenario
 }
 
 // SetOptimizationRunner sets the optimization runner for multi-run experiments.
@@ -76,6 +102,7 @@ func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 		policyManagers:         make(map[string]*policy.Manager),
 		onlineCompletionReason: make(map[string]string),
 		onlineLeaseDeadline:    make(map[string]time.Time),
+		runScenarios:           make(map[string]*config.Scenario),
 	}
 }
 
@@ -89,6 +116,14 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	updated, err := e.store.SetStatusRunningWithOnlineConcurrencyGuard(runID)
 	if err != nil {
 		return nil, err
+	}
+	if opt := updated.Input.GetOptimization(); opt != nil && opt.Online {
+		if err := validateOnlineOptimizationConfig(opt); err != nil {
+			if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+				logger.Error("failed to set failed status after optimization validation", "run_id", runID, "error", serr)
+			}
+			return nil, err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -133,6 +168,7 @@ func (e *RunExecutor) Stop(runID string) (*RunRecord, error) {
 	if err != nil {
 		return nil, err
 	}
+	e.snapshotFinalConfiguration(runID)
 	// For online optimization runs, skip notification here: runOnlineOptimization will
 	// finalize metrics and send a single callback with metrics. Sending here would
 	// cause a duplicate callback with empty metrics.
@@ -157,6 +193,7 @@ func (e *RunExecutor) cleanup(runID string) {
 	}
 	delete(e.resourceManagers, runID)
 	delete(e.policyManagers, runID)
+	delete(e.runScenarios, runID)
 	delete(e.onlineCompletionReason, runID)
 	delete(e.onlineLeaseDeadline, runID)
 	e.mu.Unlock()
@@ -253,12 +290,25 @@ func getCallbackSecret(rec *RunRecord) string {
 	return rec.Input.CallbackSecret
 }
 
+// snapshotFinalConfiguration persists the current effective configuration while the executor
+// still holds workload/resource state (before cleanup). No-op if configuration is unavailable.
+func (e *RunExecutor) snapshotFinalConfiguration(runID string) {
+	if cfg, ok := e.GetRunConfiguration(runID); ok && cfg != nil {
+		if err := e.store.SetFinalConfiguration(runID, cfg); err != nil {
+			logger.Debug("set final configuration", "run_id", runID, "error", err)
+		}
+	}
+}
+
 // sendNotificationIfConfigured sends a notification to the callback URL if configured in the run record
 func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 	if rec == nil || rec.Input == nil || rec.Input.CallbackUrl == "" {
 		return
 	}
-
+	e.snapshotFinalConfiguration(rec.Run.Id)
+	if refreshed, ok := e.store.Get(rec.Run.Id); ok {
+		rec = refreshed
+	}
 	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec)
 }
 
@@ -377,14 +427,16 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 }
 
 // finalizeOnlineOptimizationRun aggregates metrics and marks the run COMPLETED with an optional online_completion_reason.
-func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *config.Scenario, rm *resource.Manager, metricsCollector *metrics.Collector, onlineReason string) {
+// simDuration, when positive, overrides aggregate and ingress throughput to use simulated time (not wall-clock collector duration).
+func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *config.Scenario, rm *resource.Manager, metricsCollector *metrics.Collector, onlineReason string, simDuration time.Duration) {
 	metricsCollector.Stop()
 	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
 	for _, svc := range scenario.Services {
 		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
-	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
-	attachHostMetrics(scenario, engineMetrics, metricsCollector)
+	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels, e.runMetricsOptsForRun(runID))
+	attachHostMetrics(scenario, rm, engineMetrics, metricsCollector)
+	applyThroughputFromSimDuration(engineMetrics, simDuration)
 	for _, svc := range scenario.Services {
 		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
 			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
@@ -411,6 +463,7 @@ func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *conf
 	if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
 		logger.Error("failed to set optimization result for online run", "run_id", runID, "error", err)
 	}
+	e.snapshotFinalConfiguration(runID)
 	if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 		logger.Error("failed to set completed status for online run", "run_id", runID, "error", err)
 	} else {
@@ -504,8 +557,10 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 		policies = policy.NewPolicyManager(nil)
 	}
 
+	runSeed := effectiveRunSeed(rec.Input)
+
 	// Create scenario state and register handlers
-	state, err := newScenarioState(scenario, rm, metricsCollector, policies)
+	state, err := newScenarioState(scenario, rm, metricsCollector, policies, runSeed)
 	if err != nil {
 		logger.Error("failed to create scenario state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
@@ -522,7 +577,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	endTime := startTime.Add(onlineRunDuration)
 	state.SetSimEndTime(endTime)
 	ScheduleDrainSweepKickoff(eng, startTime)
-	workloadState := NewWorkloadState(runID, eng, endTime)
+	workloadState := NewWorkloadState(runID, eng, endTime, runSeed)
 	if err := workloadState.Start(scenario, startTime, true); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
@@ -538,6 +593,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	e.workloadStates[runID] = workloadState
 	e.resourceManagers[runID] = rm
 	e.policyManagers[runID] = policies
+	e.runScenarios[runID] = scenario
 	e.mu.Unlock()
 
 	if opt.GetLeaseTtlMs() > 0 {
@@ -569,7 +625,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 		if ctx.Err() != nil {
 			reason := e.takeOnlineCompletionReason(runID)
 			if reason != "" {
-				e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason)
+				e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason, eng.GetSimTime().Sub(startTime))
 				return
 			}
 
@@ -591,8 +647,9 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 				for _, svc := range scenario.Services {
 					serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 				}
-				engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
-				attachHostMetrics(scenario, engineMetrics, metricsCollector)
+				engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels, e.runMetricsOptsForRun(runID))
+				attachHostMetrics(scenario, rm, engineMetrics, metricsCollector)
+				applyThroughputFromSimDuration(engineMetrics, eng.GetSimTime().Sub(startTime))
 				for _, svc := range scenario.Services {
 					if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
 						sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
@@ -641,7 +698,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	logger.Info("online simulation completed", "run_id", runID,
 		"simulation_duration", simDuration,
 		"expected_duration", onlineRunDuration)
-	e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, "")
+	e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, "", simDuration)
 }
 
 func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
@@ -723,8 +780,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		policies = policy.NewPolicyManager(nil)
 	}
 
+	runSeed := effectiveRunSeed(rec.Input)
+
 	// Create scenario state and register handlers
-	state, err := newScenarioState(scenario, rm, metricsCollector, policies)
+	state, err := newScenarioState(scenario, rm, metricsCollector, policies, runSeed)
 	if err != nil {
 		logger.Error("failed to create scenario state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("scenario state creation failed: %v", err)); setErr != nil {
@@ -741,7 +800,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	endTime := startTime.Add(duration)
 	state.SetSimEndTime(endTime)
 	ScheduleDrainSweepKickoff(eng, startTime)
-	workloadState := NewWorkloadState(runID, eng, endTime)
+	workloadState := NewWorkloadState(runID, eng, endTime, runSeed)
 	if err := workloadState.Start(scenario, startTime, rec.Input.RealTimeMode); err != nil {
 		logger.Error("failed to start workload state", "run_id", runID, "error", err)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, fmt.Sprintf("workload state initialization failed: %v", err)); setErr != nil {
@@ -757,6 +816,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	e.workloadStates[runID] = workloadState
 	e.resourceManagers[runID] = rm
 	e.policyManagers[runID] = policies
+	e.runScenarios[runID] = scenario
 	e.mu.Unlock()
 
 	// Run simulation
@@ -795,13 +855,11 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	}
 
 	// Convert metrics collector data to RunMetrics
-	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels)
-	attachHostMetrics(scenario, engineMetrics, metricsCollector)
+	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels, e.runMetricsOptsForRun(runID))
+	attachHostMetrics(scenario, rm, engineMetrics, metricsCollector)
 	// For completed runs, use simulation duration for throughput so non-real-time
 	// mode reports requests over simulated time instead of wall-clock execution time.
-	if simDuration > 0 {
-		engineMetrics.ThroughputRPS = float64(engineMetrics.TotalRequests) / simDuration.Seconds()
-	}
+	applyThroughputFromSimDuration(engineMetrics, simDuration)
 
 	// Populate ActiveReplicas from the resource manager (live routable count)
 	for _, svc := range scenario.Services {
@@ -821,6 +879,7 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Mark as completed if still running
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		e.snapshotFinalConfiguration(runID)
 		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 			logger.Error("failed to set completed status", "run_id", runID, "error", err)
 		} else {
@@ -927,6 +986,22 @@ func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32,
 	}
 }
 
+// validateOnlineOptimizationConfig rejects invalid online optimization inputs before a
+// run transitions to RUNNING (e.g. p95-primary requires a positive latency target).
+func validateOnlineOptimizationConfig(opt *simulationv1.OptimizationConfig) error {
+	if opt == nil || !opt.Online {
+		return nil
+	}
+	primary := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
+	if primary == "" {
+		primary = "p95_latency"
+	}
+	if primary == "p95_latency" && opt.GetTargetP95LatencyMs() <= 0 {
+		return fmt.Errorf("online optimization with primary target p95_latency requires target_p95_latency_ms > 0")
+	}
+	return nil
+}
+
 // runOnlineController implements a simple online controller that periodically inspects
 // metrics and adjusts configuration (currently service replicas) to keep p95 latency
 // near the configured target. It uses the existing dynamic configuration APIs via the
@@ -945,8 +1020,13 @@ func (e *RunExecutor) runOnlineController(
 	}
 
 	targetP95 := opt.TargetP95LatencyMs
-	if targetP95 <= 0 {
-		// No target specified; nothing to control.
+	primaryTargetCtl := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
+	if primaryTargetCtl == "" {
+		primaryTargetCtl = "p95_latency"
+	}
+	p95Guard := targetP95 > 0
+	if primaryTargetCtl == "p95_latency" && targetP95 <= 0 {
+		// p95-primary mode requires an explicit latency target.
 		return
 	}
 
@@ -1073,18 +1153,14 @@ func (e *RunExecutor) runOnlineController(
 			scaleDownHostMemMax := opt.GetScaleDownHostMemUtilMax()
 
 			// Snapshot metrics
-			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels)
-			attachHostMetrics(scenario, runMetrics, collector)
+			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels, e.runMetricsOptsForRun(runID))
+			attachHostMetrics(scenario, rm, runMetrics, collector)
 			currentP95 := runMetrics.LatencyP95
 
 			// Compute current score from primary target (same metric used for scaling decisions)
-			primaryTarget := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
-			if primaryTarget == "" {
-				primaryTarget = "p95_latency"
-			}
 			var currentScore float64
 			lowerIsBetter := true
-			switch primaryTarget {
+			switch primaryTargetCtl {
 			case "cpu_utilization":
 				currentScore = maxServiceUtilization(runMetrics, "cpu")
 			case "memory_utilization":
@@ -1105,7 +1181,7 @@ func (e *RunExecutor) runOnlineController(
 			maxHostCPU := rm.MaxHostCPUUtilization()
 			maxHostMem := rm.MaxHostMemoryUtilization()
 
-			if currentP95 > targetP95*1.05 && hostCount > 0 {
+			if p95Guard && currentP95 > targetP95*1.05 && hostCount > 0 {
 				if hostCount < maxHosts && maxHostCPU >= hostCPUHighThreshold {
 					prevConfig, _ := e.GetRunConfiguration(runID)
 					if err := rm.ScaleOutHosts(hostCount + 1); err != nil {
@@ -1151,7 +1227,7 @@ func (e *RunExecutor) runOnlineController(
 			}
 
 			// Host-level scale-in (stabilized): when P95 and host CPU are low, remove empty hosts.
-			hostScaleInCond := scaleDownHostCPUMax > 0 && currentP95 < targetP95*0.7 && hostCount > minHosts && maxHostCPU < scaleDownHostCPUMax
+			hostScaleInCond := p95Guard && scaleDownHostCPUMax > 0 && currentP95 < targetP95*0.7 && hostCount > minHosts && maxHostCPU < scaleDownHostCPUMax
 			if hostScaleInCond {
 				stableHostScaleIn++
 			} else {
@@ -1256,10 +1332,9 @@ func (e *RunExecutor) runOnlineController(
 				}
 			}
 
-			// Service-level controller: use p95 latency as the primary target, and CPU
-			// utilization as a guardrail to choose between horizontal scaling (replicas)
-			// and vertical scaling (CPU cores per instance). For now, we treat all
-			// services symmetrically.
+			// Service-level controller: primary target + utilization guardrails; scaling
+			// dimensions are gated by service kind and scaling policy.
+			p95OkForDown := !p95Guard || currentP95 <= targetP95*1.05
 			step := int(opt.StepSize)
 			if step < 1 {
 				step = 1
@@ -1308,10 +1383,7 @@ func (e *RunExecutor) runOnlineController(
 					}
 				}
 
-				primaryTarget := strings.ToLower(strings.TrimSpace(opt.GetOptimizationTargetPrimary()))
-				if primaryTarget == "" {
-					primaryTarget = "p95_latency"
-				}
+				primaryTarget := primaryTargetCtl
 				targetUtilHigh := opt.GetTargetUtilHigh()
 				if targetUtilHigh <= 0 {
 					targetUtilHigh = 0.7
@@ -1332,36 +1404,36 @@ func (e *RunExecutor) runOnlineController(
 					// util < targetLow and P95 guardrail allows (do not scale down if P95 would exceed target).
 					switch {
 					case util > targetUtilHigh:
-						if svcCPUUtil >= cpuHighThreshold {
+						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
 							scaledVertically = true
-						} else {
+						} else if config.ServiceAllowsHorizontalScaling(&svc) {
 							newReplicas = currentReplicas + step
 						}
-					case util < targetUtilLow && currentReplicas > 1 && currentP95 <= targetP95*1.05:
-						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
+					case util < targetUtilLow && currentReplicas > 1 && p95OkForDown:
+						if config.ServiceAllowsHorizontalScaling(&svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
 							newReplicas = currentReplicas - 1
 						}
 					}
 				} else {
 					// P95-primary (default): scale up on P95 above target, scale down on P95 below target with utilization gates.
 					switch {
-					case currentP95 > targetP95*1.05:
-						if svcCPUUtil >= cpuHighThreshold {
+					case p95Guard && currentP95 > targetP95*1.05:
+						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
 							scaledVertically = true
-						} else {
+						} else if config.ServiceAllowsHorizontalScaling(&svc) {
 							newReplicas = currentReplicas + step
 						}
-					case currentP95 < targetP95*0.7 && currentReplicas > 1:
-						if allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
+					case p95Guard && currentP95 < targetP95*0.7 && currentReplicas > 1:
+						if config.ServiceAllowsHorizontalScaling(&svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
 							newReplicas = currentReplicas - 1
 						}
 					}
 				}
 
 				// Utilization-primary: vertical CPU/memory downscale (stabilized like replica drain).
-				wantVertCPU := primaryTarget == "cpu_utilization" && svcCPUUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas &&
+				wantVertCPU := primaryTarget == "cpu_utilization" && config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
 					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac)
 				var targetVertCPU float64
@@ -1387,7 +1459,7 @@ func (e *RunExecutor) runOnlineController(
 					stableVertCPUDown[svc.ID] = 0
 				}
 
-				wantVertMem := primaryTarget == "memory_utilization" && svcMemUtil < targetUtilLow && currentP95 <= targetP95*1.05 && newReplicas >= currentReplicas &&
+				wantVertMem := primaryTarget == "memory_utilization" && config.ServiceAllowsVerticalMemory(&svc) && svcMemUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
 					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac)
 				var targetVertMem float64
@@ -1441,8 +1513,12 @@ func (e *RunExecutor) runOnlineController(
 							"error", err)
 						// Fallback: if we were trying to add capacity and vertical scaling
 						// failed (e.g., host capacity), fall back to horizontal scale-up.
-						if currentP95 > targetP95*1.05 {
-							newReplicas = currentReplicas + step
+						if config.ServiceAllowsHorizontalScaling(&svc) {
+							if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
+								newReplicas = currentReplicas + step
+							} else if p95Guard && currentP95 > targetP95*1.05 {
+								newReplicas = currentReplicas + step
+							}
 						}
 					} else {
 						logger.Info("online controller updated service resources",
@@ -1546,13 +1622,21 @@ func (e *RunExecutor) runOnlineController(
 	}
 }
 
-func attachHostMetrics(scenario *config.Scenario, engineMetrics *models.RunMetrics, collector *metrics.Collector) {
-	if scenario == nil || engineMetrics == nil {
+func attachHostMetrics(scenario *config.Scenario, rm *resource.Manager, engineMetrics *models.RunMetrics, collector *metrics.Collector) {
+	if engineMetrics == nil || collector == nil {
 		return
 	}
-	ids := make([]string, 0, len(scenario.Hosts))
-	for _, h := range scenario.Hosts {
-		ids = append(ids, h.ID)
+	var ids []string
+	if rm != nil {
+		ids = rm.HostIDs()
+	} else if scenario != nil {
+		ids = make([]string, 0, len(scenario.Hosts))
+		for _, h := range scenario.Hosts {
+			ids = append(ids, h.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
 	}
 	metrics.AttachHostUtilization(engineMetrics, collector, ids)
 }
@@ -1560,14 +1644,17 @@ func attachHostMetrics(scenario *config.Scenario, engineMetrics *models.RunMetri
 // convertMetricsToProto converts engine RunMetrics to protobuf RunMetrics
 func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMetrics {
 	pbMetrics := &simulationv1.RunMetrics{
-		TotalRequests:      engineMetrics.TotalRequests,
-		SuccessfulRequests: engineMetrics.SuccessfulRequests,
-		FailedRequests:     engineMetrics.FailedRequests,
-		LatencyP50Ms:       engineMetrics.LatencyP50,
-		LatencyP95Ms:       engineMetrics.LatencyP95,
-		LatencyP99Ms:       engineMetrics.LatencyP99,
-		LatencyMeanMs:      engineMetrics.LatencyMean,
-		ThroughputRps:      engineMetrics.ThroughputRPS,
+		TotalRequests:        engineMetrics.TotalRequests,
+		SuccessfulRequests:   engineMetrics.SuccessfulRequests,
+		FailedRequests:       engineMetrics.FailedRequests,
+		LatencyP50Ms:         engineMetrics.LatencyP50,
+		LatencyP95Ms:         engineMetrics.LatencyP95,
+		LatencyP99Ms:         engineMetrics.LatencyP99,
+		LatencyMeanMs:        engineMetrics.LatencyMean,
+		ThroughputRps:        engineMetrics.ThroughputRPS,
+		IngressRequests:      engineMetrics.IngressRequests,
+		InternalRequests:     engineMetrics.InternalRequests,
+		IngressThroughputRps: engineMetrics.IngressThroughputRPS,
 	}
 
 	// Convert service metrics
@@ -1592,6 +1679,15 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 			default:
 				concurrentReqs = int32(svcMetrics.ConcurrentRequests)
 			}
+			var queueLen int32
+			switch {
+			case svcMetrics.QueueLength < 0:
+				queueLen = 0
+			case svcMetrics.QueueLength > math.MaxInt32:
+				queueLen = math.MaxInt32
+			default:
+				queueLen = int32(svcMetrics.QueueLength)
+			}
 			pbSvcMetrics := &simulationv1.ServiceMetrics{
 				ServiceName:        serviceName,
 				RequestCount:       svcMetrics.RequestCount,
@@ -1604,6 +1700,7 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 				MemoryUtilization:  svcMetrics.MemoryUtilization,
 				ActiveReplicas:     activeReplicas,
 				ConcurrentRequests: concurrentReqs,
+				QueueLength:        queueLen,
 			}
 			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
 		}
@@ -1615,9 +1712,9 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 				continue
 			}
 			pbMetrics.HostMetrics = append(pbMetrics.HostMetrics, &simulationv1.HostMetrics{
-				HostId:              hm.HostID,
-				CpuUtilization:      hm.CPUUtilization,
-				MemoryUtilization:   hm.MemoryUtilization,
+				HostId:            hm.HostID,
+				CpuUtilization:    hm.CPUUtilization,
+				MemoryUtilization: hm.MemoryUtilization,
 			})
 		}
 	}

@@ -36,7 +36,7 @@ func TestHandleRequestArrival(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestHandleRequestArrivalMissingData(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestHandleRequestStart(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestHandlersRecordHostLevelMetrics(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -251,13 +251,86 @@ func TestHandlersRecordHostLevelMetrics(t *testing.T) {
 	}
 }
 
+func TestHandleRequestCompleteRefreshesGaugeMetrics(t *testing.T) {
+	eng := engine.NewEngine("test-run")
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Endpoints: []config.Endpoint{
+					{
+						Path:            "/test",
+						MeanCPUMs:       5,
+						CPUSigmaMs:      0,
+						NetLatencyMs:    config.LatencySpec{Mean: 0, Sigma: 0},
+						DefaultMemoryMB: 16,
+					},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("failed to initialize resource manager: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
+	if err != nil {
+		t.Fatalf("failed to create scenario state: %v", err)
+	}
+	RegisterHandlers(eng, state)
+
+	instance, err := state.rm.SelectInstanceForService("svc1")
+	if err != nil {
+		t.Fatalf("failed to get instance: %v", err)
+	}
+	instanceID := instance.ID()
+	req := &models.Request{
+		ID:          "req-1",
+		TraceID:     "trace-1",
+		ServiceName: "svc1",
+		Endpoint:    "/test",
+		Status:      models.RequestStatusPending,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata:    map[string]interface{}{"instance_id": instanceID},
+	}
+	eng.GetRunManager().AddRequest(req)
+	eng.ScheduleAt(engine.EventTypeRequestStart, eng.GetSimTime(), req, "svc1", map[string]interface{}{
+		"endpoint_path": "/test",
+		"instance_id":   instanceID,
+	})
+	if err := eng.Run(20 * time.Millisecond); err != nil {
+		t.Fatalf("Engine run error: %v", err)
+	}
+
+	concurrencySeries := collector.GetTimeSeries("concurrent_requests", metrics.CreateInstanceLabels("svc1", instanceID))
+	if len(concurrencySeries) == 0 {
+		t.Fatalf("expected concurrent_requests samples")
+	}
+	if got := concurrencySeries[len(concurrencySeries)-1].Value; got != 0 {
+		t.Fatalf("expected final concurrent_requests sample 0 after completion, got %v", got)
+	}
+
+	memorySeries := collector.GetTimeSeries("memory_utilization", metrics.CreateInstanceLabels("svc1", instanceID))
+	if len(memorySeries) == 0 {
+		t.Fatalf("expected memory_utilization samples")
+	}
+	if got := memorySeries[len(memorySeries)-1].Value; got != 0 {
+		t.Fatalf("expected final memory_utilization sample 0 after completion, got %v", got)
+	}
+}
+
 func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	scenario := &config.Scenario{
 		Hosts: []config.Host{{ID: "host-1", Cores: 2}},
 		Services: []config.Service{
 			{
-				ID: "svc1",
+				ID:       "svc1",
+				Replicas: 1,
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/test",
@@ -271,7 +344,8 @@ func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 				},
 			},
 			{
-				ID: "svc2",
+				ID:       "svc2",
+				Replicas: 1,
 				Endpoints: []config.Endpoint{
 					{
 						Path:         "/api",
@@ -289,7 +363,7 @@ func TestHandleRequestCompleteWithDownstream(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -373,7 +447,7 @@ func TestHandleRequestCompleteWithDownstreamCallLatencyAndCount(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -444,7 +518,7 @@ func TestHandleDownstreamCall(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -556,7 +630,7 @@ func TestHandleRequestCompleteWithoutDownstream(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -620,7 +694,7 @@ func TestHandleRequestCompleteWithNonExistentEndpoint(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
@@ -675,7 +749,7 @@ func TestHandleDownstreamCallWithMissingEndpointPath(t *testing.T) {
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
-	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil))
+	state, err := newScenarioState(scenario, rm, collector, policy.NewPolicyManager(nil), 0)
 	if err != nil {
 		t.Fatalf("failed to create scenario state: %v", err)
 	}
