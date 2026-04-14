@@ -47,6 +47,14 @@ const (
 
 	// EventTypeDownstreamCallerOverheadEnd releases caller CPU and schedules the downstream spawn (or retry spawn).
 	EventTypeDownstreamCallerOverheadEnd EventType = "downstream_caller_overhead_end"
+
+	// Queue / broker DES events (kind: queue services and downstream kind: queue).
+	EventTypeQueueEnqueue       EventType = "queue_enqueue"
+	EventTypeQueueDequeue       EventType = "queue_dequeue"
+	EventTypeQueueAckTimeout    EventType = "queue_ack_timeout"
+	EventTypeQueueRedelivery    EventType = "queue_redelivery"
+	EventTypeQueueDLQ           EventType = "queue_dlq"
+	EventTypeAsyncParentFinalize EventType = "async_parent_finalize"
 )
 
 // Event represents a discrete event in the simulation

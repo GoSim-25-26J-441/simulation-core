@@ -56,3 +56,41 @@ func TestCloneScenarioPreservesV2Semantics(t *testing.T) {
 		t.Fatal("clone mutation leaked to original")
 	}
 }
+
+func TestCloneScenarioPreservesQueueBehavior(t *testing.T) {
+	original := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4}},
+		Services: []config.Service{
+			{
+				ID: "consumer", Kind: "service", Replicas: 1, Model: "cpu",
+				Endpoints: []config.Endpoint{{Path: "/handle", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+			},
+			{
+				ID: "brk", Kind: "queue", Replicas: 1, Model: "cpu",
+				Behavior: &config.ServiceBehavior{
+					Queue: &config.QueueBehavior{
+						ConsumerTarget:      "consumer:/handle",
+						Capacity:              50,
+						ConsumerConcurrency:   2,
+						MaxRedeliveries:       3,
+						DropPolicy:            "reject",
+						AsyncFireAndForget:    true,
+					},
+				},
+				Endpoints: []config.Endpoint{{Path: "/orders", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+			},
+		},
+		Workload: []config.WorkloadPattern{
+			{From: "c", To: "consumer:/handle", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 1}},
+		},
+	}
+	cl := cloneScenario(original)
+	q := cl.Services[1].Behavior.Queue
+	if q == nil || q.Capacity != 50 || q.ConsumerConcurrency != 2 || !q.AsyncFireAndForget {
+		t.Fatalf("queue behavior: %+v", q)
+	}
+	q.Capacity = 999
+	if original.Services[1].Behavior.Queue.Capacity != 50 {
+		t.Fatal("clone mutation leaked to original queue")
+	}
+}

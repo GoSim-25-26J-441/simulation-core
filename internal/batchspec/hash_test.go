@@ -162,6 +162,25 @@ func TestConfigHashWorkloadBurstFieldsChange(t *testing.T) {
 	assertHashDiffers(t, a, d, "quiet_duration_seconds")
 }
 
+func TestConfigHashQueueBehaviorCapacityChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services = append(a.Services, config.Service{
+		ID: "mq", Kind: "queue", Role: "internal", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
+		Behavior: &config.ServiceBehavior{
+			Queue: &config.QueueBehavior{ConsumerTarget: "api:/x", Capacity: 100},
+		},
+		Endpoints: []config.Endpoint{{Path: "/t", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+	})
+	b.Services = append(b.Services, config.Service{
+		ID: "mq", Kind: "queue", Role: "internal", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
+		Behavior: &config.ServiceBehavior{
+			Queue: &config.QueueBehavior{ConsumerTarget: "api:/x", Capacity: 200},
+		},
+		Endpoints: []config.Endpoint{{Path: "/t", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+	})
+	assertHashDiffers(t, a, b, "queue capacity")
+}
+
 func TestConfigHashSimulationLimitsChange(t *testing.T) {
 	a, b := scenarioV2(), scenarioV2()
 	b.SimulationLimits.MaxTraceDepth = 99

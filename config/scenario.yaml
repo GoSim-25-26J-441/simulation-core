@@ -55,6 +55,15 @@ services:
             call_latency_ms:
               mean: 2
               sigma: 0.5
+          - to: messaging-queue:/events
+            mode: async
+            kind: queue
+            probability: 1
+            call_count_mean: 0.15
+            timeout_ms: 400
+            call_latency_ms:
+              mean: 2
+              sigma: 0.5
 
   - id: customer-core
     kind: service
@@ -94,15 +103,68 @@ services:
             call_latency_ms:
               mean: 5
               sigma: 1.5
-          - to: messaging:/notify
+          - to: messaging-queue:/notify
             mode: async
-            kind: rest
+            kind: queue
             probability: 1
             call_count_mean: 0.4
             timeout_ms: 200
             call_latency_ms:
               mean: 3
               sigma: 1
+
+  - id: messaging-queue
+    # Topic-style sample for upstream app-map `type: topic`.
+    # Current simulator support models topics as endpoint paths on a broker-like
+    # kind: queue service (for example messaging-queue:/user-events). Once
+    # first-class kind: topic is implemented, the transformer can map type: topic
+    # directly to kind: topic instead of this queue-backed representation.
+    kind: queue
+    role: internal
+    replicas: 1
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 256
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    behavior:
+      queue:
+        capacity: 5000
+        consumer_concurrency: 2
+        consumer_target: "messaging:/process"
+        delivery_latency_ms:
+          mean: 2
+          sigma: 0.5
+        ack_timeout_ms: 8000
+        max_redeliveries: 3
+        drop_policy: reject
+    endpoints:
+      - path: /notify
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0.5
+        default_memory_mb: 4
+        net_latency_ms:
+          mean: 1
+          sigma: 0.3
+        downstream: []
+      - path: /events
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0.5
+        default_memory_mb: 4
+        net_latency_ms:
+          mean: 1
+          sigma: 0.3
+        downstream: []
+      - path: /user-events
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0.5
+        default_memory_mb: 4
+        net_latency_ms:
+          mean: 1
+          sigma: 0.3
+        downstream: []
 
   - id: profile
     kind: service
@@ -222,7 +284,20 @@ services:
         net_latency_ms:
           mean: 2
           sigma: 0.5
-        downstream: []
+        downstream:
+          # Upstream app-map example:
+          #   analytics-core -> topic-1
+          # can be transformed today as an async publish to this broker topic.
+          - to: messaging-queue:/user-events
+            mode: async
+            kind: queue
+            probability: 0.2
+            call_count_mean: 1
+            timeout_ms: 500
+            downstream_fraction_cpu: 0.1
+            call_latency_ms:
+              mean: 2
+              sigma: 0.5
 
   - id: messaging
     kind: service
@@ -237,6 +312,14 @@ services:
       vertical_memory: true
     endpoints:
       - path: /notify
+        mean_cpu_ms: 14
+        cpu_sigma_ms: 4
+        default_memory_mb: 20
+        net_latency_ms:
+          mean: 4
+          sigma: 1
+        downstream: []
+      - path: /process
         mean_cpu_ms: 14
         cpu_sigma_ms: 4
         default_memory_mb: 20

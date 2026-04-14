@@ -119,6 +119,22 @@ func ConfigHash(s *config.Scenario) uint64 {
 				writeF(b.Cache.MissLatencyMs.Mean)
 				writeF(b.Cache.MissLatencyMs.Sigma)
 			}
+			if b.Queue == nil {
+				writeStr("queue_nil")
+			} else {
+				writeStr("queue")
+				q := b.Queue
+				writeI(q.Capacity)
+				writeI(q.ConsumerConcurrency)
+				writeStr(q.ConsumerTarget)
+				writeF(q.DeliveryLatencyMs.Mean)
+				writeF(q.DeliveryLatencyMs.Sigma)
+				writeF(q.AckTimeoutMs)
+				writeI(q.MaxRedeliveries)
+				writeStr(q.DLQTarget)
+				writeStr(q.DropPolicy)
+				writeB(q.AsyncFireAndForget)
+			}
 		}
 
 		// endpoints (canonical: by path, then declaration order for duplicate paths)

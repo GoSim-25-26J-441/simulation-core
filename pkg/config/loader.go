@@ -265,11 +265,8 @@ func validateScenario(s *Scenario) error {
 		}
 
 		kindNorm := strings.ToLower(strings.TrimSpace(svc.Kind))
-		if kindNorm == "queue" {
-			return fmt.Errorf("service %s: kind %q is not supported yet (queue engine not implemented)", svc.ID, svc.Kind)
-		}
 		validKinds := map[string]bool{
-			"": true, "api_gateway": true, "service": true, "database": true, "cache": true, "external": true,
+			"": true, "api_gateway": true, "service": true, "database": true, "cache": true, "external": true, "queue": true,
 		}
 		if !validKinds[kindNorm] {
 			return fmt.Errorf("service %s: unknown or unsupported kind %q", svc.ID, svc.Kind)
@@ -345,9 +342,24 @@ func validateScenario(s *Scenario) error {
 	}
 
 	endpointRef := make(map[string]bool)
+	serviceKindByID := make(map[string]string)
 	for _, svc := range s.Services {
+		serviceKindByID[svc.ID] = strings.ToLower(strings.TrimSpace(svc.Kind))
 		for _, ep := range svc.Endpoints {
 			endpointRef[svc.ID+":"+ep.Path] = true
+		}
+	}
+
+	for _, svc := range s.Services {
+		if strings.ToLower(strings.TrimSpace(svc.Kind)) != "queue" {
+			continue
+		}
+		var q *QueueBehavior
+		if svc.Behavior != nil {
+			q = svc.Behavior.Queue
+		}
+		if err := ValidateQueueBehavior(svc.ID, q, endpointRef, serviceIDs); err != nil {
+			return err
 		}
 	}
 
@@ -394,6 +406,13 @@ func validateScenario(s *Scenario) error {
 				}
 				if ds.DownstreamFractionCPU < 0 || ds.DownstreamFractionCPU > 1 {
 					return fmt.Errorf("service %s, endpoint %s: downstream_fraction_cpu must be in [0,1], got %v", svc.ID, ep.Path, ds.DownstreamFractionCPU)
+				}
+				tgtKind := serviceKindByID[tgtSvc]
+				if kind == "queue" && tgtKind != "queue" {
+					return fmt.Errorf("service %s, endpoint %s: downstream kind queue requires target service %s to have kind queue", svc.ID, ep.Path, tgtSvc)
+				}
+				if tgtKind == "queue" && kind != "" && kind != "queue" {
+					return fmt.Errorf("service %s, endpoint %s: downstream to queue service %s must use kind queue (or omit kind)", svc.ID, ep.Path, tgtSvc)
 				}
 			}
 		}

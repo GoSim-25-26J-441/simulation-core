@@ -38,6 +38,8 @@ type Manager struct {
 	drainTimeout time.Duration
 	// lastSimTime tracks the latest simulation time seen from the workload (for sweeps).
 	lastSimTime time.Time
+	// brokerQueues holds FIFO broker state for kind:queue services (per broker + topic).
+	brokerQueues *BrokerQueues
 }
 
 // NewManager creates a new resource manager
@@ -48,6 +50,7 @@ func NewManager() *Manager {
 		hostToInstances:      make(map[string][]string),
 		roundRobinIdx:        make(map[string]int),
 		sortedServiceInstMap: make(map[string][]*ServiceInstance),
+		brokerQueues:         newBrokerQueues(),
 	}
 }
 
@@ -183,6 +186,22 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 	m.rebuildSortedInstanceCache()
 
 	return nil
+}
+
+// GetBrokerQueue returns (or creates) broker state for a queue service topic.
+func (m *Manager) GetBrokerQueue(brokerID, topic string, eff *config.QueueBehavior) *BrokerQueueShard {
+	if m.brokerQueues == nil {
+		m.brokerQueues = newBrokerQueues()
+	}
+	return m.brokerQueues.GetOrCreateShard(brokerID, topic, eff)
+}
+
+// BrokerQueues returns the broker registry (for metrics).
+func (m *Manager) BrokerQueues() *BrokerQueues {
+	if m.brokerQueues == nil {
+		m.brokerQueues = newBrokerQueues()
+	}
+	return m.brokerQueues
 }
 
 // GetServiceInstance returns a service instance by ID

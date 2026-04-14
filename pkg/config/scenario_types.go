@@ -44,12 +44,26 @@ type Service struct {
 	Endpoints []Endpoint      `yaml:"endpoints"`
 }
 
-// ServiceBehavior holds optional failure, saturation, pool, and cache semantics (all backward compatible).
+// ServiceBehavior holds optional failure, saturation, pool, cache, and queue/broker semantics (all backward compatible).
 type ServiceBehavior struct {
 	FailureRate               float64         `yaml:"failure_rate,omitempty"`
 	SaturationLatencyFactor   float64         `yaml:"saturation_latency_factor,omitempty"`
 	MaxConnections            int             `yaml:"max_connections,omitempty"`
 	Cache                     *CacheBehavior  `yaml:"cache,omitempty"`
+	Queue                     *QueueBehavior  `yaml:"queue,omitempty"`
+}
+
+// QueueBehavior configures broker semantics for services with kind: queue.
+type QueueBehavior struct {
+	Capacity              int         `yaml:"capacity,omitempty"`               // max queued messages; 0 = unlimited
+	ConsumerConcurrency   int         `yaml:"consumer_concurrency,omitempty"`   // parallel consumers; 0 defaults to 1
+	ConsumerTarget        string      `yaml:"consumer_target,omitempty"`        // required: "serviceID:path" for dequeue processing
+	DeliveryLatencyMs     LatencySpec `yaml:"delivery_latency_ms,omitempty"`    // publish / broker ack latency
+	AckTimeoutMs          float64     `yaml:"ack_timeout_ms,omitempty"`         // consumer must finish within this from dequeue
+	MaxRedeliveries       int         `yaml:"max_redeliveries,omitempty"`       // after this, message goes to DLQ
+	DLQTarget             string      `yaml:"dlq,omitempty"`                    // optional "serviceID:path" for dead-letter handling
+	DropPolicy            string      `yaml:"drop_policy,omitempty"`            // block, reject, drop_oldest, drop_newest
+	AsyncFireAndForget    bool        `yaml:"async_fire_and_forget,omitempty"`  // if true, producer hop finalizes before broker ack (no publish wait)
 }
 
 // CacheBehavior configures hit/miss latency sampling for cache-style services.

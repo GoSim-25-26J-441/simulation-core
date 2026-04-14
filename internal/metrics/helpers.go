@@ -29,6 +29,16 @@ const (
 	MetricCacheMissCount          = "cache_miss_count"
 	// MetricDownstreamCallerCPU records caller-side CPU work for downstream serialization / client overhead (ms per edge attempt).
 	MetricDownstreamCallerCPU = "downstream_caller_cpu_ms"
+
+	// Broker / messaging queue metrics (kind: queue services and downstream kind: queue).
+	MetricQueueDepth             = "queue_depth"
+	MetricQueueEnqueueCount      = "queue_enqueue_count"
+	MetricQueueDequeueCount      = "queue_dequeue_count"
+	MetricQueueDropCount         = "queue_drop_count"
+	MetricQueueRedeliveryCount   = "queue_redelivery_count"
+	MetricQueueDlqCount          = "queue_dlq_count"
+	MetricMessageAgeMs           = "message_age_ms"
+	MetricQueuePublishLatencyMs  = "queue_publish_latency_ms"
 )
 
 // RecordLatency records end-to-end latency for a completed request (per-hop total duration when the request node finishes).
@@ -118,6 +128,46 @@ func RecordDownstreamCallerCPU(collector *Collector, cpuMs float64, timestamp ti
 	collector.Record(MetricDownstreamCallerCPU, cpuMs, timestamp, labels)
 }
 
+// RecordQueueDepth records current broker backlog depth (gauge).
+func RecordQueueDepth(collector *Collector, depth float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueDepth, depth, timestamp, labels)
+}
+
+// RecordQueueEnqueueCount records one accepted enqueue to a broker topic.
+func RecordQueueEnqueueCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueEnqueueCount, count, timestamp, labels)
+}
+
+// RecordQueueDequeueCount records one message dispatched to a consumer.
+func RecordQueueDequeueCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueDequeueCount, count, timestamp, labels)
+}
+
+// RecordQueueDropCount records a publish rejected or dropped under backpressure policy.
+func RecordQueueDropCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueDropCount, count, timestamp, labels)
+}
+
+// RecordQueueRedeliveryCount records a scheduled redelivery after ack timeout or consumer failure.
+func RecordQueueRedeliveryCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueRedeliveryCount, count, timestamp, labels)
+}
+
+// RecordQueueDlqCount records a message moved to the dead-letter path after max redeliveries.
+func RecordQueueDlqCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueueDlqCount, count, timestamp, labels)
+}
+
+// RecordMessageAgeMs records time from enqueue to dequeue (or observation) for a message.
+func RecordMessageAgeMs(collector *Collector, ageMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricMessageAgeMs, ageMs, timestamp, labels)
+}
+
+// RecordQueuePublishLatencyMs records producer-side publish/ack latency for a broker edge (delivery_latency_ms sample path).
+func RecordQueuePublishLatencyMs(collector *Collector, latencyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueuePublishLatencyMs, latencyMs, timestamp, labels)
+}
+
 // RecordIngressLogicalFailure records one user-visible ingress/root logical failure (for SLO error rate).
 func RecordIngressLogicalFailure(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricIngressLogicalFailure, count, timestamp, labels)
@@ -179,6 +229,18 @@ func sumSampleValuesForMetric(collector *Collector, metricName string) float64 {
 	}
 	for _, p := range collector.GetTimeSeries(metricName, nil) {
 		sum += p.Value
+	}
+	return sum
+}
+
+// sumLatestGaugeAcrossLabels sums the latest sample per label combination (for broker queue_depth gauges).
+func sumLatestGaugeAcrossLabels(collector *Collector, metricName string) float64 {
+	var sum float64
+	for _, labels := range collector.GetLabelsForMetric(metricName) {
+		points := collector.GetTimeSeries(metricName, labels)
+		if len(points) > 0 {
+			sum += points[len(points)-1].Value
+		}
 	}
 	return sum
 }
@@ -497,6 +559,12 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		AttemptErrorRate:      attemptErrRate,
 		RetryAttempts:         retryAttempts,
 		TimeoutErrors:         timeoutErrors,
+		QueueEnqueueCountTotal:    int64(sumSampleValuesForMetric(collector, MetricQueueEnqueueCount)),
+		QueueDequeueCountTotal:     int64(sumSampleValuesForMetric(collector, MetricQueueDequeueCount)),
+		QueueDropCountTotal:        int64(sumSampleValuesForMetric(collector, MetricQueueDropCount)),
+		QueueRedeliveryCountTotal:  int64(sumSampleValuesForMetric(collector, MetricQueueRedeliveryCount)),
+		QueueDlqCountTotal:         int64(sumSampleValuesForMetric(collector, MetricQueueDlqCount)),
+		QueueDepthSum:              sumLatestGaugeAcrossLabels(collector, MetricQueueDepth),
 		ServiceMetrics:        serviceMetrics,
 	}
 }

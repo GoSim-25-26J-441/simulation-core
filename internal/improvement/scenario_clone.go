@@ -57,6 +57,20 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 					MissLatencyMs: b.Cache.MissLatencyMs,
 				}
 			}
+			if b.Queue != nil {
+				q := b.Queue
+				ns.Behavior.Queue = &config.QueueBehavior{
+					Capacity:              q.Capacity,
+					ConsumerConcurrency:   q.ConsumerConcurrency,
+					ConsumerTarget:        q.ConsumerTarget,
+					DeliveryLatencyMs:     q.DeliveryLatencyMs,
+					AckTimeoutMs:          q.AckTimeoutMs,
+					MaxRedeliveries:       q.MaxRedeliveries,
+					DLQTarget:             q.DLQTarget,
+					DropPolicy:            q.DropPolicy,
+					AsyncFireAndForget:    q.AsyncFireAndForget,
+				}
+			}
 		}
 		for j, ep := range svc.Endpoints {
 			ne := config.Endpoint{

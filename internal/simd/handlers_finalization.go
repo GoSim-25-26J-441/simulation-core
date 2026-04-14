@@ -8,6 +8,22 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
+// recordDeferredQueueParentMetricsIfNeeded emits service_request_latency_ms / service_processing_latency_ms
+// when the parent hop deferred those until broker publish ack (mixed sync + async queue).
+func recordDeferredQueueParentMetricsIfNeeded(state *scenarioState, parent *models.Request, simTime time.Time, labels map[string]string) {
+	if parent.Metadata == nil || !metadataBool(parent.Metadata, metaDeferredQueueFinalize) {
+		return
+	}
+	extra := metadataFloat64(parent.Metadata, metaDeferredCallerExtraMs)
+	hopMs := localServiceHopLatencyMs(parent, simTime) + extra
+	procMs := localServiceProcessingLatencyMs(parent, simTime) + extra
+	metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
+	metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+	delete(parent.Metadata, metaDeferredCallerExtraMs)
+	delete(parent.Metadata, metaDeferredQueueFinalize)
+	delete(parent.Metadata, metaQueueAckDeadline)
+}
+
 // Metadata keys for DES lifecycle / sync-timeout coordination.
 const (
 	metaDESFinalized       = "des_finalized"
@@ -153,6 +169,12 @@ func notifyParentSyncChildResolved(state *scenarioState, eng *engine.Engine, rm 
 		finalizeRequestFailure(state, eng, rm, parent, simTime, plabels, metrics.ReasonDownstreamFailure)
 		return
 	}
+	if parent.Metadata != nil {
+		if deadline, ok := parent.Metadata[metaQueueAckDeadline].(time.Time); ok && simTime.Before(deadline) {
+			return
+		}
+	}
+	recordDeferredQueueParentMetricsIfNeeded(state, parent, simTime, plabels)
 	finalizeRequestCompletion(state, eng, rm, parent, simTime, plabels)
 }
 

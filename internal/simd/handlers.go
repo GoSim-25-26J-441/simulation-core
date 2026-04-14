@@ -109,6 +109,12 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeDownstreamRetry, handleDownstreamRetry(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamCallerOverheadStart, handleDownstreamCallerOverheadStart(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamCallerOverheadEnd, handleDownstreamCallerOverheadEnd(state, eng))
+	eng.RegisterHandler(engine.EventTypeQueueEnqueue, handleQueueEnqueue(state, eng))
+	eng.RegisterHandler(engine.EventTypeQueueDequeue, handleQueueDequeue(state, eng))
+	eng.RegisterHandler(engine.EventTypeQueueAckTimeout, handleQueueAckTimeout(state, eng))
+	eng.RegisterHandler(engine.EventTypeQueueRedelivery, handleQueueRedelivery(state, eng))
+	eng.RegisterHandler(engine.EventTypeQueueDLQ, handleQueueDLQ(state, eng))
+	eng.RegisterHandler(engine.EventTypeAsyncParentFinalize, handleAsyncParentFinalize(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamTimeout, handleDownstreamTimeout(state, eng))
 	eng.RegisterHandler(engine.EventTypeDrainSweep, handleDrainSweep(state))
 }
@@ -258,17 +264,22 @@ func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interac
 	lim := state.scenario.SimulationLimits
 	for _, downstreamCall := range downstreamCalls {
 		nextTD := td + 1
+		isAsync := downstreamCall.Call.IsAsync() || usesQueueBroker(state, downstreamCall)
 		nextAD := ad
-		if downstreamCall.Call.IsAsync() {
+		if isAsync {
 			nextAD++
 		}
 		if lim != nil {
 			if lim.MaxTraceDepth > 0 && nextTD > lim.MaxTraceDepth {
 				continue
 			}
-			if lim.MaxAsyncHops > 0 && downstreamCall.Call.IsAsync() && nextAD > lim.MaxAsyncHops {
+			if lim.MaxAsyncHops > 0 && isAsync && nextAD > lim.MaxAsyncHops {
 				continue
 			}
+		}
+		if usesQueueBroker(state, downstreamCall) {
+			asyncCalls = append(asyncCalls, downstreamCall)
+			continue
 		}
 		if downstreamCall.Call.IsAsync() {
 			asyncCalls = append(asyncCalls, downstreamCall)
@@ -764,6 +775,10 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 
 		labels := labelsForRequestMetrics(request, serviceID, endpointPath)
 
+		if metadataBool(request.Metadata, metaQueueConsumer) {
+			metaQueueConsumerDone(state, eng, request, simTime)
+		}
+
 		if metadataBool(request.Metadata, "local_timeout") {
 			hopMs := localServiceHopLatencyMs(request, simTime)
 			procMs := localServiceProcessingLatencyMs(request, simTime)
@@ -808,6 +823,16 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		ad := metadataInt(request.Metadata, "async_depth")
 		asyncCalls, syncCalls := partitionDownstreamFiltered(state, downstreamCalls, td, ad)
 
+		deferQueueFinalize := false
+		for _, dc := range asyncCalls {
+			if usesQueueBroker(state, dc) {
+				eff := effectiveQueueForBroker(state, dc.ServiceID)
+				if !eff.AsyncFireAndForget {
+					deferQueueFinalize = true
+				}
+			}
+		}
+
 		callerExtraMs := 0.0
 		for _, dc := range asyncCalls {
 			callerExtraMs += computeDownstreamCallerCPU(state, dc)
@@ -816,26 +841,52 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			callerExtraMs += computeDownstreamCallerCPU(state, dc)
 		}
 
-		hopMs := localServiceHopLatencyMs(request, simTime) + callerExtraMs
-		procMs := localServiceProcessingLatencyMs(request, simTime) + callerExtraMs
-		metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
-		metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+		if !deferQueueFinalize {
+			hopMs := localServiceHopLatencyMs(request, simTime) + callerExtraMs
+			procMs := localServiceProcessingLatencyMs(request, simTime) + callerExtraMs
+			metrics.RecordServiceRequestLatency(state.collector, hopMs, simTime, labels)
+			metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
+		}
 
 		if metadataBool(request.Metadata, "cache_miss") {
 			metrics.RecordCacheMissCount(state.collector, 1.0, simTime, labels)
 		}
 
+		var maxAck time.Time
 		tAfter := simTime
 		for _, downstreamCall := range asyncCalls {
 			nextTD := td + 1
 			nextAD := ad + 1
-			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "")
+			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "")
+			if ackT.After(maxAck) {
+				maxAck = ackT
+			}
+			tAfter = ackT
+		}
+
+		if deferQueueFinalize {
+			if request.Metadata == nil {
+				request.Metadata = make(map[string]interface{})
+			}
+			request.Metadata[metaDeferredQueueFinalize] = true
+			request.Metadata[metaQueueAckDeadline] = maxAck
+			request.Metadata[metaDeferredCallerExtraMs] = callerExtraMs
 		}
 
 		if len(syncCalls) == 0 {
-			finalizeRequestCompletion(state, eng, rm, request, simTime, labels)
+			if deferQueueFinalize {
+				eng.ScheduleAt(engine.EventTypeAsyncParentFinalize, maxAck, request, serviceID, map[string]interface{}{
+					"endpoint_path": endpointPath,
+				})
+			} else {
+				finalizeRequestCompletion(state, eng, rm, request, simTime, labels)
+			}
 			if hasInstance {
-				if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, tAfter); err != nil {
+				dequeueAt := tAfter
+				if deferQueueFinalize {
+					dequeueAt = maxAck
+				}
+				if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, dequeueAt); err != nil {
 					return err
 				}
 			}
@@ -846,13 +897,23 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		state.pendingSync[request.ID] = len(syncCalls)
 		state.pendingSyncMu.Unlock()
 
+		if deferQueueFinalize {
+			eng.ScheduleAt(engine.EventTypeAsyncParentFinalize, maxAck, request, serviceID, map[string]interface{}{
+				"endpoint_path": endpointPath,
+			})
+		}
+
 		for _, downstreamCall := range syncCalls {
 			nextTD := td + 1
 			nextAD := ad
 			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "")
 		}
 		if hasInstance {
-			if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, tAfter); err != nil {
+			dequeueAt := tAfter
+			if deferQueueFinalize && maxAck.After(dequeueAt) {
+				dequeueAt = maxAck
+			}
+			if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, dequeueAt); err != nil {
 				return err
 			}
 		}

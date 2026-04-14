@@ -111,8 +111,8 @@ func TestLoadScenario(t *testing.T) {
 	}
 
 	// Validate services
-	if len(scenario.Services) != 13 {
-		t.Errorf("Expected 13 services, got %d", len(scenario.Services))
+	if len(scenario.Services) != 14 {
+		t.Errorf("Expected 14 services, got %d", len(scenario.Services))
 	}
 
 	// Validate ingress service and v2 fields
@@ -135,11 +135,14 @@ func TestLoadScenario(t *testing.T) {
 	if restEndpoint.Path != "/REST" {
 		t.Errorf("Expected path '/REST', got '%s'", restEndpoint.Path)
 	}
-	if len(restEndpoint.Downstream) != 2 {
-		t.Fatalf("Expected 2 gateway downstream calls, got %d", len(restEndpoint.Downstream))
+	if len(restEndpoint.Downstream) != 3 {
+		t.Fatalf("Expected 3 gateway downstream calls, got %d", len(restEndpoint.Downstream))
 	}
-	if restEndpoint.Downstream[0].Mode != "sync" || restEndpoint.Downstream[1].Mode != "async" {
-		t.Errorf("Expected sync and async downstream modes, got %+v", restEndpoint.Downstream)
+	if restEndpoint.Downstream[0].Mode != "sync" || restEndpoint.Downstream[1].Mode != "async" || restEndpoint.Downstream[2].Mode != "async" {
+		t.Errorf("Expected sync then two async downstream modes, got %+v", restEndpoint.Downstream)
+	}
+	if restEndpoint.Downstream[2].Kind != "queue" {
+		t.Errorf("Expected third downstream kind queue, got %q", restEndpoint.Downstream[2].Kind)
 	}
 
 	// Validate workload
@@ -339,7 +342,7 @@ func TestScenarioValidation(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "Unsupported queue service kind",
+			name: "queue service requires behavior.queue",
 			scenario: &Scenario{
 				Hosts: []Host{{ID: "h1", Cores: 4}},
 				Services: []Service{
@@ -467,6 +470,46 @@ func TestLoadScenarioInvalidFile(t *testing.T) {
 	_, err := LoadScenario("/nonexistent/path/scenario.yaml")
 	if err == nil {
 		t.Error("Expected error when loading nonexistent scenario file")
+	}
+}
+
+func TestValidateScenarioQueueServiceWithBehavior(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle"}}},
+			{
+				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{
+					Queue: &QueueBehavior{ConsumerTarget: "consumer:/handle"},
+				},
+				Endpoints: []Endpoint{{Path: "/orders"}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err != nil {
+		t.Fatalf("expected valid queue service: %v", err)
+	}
+}
+
+func TestValidateScenarioQueueInvalidDropPolicy(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle"}}},
+			{
+				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{
+					Queue: &QueueBehavior{ConsumerTarget: "consumer:/handle", DropPolicy: "drop_all"},
+				},
+				Endpoints: []Endpoint{{Path: "/orders"}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for invalid drop_policy")
 	}
 }
 

@@ -70,3 +70,29 @@ func TestConvertToRunMetricsIngressAndAttemptErrorRates(t *testing.T) {
 		t.Fatalf("attempt error rate want 1.0 got %v", rm.AttemptErrorRate)
 	}
 }
+
+func TestConvertToRunMetricsQueueBrokerRollups(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	l1 := map[string]string{"service": "gw", "endpoint": "/x", "broker_service": "mq", "topic": "/a"}
+	l2 := map[string]string{"service": "gw", "endpoint": "/y", "broker_service": "mq", "topic": "/b"}
+	RecordQueueEnqueueCount(collector, 2, ts, l1)
+	RecordQueueDequeueCount(collector, 1, ts, l1)
+	RecordQueueDropCount(collector, 1, ts, l2)
+	RecordQueueRedeliveryCount(collector, 1, ts, l1)
+	RecordQueueDlqCount(collector, 1, ts, l2)
+	RecordQueueDepth(collector, 3, ts, l1)
+	RecordQueueDepth(collector, 7, ts, l2)
+
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if rm.QueueEnqueueCountTotal != 2 || rm.QueueDequeueCountTotal != 1 || rm.QueueDropCountTotal != 1 {
+		t.Fatalf("queue counters: enqueue=%d dequeue=%d drop=%d", rm.QueueEnqueueCountTotal, rm.QueueDequeueCountTotal, rm.QueueDropCountTotal)
+	}
+	if rm.QueueRedeliveryCountTotal != 1 || rm.QueueDlqCountTotal != 1 {
+		t.Fatalf("queue redelivery/dlq: %d %d", rm.QueueRedeliveryCountTotal, rm.QueueDlqCountTotal)
+	}
+	if rm.QueueDepthSum != 10 {
+		t.Fatalf("queue_depth_sum want 10 got %v", rm.QueueDepthSum)
+	}
+}

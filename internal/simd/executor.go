@@ -1661,6 +1661,12 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 		AttemptErrorRate:      engineMetrics.AttemptErrorRate,
 		RetryAttempts:         engineMetrics.RetryAttempts,
 		TimeoutErrors:         engineMetrics.TimeoutErrors,
+		QueueEnqueueCountTotal:    engineMetrics.QueueEnqueueCountTotal,
+		QueueDequeueCountTotal:    engineMetrics.QueueDequeueCountTotal,
+		QueueDropCountTotal:       engineMetrics.QueueDropCountTotal,
+		QueueRedeliveryCountTotal: engineMetrics.QueueRedeliveryCountTotal,
+		QueueDlqCountTotal:        engineMetrics.QueueDlqCountTotal,
+		QueueDepthSum:             engineMetrics.QueueDepthSum,
 	}
 
 	// Convert service metrics

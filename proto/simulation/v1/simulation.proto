@@ -540,6 +540,14 @@ message RunMetrics {
   int64 retry_attempts = 18;
   int64 timeout_errors = 19;
 
+  // Broker / messaging queue rollups (queue_depth_sum is sum of latest gauge samples across broker/topic label sets).
+  int64 queue_enqueue_count_total = 20;
+  int64 queue_dequeue_count_total = 21;
+  int64 queue_drop_count_total = 22;
+  int64 queue_redelivery_count_total = 23;
+  int64 queue_dlq_count_total = 24;
+  double queue_depth_sum = 25;
+
   repeated ServiceMetrics service_metrics = 9;
   // Per-host utilization when the simulator records host-level CPU/memory gauges.
   repeated HostMetrics host_metrics = 10;

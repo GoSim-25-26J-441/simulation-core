@@ -53,6 +53,13 @@ type RunMetrics struct {
 	AttemptErrorRate float64 `json:"attempt_error_rate,omitempty"`
 	RetryAttempts    int64   `json:"retry_attempts,omitempty"`
 	TimeoutErrors    int64   `json:"timeout_errors,omitempty"`
+	// Broker queue rollups (counters sum all label series; queue_depth_sum sums latest gauge per label set).
+	QueueEnqueueCountTotal    int64   `json:"queue_enqueue_count_total,omitempty"`
+	QueueDequeueCountTotal      int64   `json:"queue_dequeue_count_total,omitempty"`
+	QueueDropCountTotal         int64   `json:"queue_drop_count_total,omitempty"`
+	QueueRedeliveryCountTotal   int64   `json:"queue_redelivery_count_total,omitempty"`
+	QueueDlqCountTotal          int64   `json:"queue_dlq_count_total,omitempty"`
+	QueueDepthSum               float64 `json:"queue_depth_sum,omitempty"`
 	CPUUtilization   float64 `json:"cpu_utilization"`
 	MemoryUtilization  float64                    `json:"memory_utilization"`
 	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
