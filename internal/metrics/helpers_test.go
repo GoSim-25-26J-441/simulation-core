@@ -3,6 +3,8 @@ package metrics
 import (
 	"testing"
 	"time"
+
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 )
 
 func TestConvertToRunMetricsQueueWaitAndProcessingLatency(t *testing.T) {
@@ -94,5 +96,91 @@ func TestConvertToRunMetricsQueueBrokerRollups(t *testing.T) {
 	}
 	if rm.QueueDepthSum != 10 {
 		t.Fatalf("queue_depth_sum want 10 got %v", rm.QueueDepthSum)
+	}
+}
+
+func TestConvertToRunMetricsTopicBrokerRollups(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	l1 := map[string]string{"service": "gw", "endpoint": "/x", "broker_service": "evt", "topic": "/ev", "consumer_group": "g1"}
+	l2 := map[string]string{"service": "gw", "endpoint": "/y", "broker_service": "evt", "topic": "/ev", "consumer_group": "g2"}
+	RecordTopicPublishCount(collector, 1, ts, l1)
+	RecordTopicDeliverCount(collector, 2, ts, l1)
+	RecordTopicDropCount(collector, 1, ts, l2)
+	RecordTopicRedeliveryCount(collector, 1, ts, l1)
+	RecordTopicDlqCount(collector, 1, ts, l2)
+	RecordTopicBacklogDepth(collector, 3, ts, l1)
+	RecordTopicBacklogDepth(collector, 7, ts, l2)
+	RecordTopicConsumerLag(collector, 3, ts, l1)
+	RecordTopicConsumerLag(collector, 7, ts, l2)
+
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if rm.TopicPublishCountTotal != 1 || rm.TopicDeliverCountTotal != 2 || rm.TopicDropCountTotal != 1 {
+		t.Fatalf("topic counters: pub=%d del=%d drop=%d", rm.TopicPublishCountTotal, rm.TopicDeliverCountTotal, rm.TopicDropCountTotal)
+	}
+	if rm.TopicRedeliveryCountTotal != 1 || rm.TopicDlqCountTotal != 1 {
+		t.Fatalf("topic redelivery/dlq: %d %d", rm.TopicRedeliveryCountTotal, rm.TopicDlqCountTotal)
+	}
+	if rm.TopicBacklogDepthSum != 10 || rm.TopicConsumerLagSum != 10 {
+		t.Fatalf("topic backlog/lag sum want 10 each got backlog=%v lag=%v", rm.TopicBacklogDepthSum, rm.TopicConsumerLagSum)
+	}
+	if rm.MaxTopicBacklogDepth != 7 || rm.MaxTopicConsumerLag != 7 {
+		t.Fatalf("topic max backlog/lag want 7, got backlog=%v lag=%v", rm.MaxTopicBacklogDepth, rm.MaxTopicConsumerLag)
+	}
+}
+
+func TestConvertToRunMetricsBrokerSnapshotAgesAndRates(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	lbl := map[string]string{"service": "gw", "endpoint": "/x", "broker_service": "mq", "topic": "/a"}
+	RecordQueuePublishAttemptCount(collector, 10, ts, lbl)
+	RecordQueueEnqueueCount(collector, 10, ts, lbl)
+	RecordQueueDropCount(collector, 2, ts, lbl)
+	RecordTopicPublishCount(collector, 8, ts, lbl)
+	RecordTopicDropCount(collector, 1, ts, lbl)
+	RecordTopicDeliverCount(collector, 7, ts, lbl)
+	opts := &RunMetricsOptions{
+		QueueBrokerSnapshots: []resource.QueueBrokerHealthSnapshot{
+			{BrokerID: "mq", Topic: "/a", Depth: 3, OldestMessageAgeMs: 123},
+		},
+		TopicBrokerSnapshots: []resource.TopicBrokerHealthSnapshot{
+			{BrokerID: "evt", Topic: "/ev", ConsumerGroup: "g1", Depth: 4, OldestMessageAgeMs: 456},
+		},
+	}
+	rm := ConvertToRunMetrics(collector, nil, opts)
+	if rm.QueueOldestMessageAgeMs != 123 || rm.TopicOldestMessageAgeMs != 456 {
+		t.Fatalf("oldest ages: queue=%v topic=%v", rm.QueueOldestMessageAgeMs, rm.TopicOldestMessageAgeMs)
+	}
+	if rm.QueueDropRate != 0.2 {
+		t.Fatalf("queue drop rate want 0.2 got %v", rm.QueueDropRate)
+	}
+	if rm.TopicDropRate != 0.125 {
+		t.Fatalf("topic drop rate want 0.125 got %v", rm.TopicDropRate)
+	}
+}
+
+func TestQueueDropRateUsesPublishAttemptsDenominator(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	lbl := map[string]string{"service": "gw", "endpoint": "/x", "broker_service": "mq", "topic": "/a"}
+
+	// all publishes rejected: drop rate must be 1.0 (not 0 due to accepted denominator)
+	RecordQueuePublishAttemptCount(collector, 4, ts, lbl)
+	RecordQueueDropCount(collector, 4, ts, lbl)
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if rm.QueueDropRate != 1.0 {
+		t.Fatalf("queue drop rate want 1.0 for fully rejected attempts, got %v", rm.QueueDropRate)
+	}
+
+	// mixed accepted + dropped attempts, including drop_oldest-style accepted path.
+	RecordQueuePublishAttemptCount(collector, 6, ts, lbl)
+	RecordQueueEnqueueCount(collector, 6, ts, lbl)
+	RecordQueueDropCount(collector, 2, ts, lbl)
+	rm = ConvertToRunMetrics(collector, nil, nil)
+	if rm.QueueDropRate < 0 || rm.QueueDropRate > 1 {
+		t.Fatalf("queue drop rate must stay in [0,1], got %v", rm.QueueDropRate)
 	}
 }

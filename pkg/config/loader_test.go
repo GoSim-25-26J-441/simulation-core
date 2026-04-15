@@ -111,8 +111,8 @@ func TestLoadScenario(t *testing.T) {
 	}
 
 	// Validate services
-	if len(scenario.Services) != 14 {
-		t.Errorf("Expected 14 services, got %d", len(scenario.Services))
+	if len(scenario.Services) != 15 {
+		t.Errorf("Expected 15 services, got %d", len(scenario.Services))
 	}
 
 	// Validate ingress service and v2 fields
@@ -513,6 +513,123 @@ func TestValidateScenarioQueueInvalidDropPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateScenarioTopicServiceValid(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{
+					Topic: &TopicBehavior{
+						Subscribers: []TopicSubscriber{
+							{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle", DropPolicy: "reject"},
+						},
+					},
+				},
+				Endpoints: []Endpoint{{Path: "/events", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err != nil {
+		t.Fatalf("expected valid topic service: %v", err)
+	}
+}
+
+func TestValidateScenarioTopicInvalidDropPolicy(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{
+					Topic: &TopicBehavior{
+						Subscribers: []TopicSubscriber{
+							{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle", DropPolicy: "drop_all"},
+						},
+					},
+				},
+				Endpoints: []Endpoint{{Path: "/events", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for invalid topic drop_policy")
+	}
+}
+
+func TestValidateScenarioTopicDuplicateConsumerGroup(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{
+					Topic: &TopicBehavior{
+						Subscribers: []TopicSubscriber{
+							{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle"},
+							{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle"},
+						},
+					},
+				},
+				Endpoints: []Endpoint{{Path: "/events", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for duplicate consumer_group")
+	}
+}
+
+func TestValidateScenarioQueueInvalidConcurrencyBounds(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{Queue: &QueueBehavior{
+					ConsumerTarget: "consumer:/handle", ConsumerConcurrency: 2, MinConsumerConcurrency: 3, MaxConsumerConcurrency: 2,
+				}},
+				Endpoints: []Endpoint{{Path: "/orders", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for invalid queue consumer concurrency bounds")
+	}
+}
+
+func TestValidateScenarioTopicInvalidConcurrencyBounds(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{
+					Topic: &TopicBehavior{
+						Subscribers: []TopicSubscriber{
+							{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle", ConsumerConcurrency: 2, MinConsumerConcurrency: 3, MaxConsumerConcurrency: 2},
+						},
+					},
+				},
+				Endpoints: []Endpoint{{Path: "/events", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for invalid topic subscriber concurrency bounds")
+	}
+}
+
 func TestLoadMalformedYAML(t *testing.T) {
 	// Create a temporary malformed YAML file
 	tmpDir := t.TempDir()
@@ -531,5 +648,91 @@ clusters:
 	_, err := LoadConfig(malformedFile)
 	if err == nil {
 		t.Error("Expected error when parsing malformed YAML")
+	}
+}
+
+func TestValidateScenarioQueueNegativeAckTimeoutRawField(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "worker", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{Queue: &QueueBehavior{
+					ConsumerTarget: "worker:/handle", AckTimeoutMs: -1,
+				}},
+				Endpoints: []Endpoint{{Path: "/orders", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for negative queue ack_timeout_ms")
+	}
+}
+
+func TestValidateScenarioQueueNegativeDeliveryLatencyRawField(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "worker", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{Queue: &QueueBehavior{
+					ConsumerTarget: "worker:/handle", DeliveryLatencyMs: LatencySpec{Mean: -1, Sigma: 0},
+				}},
+				Endpoints: []Endpoint{{Path: "/orders", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for negative queue delivery latency")
+	}
+}
+
+func TestValidateScenarioTopicNegativeCapacityRawField(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{Topic: &TopicBehavior{
+					Capacity: -2,
+					Subscribers: []TopicSubscriber{
+						{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle", ConsumerConcurrency: 1},
+					},
+				}},
+				Endpoints: []Endpoint{{Path: "/events", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for negative topic capacity")
+	}
+}
+
+func TestValidateScenarioTopicNegativeDeliveryLatencyRawField(t *testing.T) {
+	s := &Scenario{
+		Hosts: []Host{{ID: "h1", Cores: 4}},
+		Services: []Service{
+			{ID: "consumer", Replicas: 1, Model: "cpu", Endpoints: []Endpoint{{Path: "/handle", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &ServiceBehavior{Topic: &TopicBehavior{
+					DeliveryLatencyMs: LatencySpec{Mean: -1, Sigma: 0},
+					Subscribers: []TopicSubscriber{
+						{ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle", ConsumerConcurrency: 1},
+					},
+				}},
+				Endpoints: []Endpoint{{Path: "/events", MeanCPUMs: 1, NetLatencyMs: LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+		},
+		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
+	}
+	if err := validateScenario(s); err == nil {
+		t.Fatal("expected error for negative topic delivery latency")
 	}
 }

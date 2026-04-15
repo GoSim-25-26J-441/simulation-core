@@ -60,16 +60,32 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 			if b.Queue != nil {
 				q := b.Queue
 				ns.Behavior.Queue = &config.QueueBehavior{
-					Capacity:              q.Capacity,
-					ConsumerConcurrency:   q.ConsumerConcurrency,
-					ConsumerTarget:        q.ConsumerTarget,
-					DeliveryLatencyMs:     q.DeliveryLatencyMs,
-					AckTimeoutMs:          q.AckTimeoutMs,
-					MaxRedeliveries:       q.MaxRedeliveries,
-					DLQTarget:             q.DLQTarget,
-					DropPolicy:            q.DropPolicy,
-					AsyncFireAndForget:    q.AsyncFireAndForget,
+					Capacity:               q.Capacity,
+					ConsumerConcurrency:    q.ConsumerConcurrency,
+					MinConsumerConcurrency: q.MinConsumerConcurrency,
+					MaxConsumerConcurrency: q.MaxConsumerConcurrency,
+					ConsumerTarget:         q.ConsumerTarget,
+					DeliveryLatencyMs:      q.DeliveryLatencyMs,
+					AckTimeoutMs:           q.AckTimeoutMs,
+					MaxRedeliveries:        q.MaxRedeliveries,
+					DLQTarget:              q.DLQTarget,
+					DropPolicy:             q.DropPolicy,
+					AsyncFireAndForget:     q.AsyncFireAndForget,
 				}
+			}
+			if b.Topic != nil {
+				t := b.Topic
+				nt := &config.TopicBehavior{
+					Partitions:         t.Partitions,
+					RetentionMs:        t.RetentionMs,
+					Capacity:           t.Capacity,
+					DeliveryLatencyMs:  t.DeliveryLatencyMs,
+					PublishAck:         t.PublishAck,
+					AsyncFireAndForget: t.AsyncFireAndForget,
+					Subscribers:        make([]config.TopicSubscriber, len(t.Subscribers)),
+				}
+				copy(nt.Subscribers, t.Subscribers)
+				ns.Behavior.Topic = nt
 			}
 		}
 		for j, ep := range svc.Endpoints {
@@ -96,6 +112,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 					TimeoutMs:             ds.TimeoutMs,
 					FailureRate:           ds.FailureRate,
 					DownstreamFractionCPU: ds.DownstreamFractionCPU,
+					PartitionKey:          ds.PartitionKey,
+					PartitionKeyFrom:      ds.PartitionKeyFrom,
 				}
 				if ds.Retryable != nil {
 					v := *ds.Retryable

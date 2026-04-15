@@ -628,9 +628,16 @@ func (s *HTTPServer) handleGetRunMetrics(w http.ResponseWriter, _ *http.Request,
 		return
 	}
 
-	s.writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"metrics": convertMetricsToJSON(rec.Metrics),
-	})
+	}
+	if queues, topics, ok := s.brokerShardResourcesJSON(runID); ok {
+		resp["resources"] = map[string]any{
+			"queues": queues,
+			"topics": topics,
+		}
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleTimeSeries handles GET /v1/runs/{id}/metrics/timeseries
@@ -799,6 +806,12 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 	if rec.Metrics != nil {
 		export["metrics"] = convertMetricsToJSON(rec.Metrics)
 	}
+	if queues, topics, ok := s.brokerShardResourcesJSON(runID); ok {
+		export["resources"] = map[string]any{
+			"queues": queues,
+			"topics": topics,
+		}
+	}
 
 	// Include time-series data if collector is available
 	collector, hasCollector := s.store.GetCollector(runID)
@@ -953,11 +966,16 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 				"memory_gb": h.MemoryGb,
 			})
 		}
-		payload["resources"] = map[string]any{
+		resources := map[string]any{
 			"services":   serviceResources,
 			"hosts":      hostResources,
 			"placements": instancePlacementsToJSON(cfg.Placements),
 		}
+		if queues, topics, ok := s.brokerShardResourcesJSON(runID); ok {
+			resources["queues"] = queues
+			resources["topics"] = topics
+		}
+		payload["resources"] = resources
 	}
 	if streamLive && hasCollector && collector != nil {
 		var invHostIDs []string
@@ -969,6 +987,61 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 		}
 	}
 	s.sendSSEEvent(w, "metrics_snapshot", payload)
+}
+
+func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, []map[string]any, bool) {
+	if s == nil || s.Executor == nil || runID == "" {
+		return nil, nil, false
+	}
+	s.Executor.mu.Lock()
+	rm, ok := s.Executor.resourceManagers[runID]
+	s.Executor.mu.Unlock()
+	if !ok || rm == nil {
+		return nil, nil, false
+	}
+	snapshotAt := rm.LastSimTime()
+	if snapshotAt.IsZero() {
+		snapshotAt = time.Now()
+	}
+	queueSnaps := rm.QueueBrokerHealthSnapshots(snapshotAt)
+	topicSnaps := rm.TopicBrokerHealthSnapshots(snapshotAt)
+	queues := make([]map[string]any, 0, len(queueSnaps))
+	for _, q := range queueSnaps {
+		queues = append(queues, map[string]any{
+			"broker_service":        q.BrokerID,
+			"topic":                 q.Topic,
+			"depth":                 q.Depth,
+			"in_flight":             q.InFlight,
+			"max_concurrency":       q.MaxConcurrency,
+			"consumer_target":       q.ConsumerTarget,
+			"oldest_message_age_ms": q.OldestMessageAgeMs,
+			"drop_count":            q.DropCount,
+			"redelivery_count":      q.RedeliveryCount,
+			"dlq_count":             q.DlqCount,
+		})
+	}
+	topics := make([]map[string]any, 0, len(topicSnaps))
+	for _, t := range topicSnaps {
+		topics = append(topics, map[string]any{
+			"broker_service":        t.BrokerID,
+			"topic":                 t.Topic,
+			"partition":             t.Partition,
+			"subscriber":            t.Subscriber,
+			"consumer_group":        t.ConsumerGroup,
+			"high_watermark":        t.HighWatermarkExclusive,
+			"committed_offset":      t.CommittedOffsetExclusive,
+			"consumer_lag":          t.ConsumerLag,
+			"depth":                 t.Depth,
+			"in_flight":             t.InFlight,
+			"max_concurrency":       t.MaxConcurrency,
+			"consumer_target":       t.ConsumerTarget,
+			"oldest_message_age_ms": t.OldestMessageAgeMs,
+			"drop_count":            t.DropCount,
+			"redelivery_count":      t.RedeliveryCount,
+			"dlq_count":             t.DlqCount,
+		})
+	}
+	return queues, topics, true
 }
 
 // handleMetricsStream handles GET /v1/runs/{id}/metrics/stream (SSE)
@@ -1616,23 +1689,43 @@ func hostMetricsFromCollector(collector *metrics.Collector, inventoryHostIDs []s
 
 func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 	result := map[string]any{
-		"total_requests":          metrics.TotalRequests,
-		"successful_requests":     metrics.SuccessfulRequests,
-		"failed_requests":         metrics.FailedRequests,
-		"latency_p50_ms":          metrics.LatencyP50Ms,
-		"latency_p95_ms":          metrics.LatencyP95Ms,
-		"latency_p99_ms":          metrics.LatencyP99Ms,
-		"latency_mean_ms":         metrics.LatencyMeanMs,
-		"throughput_rps":          metrics.ThroughputRps,
-		"ingress_requests":      metrics.IngressRequests,
-		"internal_requests":     metrics.InternalRequests,
-		"ingress_throughput_rps":  metrics.IngressThroughputRps,
-		"ingress_failed_requests": metrics.IngressFailedRequests,
-		"ingress_error_rate":      metrics.IngressErrorRate,
-		"attempt_failed_requests": metrics.AttemptFailedRequests,
-		"attempt_error_rate":      metrics.AttemptErrorRate,
-		"retry_attempts":          metrics.RetryAttempts,
-		"timeout_errors":          metrics.TimeoutErrors,
+		"total_requests":               metrics.TotalRequests,
+		"successful_requests":          metrics.SuccessfulRequests,
+		"failed_requests":              metrics.FailedRequests,
+		"latency_p50_ms":               metrics.LatencyP50Ms,
+		"latency_p95_ms":               metrics.LatencyP95Ms,
+		"latency_p99_ms":               metrics.LatencyP99Ms,
+		"latency_mean_ms":              metrics.LatencyMeanMs,
+		"throughput_rps":               metrics.ThroughputRps,
+		"ingress_requests":             metrics.IngressRequests,
+		"internal_requests":            metrics.InternalRequests,
+		"ingress_throughput_rps":       metrics.IngressThroughputRps,
+		"ingress_failed_requests":      metrics.IngressFailedRequests,
+		"ingress_error_rate":           metrics.IngressErrorRate,
+		"attempt_failed_requests":      metrics.AttemptFailedRequests,
+		"attempt_error_rate":           metrics.AttemptErrorRate,
+		"retry_attempts":               metrics.RetryAttempts,
+		"timeout_errors":               metrics.TimeoutErrors,
+		"queue_enqueue_count_total":    metrics.QueueEnqueueCountTotal,
+		"queue_dequeue_count_total":    metrics.QueueDequeueCountTotal,
+		"queue_drop_count_total":       metrics.QueueDropCountTotal,
+		"queue_redelivery_count_total": metrics.QueueRedeliveryCountTotal,
+		"queue_dlq_count_total":        metrics.QueueDlqCountTotal,
+		"queue_depth_sum":              metrics.QueueDepthSum,
+		"topic_publish_count_total":    metrics.TopicPublishCountTotal,
+		"topic_deliver_count_total":    metrics.TopicDeliverCountTotal,
+		"topic_drop_count_total":       metrics.TopicDropCountTotal,
+		"topic_redelivery_count_total": metrics.TopicRedeliveryCountTotal,
+		"topic_dlq_count_total":        metrics.TopicDlqCountTotal,
+		"topic_backlog_depth_sum":      metrics.TopicBacklogDepthSum,
+		"topic_consumer_lag_sum":       metrics.TopicConsumerLagSum,
+		"queue_oldest_message_age_ms":  metrics.QueueOldestMessageAgeMs,
+		"topic_oldest_message_age_ms":  metrics.TopicOldestMessageAgeMs,
+		"max_queue_depth":              metrics.MaxQueueDepth,
+		"max_topic_backlog_depth":      metrics.MaxTopicBacklogDepth,
+		"max_topic_consumer_lag":       metrics.MaxTopicConsumerLag,
+		"queue_drop_rate":              metrics.QueueDropRate,
+		"topic_drop_rate":              metrics.TopicDropRate,
 	}
 
 	if len(metrics.ServiceMetrics) > 0 {
@@ -1655,10 +1748,10 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 				"queue_wait_p95_ms":          sm.QueueWaitP95Ms,
 				"queue_wait_p99_ms":          sm.QueueWaitP99Ms,
 				"queue_wait_mean_ms":         sm.QueueWaitMeanMs,
-				"processing_latency_p50_ms":    sm.ProcessingLatencyP50Ms,
-				"processing_latency_p95_ms":    sm.ProcessingLatencyP95Ms,
-				"processing_latency_p99_ms":    sm.ProcessingLatencyP99Ms,
-				"processing_latency_mean_ms":   sm.ProcessingLatencyMeanMs,
+				"processing_latency_p50_ms":  sm.ProcessingLatencyP50Ms,
+				"processing_latency_p95_ms":  sm.ProcessingLatencyP95Ms,
+				"processing_latency_p99_ms":  sm.ProcessingLatencyP99Ms,
+				"processing_latency_mean_ms": sm.ProcessingLatencyMeanMs,
 			})
 		}
 		result["service_metrics"] = serviceMetrics

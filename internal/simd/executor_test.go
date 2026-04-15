@@ -12,6 +12,7 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 func mustScenarioState(t *testing.T, scenario *config.Scenario, rm *resource.Manager, collector *metrics.Collector) *scenarioState {
@@ -582,6 +583,231 @@ func TestAllowScaleDownReplicas(t *testing.T) {
 					got, tt.wantAllowScaleDown, tt.svcCPUUtil, tt.svcMemUtil, tt.scaleDownCPUMax, tt.scaleDownMemMax)
 			}
 		})
+	}
+}
+
+func TestBrokerPressureByConsumerServiceTopicBacklog(t *testing.T) {
+	rm := resource.NewManager()
+	eff := config.EffectiveTopicBehavior(&config.TopicBehavior{Capacity: 100})
+	sub := &config.TopicSubscriber{
+		Name:                "sub-a",
+		ConsumerGroup:       "g1",
+		ConsumerTarget:      "consumer:/process",
+		ConsumerConcurrency: 1,
+	}
+	shard := rm.GetBrokerTopicSubscriberShard("events", "/orders", "g1", eff, sub)
+	now := time.Now()
+	_ = shard.Enqueue(&resource.QueuedMessage{ID: "m1", EnqueueTime: now.Add(-2 * time.Second)})
+	pressure := brokerPressureByConsumerService(rm, now)
+	p := pressure["consumer"]
+	if !p.HasBacklog || p.MaxDepth < 1 {
+		t.Fatalf("expected backlog pressure for consumer, got %+v", p)
+	}
+	if p.MaxOldestAgeMs <= 0 {
+		t.Fatalf("expected oldest age > 0, got %+v", p)
+	}
+}
+
+func TestOnlineScaleDownGuardBlockedByBrokerPressure(t *testing.T) {
+	rm := resource.NewManager()
+	runMetrics := &models.RunMetrics{
+		LatencyP95:     1,
+		TotalRequests:  100,
+		FailedRequests: 0,
+		ServiceMetrics: map[string]*models.ServiceMetrics{
+			"consumer": {ConcurrentRequests: 0},
+		},
+	}
+	pressure := map[string]brokerPressureSignal{
+		"consumer": {HasBacklog: true, MaxDepth: 5, Reason: "topic_pressure"},
+	}
+	if !onlineScaleDownGuard(rm, runMetrics, "consumer", 100, 0, pressure) {
+		t.Fatal("expected scale-down guard to block when broker backlog exists")
+	}
+}
+
+func TestBrokerPressureByConsumerServiceMixedQueueTopicSignals(t *testing.T) {
+	rm := resource.NewManager()
+	now := time.Now()
+
+	qeff := config.EffectiveQueueBehavior(&config.QueueBehavior{
+		ConsumerTarget:      "consumer:/process",
+		ConsumerConcurrency: 1,
+		Capacity:            1,
+		DropPolicy:          "reject",
+	})
+	q := rm.BrokerQueues().GetOrCreateShard("mq", "/jobs", qeff)
+	_ = q.Enqueue(&resource.QueuedMessage{ID: "q1", EnqueueTime: now.Add(-3 * time.Second)})
+	_ = q.Enqueue(&resource.QueuedMessage{ID: "q2", EnqueueTime: now.Add(-2500 * time.Millisecond)})
+	if msg := q.TryPopForDispatch(); msg == nil {
+		t.Fatal("expected queue message to dispatch")
+	}
+	q.NoteDLQ()
+
+	teff := config.EffectiveTopicBehavior(&config.TopicBehavior{Capacity: 10})
+	sub := &config.TopicSubscriber{
+		Name:                "sub-a",
+		ConsumerGroup:       "group-a",
+		ConsumerTarget:      "consumer:/process",
+		ConsumerConcurrency: 1,
+	}
+	topicShard := rm.GetBrokerTopicSubscriberShard("topic", "/events", "group-a", teff, sub)
+	_ = topicShard.Enqueue(&resource.QueuedMessage{ID: "t1", EnqueueTime: now.Add(-2 * time.Second)})
+	topicShard.NoteRedelivery()
+
+	pressure := brokerPressureByConsumerService(rm, now)
+	p := pressure["consumer"]
+	if !p.HasBacklog {
+		t.Fatalf("expected backlog signal, got %+v", p)
+	}
+	if !p.HasInFlight {
+		t.Fatalf("expected in-flight signal, got %+v", p)
+	}
+	if !p.HasDrops {
+		t.Fatalf("expected drop-like signal from redelivery, got %+v", p)
+	}
+	if !p.HasDLQ {
+		t.Fatalf("expected DLQ signal, got %+v", p)
+	}
+}
+
+func TestRunOnlineControllerScalesUpConsumerOnTopicPressure(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-topic-pressure-scale-up"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 16}},
+		Services: []config.Service{
+			{
+				ID: "consumer", Replicas: 1, Model: "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/process", MeanCPUMs: 2, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+			{
+				ID: "topic", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &config.ServiceBehavior{Topic: &config.TopicBehavior{
+					Subscribers: []config.TopicSubscriber{
+						{Name: "sub", ConsumerGroup: "cg1", ConsumerTarget: "consumer:/process", ConsumerConcurrency: 1},
+					},
+				}},
+				Endpoints: []config.Endpoint{
+					{Path: "/events", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	for _, inst := range rm.GetInstancesForService("consumer") {
+		lbl := metrics.CreateInstanceLabels("consumer", inst.ID())
+		for i := 0; i < 10; i++ {
+			metrics.RecordCPUUtilization(collector, 0.1, now.Add(time.Duration(i)*time.Millisecond), lbl)
+		}
+	}
+	metrics.RecordLatency(collector, 5, now, metrics.CreateServiceLabels("consumer"))
+
+	teff := config.EffectiveTopicBehavior(scenario.Services[1].Behavior.Topic)
+	sub := &scenario.Services[1].Behavior.Topic.Subscribers[0]
+	shard := rm.GetBrokerTopicSubscriberShard("topic", "/events", "cg1", teff, sub)
+	_ = shard.Enqueue(&resource.QueuedMessage{ID: "p1", EnqueueTime: now.Add(-3 * time.Second)})
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	opt := &simulationv1.OptimizationConfig{
+		Online:                    true,
+		TargetP95LatencyMs:        100,
+		ControlIntervalMs:         10,
+		StepSize:                  1,
+		OptimizationTargetPrimary: "cpu_utilization",
+		TargetUtilHigh:            0.8,
+		TargetUtilLow:             0.3,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	if got := rm.ActiveReplicas("consumer"); got <= 1 {
+		t.Fatalf("expected consumer scale-up from topic pressure, replicas=%d", got)
+	}
+}
+
+func TestRunOnlineControllerBlocksScaleDownWhileTopicBacklogExists(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-topic-pressure-block-down"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 16}},
+		Services: []config.Service{
+			{
+				ID: "consumer", Replicas: 2, Model: "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/process", MeanCPUMs: 2, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+			{
+				ID: "topic", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &config.ServiceBehavior{Topic: &config.TopicBehavior{
+					Subscribers: []config.TopicSubscriber{
+						{Name: "sub", ConsumerGroup: "cg1", ConsumerTarget: "consumer:/process", ConsumerConcurrency: 1},
+					},
+				}},
+				Endpoints: []config.Endpoint{
+					{Path: "/events", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	for _, inst := range rm.GetInstancesForService("consumer") {
+		lbl := metrics.CreateInstanceLabels("consumer", inst.ID())
+		for i := 0; i < 10; i++ {
+			metrics.RecordCPUUtilization(collector, 0.1, now.Add(time.Duration(i)*time.Millisecond), lbl)
+		}
+	}
+	metrics.RecordLatency(collector, 2, now, metrics.CreateServiceLabels("consumer"))
+
+	teff := config.EffectiveTopicBehavior(scenario.Services[1].Behavior.Topic)
+	sub := &scenario.Services[1].Behavior.Topic.Subscribers[0]
+	shard := rm.GetBrokerTopicSubscriberShard("topic", "/events", "cg1", teff, sub)
+	_ = shard.Enqueue(&resource.QueuedMessage{ID: "p1", EnqueueTime: now.Add(-2 * time.Second)})
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	opt := &simulationv1.OptimizationConfig{
+		Online:                    true,
+		TargetP95LatencyMs:        100,
+		ControlIntervalMs:         10,
+		StepSize:                  1,
+		OptimizationTargetPrimary: "cpu_utilization",
+		TargetUtilHigh:            0.8,
+		TargetUtilLow:             0.3,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(80 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+
+	if got := rm.ActiveReplicas("consumer"); got < 2 {
+		t.Fatalf("expected scale-down blocked while topic backlog exists, replicas=%d", got)
 	}
 }
 

@@ -318,11 +318,21 @@ func (e *RunExecutor) runMetricsOptsForRun(runID string) *metrics.RunMetricsOpti
 	if !ok || rm == nil {
 		return nil
 	}
+	snapshotAt := rm.LastSimTime()
+	if snapshotAt.IsZero() {
+		snapshotAt = time.Now()
+	}
 	bySvc := instanceIDsByServiceFromRM(rm)
-	if len(bySvc) == 0 {
+	queueSnaps := rm.QueueBrokerHealthSnapshots(snapshotAt)
+	topicSnaps := rm.TopicBrokerHealthSnapshots(snapshotAt)
+	if len(bySvc) == 0 && len(queueSnaps) == 0 && len(topicSnaps) == 0 {
 		return nil
 	}
-	return &metrics.RunMetricsOptions{InstanceIDsByService: bySvc}
+	return &metrics.RunMetricsOptions{
+		InstanceIDsByService: bySvc,
+		QueueBrokerSnapshots: queueSnaps,
+		TopicBrokerSnapshots: topicSnaps,
+	}
 }
 
 // hostIDsForRun returns the resource manager's host IDs for a run (sorted), or nil when

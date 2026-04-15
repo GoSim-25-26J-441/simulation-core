@@ -12,6 +12,8 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
 const testScenarioYAML = `
@@ -954,6 +956,100 @@ func TestHTTPServerMetricsStreamSnapshotIncludesPlacementsInResources(t *testing
 	}
 	if !strings.Contains(body, `"resources"`) {
 		t.Fatal("expected resources object in metrics_snapshot payload")
+	}
+	if !strings.Contains(body, `"queues"`) {
+		t.Fatal("expected resources.queues in metrics_snapshot payload")
+	}
+	if !strings.Contains(body, `"topics"`) {
+		t.Fatal("expected resources.topics in metrics_snapshot payload")
+	}
+}
+
+func TestHTTPServerGetRunMetricsIncludesBrokerResourcesWhenRunManagerAvailable(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	rec, err := store.Create("test-run-metrics-resources", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetMetrics(rec.Run.Id, &simulationv1.RunMetrics{
+		TotalRequests: 1,
+		LatencyP95Ms:  10,
+	}); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+	scen, err := config.ParseScenarioYAMLString(testScenarioYAML)
+	if err != nil {
+		t.Fatalf("ParseScenarioYAMLString: %v", err)
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scen); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	executor.mu.Lock()
+	executor.resourceManagers[rec.Run.Id] = rm
+	executor.mu.Unlock()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+rec.Run.Id+"/metrics", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"resources"`) {
+		t.Fatalf("expected resources object in metrics response: %s", body)
+	}
+	if !strings.Contains(body, `"queues"`) || !strings.Contains(body, `"topics"`) {
+		t.Fatalf("expected queues/topics resources in metrics response: %s", body)
+	}
+}
+
+func TestHTTPServerExportIncludesBrokerResourcesWhenRunManagerAvailable(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	rec, err := store.Create("test-run-export-resources", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetMetrics(rec.Run.Id, &simulationv1.RunMetrics{TotalRequests: 1}); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+	scen, err := config.ParseScenarioYAMLString(testScenarioYAML)
+	if err != nil {
+		t.Fatalf("ParseScenarioYAMLString: %v", err)
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scen); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	executor.mu.Lock()
+	executor.resourceManagers[rec.Run.Id] = rm
+	executor.mu.Unlock()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+rec.Run.Id+"/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"resources"`) {
+		t.Fatalf("expected resources object in export response: %s", body)
+	}
+	if !strings.Contains(body, `"queues"`) || !strings.Contains(body, `"topics"`) {
+		t.Fatalf("expected queues/topics resources in export response: %s", body)
 	}
 }
 
@@ -2205,14 +2301,18 @@ func TestHTTPServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
 
 func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 	pb := &simulationv1.RunMetrics{
-		TotalRequests:         10,
-		IngressRequests:       4,
-		IngressFailedRequests: 1,
-		IngressErrorRate:      0.25,
-		AttemptFailedRequests: 3,
-		AttemptErrorRate:      0.3,
-		RetryAttempts:         2,
-		TimeoutErrors:         1,
+		TotalRequests:           10,
+		IngressRequests:         4,
+		IngressFailedRequests:   1,
+		IngressErrorRate:        0.25,
+		AttemptFailedRequests:   3,
+		AttemptErrorRate:        0.3,
+		RetryAttempts:           2,
+		TimeoutErrors:           1,
+		TopicPublishCountTotal:  4,
+		TopicBacklogDepthSum:    9,
+		MaxTopicConsumerLag:     7,
+		TopicOldestMessageAgeMs: 111,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{
 				ServiceName:             "svc1",
@@ -2232,5 +2332,11 @@ func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 	}
 	if sm["processing_latency_mean_ms"].(float64) != 10 {
 		t.Fatalf("json processing_latency_mean_ms: %v", sm["processing_latency_mean_ms"])
+	}
+	if j["topic_publish_count_total"].(int64) != 4 {
+		t.Fatalf("json topic_publish_count_total: %v", j["topic_publish_count_total"])
+	}
+	if j["max_topic_consumer_lag"].(float64) != 7 {
+		t.Fatalf("json max_topic_consumer_lag: %v", j["max_topic_consumer_lag"])
 	}
 }

@@ -24,6 +24,7 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 		AttemptErrorRate:        0.05,
 		RetryAttempts:           2,
 		TimeoutErrors:           1,
+		MaxTopicConsumerLag:     12,
 		ServiceMetrics: map[string]*models.ServiceMetrics{
 			"service1": {
 				ServiceName:               "service1",
@@ -83,6 +84,9 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 	}
 	if pbMetrics.IngressFailedRequests != 1 || pbMetrics.RetryAttempts != 2 {
 		t.Fatalf("expected ingress failed / retry on RunMetrics, got ingress_failed=%d retry=%d", pbMetrics.IngressFailedRequests, pbMetrics.RetryAttempts)
+	}
+	if pbMetrics.MaxTopicConsumerLag != 12 {
+		t.Fatalf("expected MaxTopicConsumerLag 12, got %v", pbMetrics.MaxTopicConsumerLag)
 	}
 
 	if len(pbMetrics.ServiceMetrics) != 2 {

@@ -309,7 +309,59 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 	if refreshed, ok := e.store.Get(rec.Run.Id); ok {
 		rec = refreshed
 	}
-	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec)
+	var resources map[string]any
+	e.mu.Lock()
+	rm := e.resourceManagers[rec.Run.Id]
+	e.mu.Unlock()
+	if rm != nil {
+		snapshotAt := rm.LastSimTime()
+		if snapshotAt.IsZero() {
+			snapshotAt = time.Now()
+		}
+		queueSnaps := rm.QueueBrokerHealthSnapshots(snapshotAt)
+		topicSnaps := rm.TopicBrokerHealthSnapshots(snapshotAt)
+		queues := make([]map[string]any, 0, len(queueSnaps))
+		for _, q := range queueSnaps {
+			queues = append(queues, map[string]any{
+				"broker_service":        q.BrokerID,
+				"topic":                 q.Topic,
+				"depth":                 q.Depth,
+				"in_flight":             q.InFlight,
+				"max_concurrency":       q.MaxConcurrency,
+				"consumer_target":       q.ConsumerTarget,
+				"oldest_message_age_ms": q.OldestMessageAgeMs,
+				"drop_count":            q.DropCount,
+				"redelivery_count":      q.RedeliveryCount,
+				"dlq_count":             q.DlqCount,
+			})
+		}
+		topics := make([]map[string]any, 0, len(topicSnaps))
+		for _, t := range topicSnaps {
+			topics = append(topics, map[string]any{
+				"broker_service":        t.BrokerID,
+				"topic":                 t.Topic,
+				"partition":             t.Partition,
+				"subscriber":            t.Subscriber,
+				"consumer_group":        t.ConsumerGroup,
+				"high_watermark":        t.HighWatermarkExclusive,
+				"committed_offset":      t.CommittedOffsetExclusive,
+				"consumer_lag":          t.ConsumerLag,
+				"depth":                 t.Depth,
+				"in_flight":             t.InFlight,
+				"max_concurrency":       t.MaxConcurrency,
+				"consumer_target":       t.ConsumerTarget,
+				"oldest_message_age_ms": t.OldestMessageAgeMs,
+				"drop_count":            t.DropCount,
+				"redelivery_count":      t.RedeliveryCount,
+				"dlq_count":             t.DlqCount,
+			})
+		}
+		resources = map[string]any{
+			"queues": queues,
+			"topics": topics,
+		}
+	}
+	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec, resources)
 }
 
 func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
@@ -919,9 +971,68 @@ func serviceQueueDepthTotal(rm *resource.Manager, serviceID string) int {
 	return total
 }
 
+type brokerPressureSignal struct {
+	HasBacklog     bool
+	HasInFlight    bool
+	HasDrops       bool
+	HasDLQ         bool
+	MaxDepth       int
+	MaxOldestAgeMs float64
+	Reason         string
+}
+
+func targetServiceIDFromConsumerTarget(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	parts := strings.SplitN(target, ":", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+func brokerPressureByConsumerService(rm *resource.Manager, now time.Time) map[string]brokerPressureSignal {
+	out := make(map[string]brokerPressureSignal)
+	if rm == nil {
+		return out
+	}
+	acc := func(svc, reason string, depth int, inFlight bool, oldestAge float64, hasDrops, hasDLQ bool) {
+		if svc == "" {
+			return
+		}
+		cur := out[svc]
+		if depth > cur.MaxDepth {
+			cur.MaxDepth = depth
+		}
+		if oldestAge > cur.MaxOldestAgeMs {
+			cur.MaxOldestAgeMs = oldestAge
+		}
+		cur.HasBacklog = cur.HasBacklog || depth > 0
+		cur.HasInFlight = cur.HasInFlight || inFlight
+		cur.HasDrops = cur.HasDrops || hasDrops
+		cur.HasDLQ = cur.HasDLQ || hasDLQ
+		if cur.Reason == "" {
+			cur.Reason = reason
+		}
+		out[svc] = cur
+	}
+
+	for _, q := range rm.QueueBrokerHealthSnapshots(now) {
+		svc := targetServiceIDFromConsumerTarget(q.ConsumerTarget)
+		acc(svc, "queue_pressure", q.Depth, q.InFlight > 0, q.OldestMessageAgeMs, q.DropCount > 0, q.DlqCount > 0)
+	}
+	for _, t := range rm.TopicBrokerHealthSnapshots(now) {
+		svc := targetServiceIDFromConsumerTarget(t.ConsumerTarget)
+		acc(svc, "topic_pressure", t.Depth, t.InFlight > 0, t.OldestMessageAgeMs, t.DropCount > 0, t.DlqCount > 0)
+	}
+	return out
+}
+
 // onlineScaleDownGuard reports whether replica or vertical scale-down should be
 // skipped due to latency near target, load on queues, concurrency, or rising errors.
-func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, svcID string, targetP95 float64, prevErrFrac float64) bool {
+func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, svcID string, targetP95 float64, prevErrFrac float64, pressure map[string]brokerPressureSignal) bool {
 	if runMetrics == nil {
 		return true
 	}
@@ -932,6 +1043,9 @@ func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, s
 		return true
 	}
 	if serviceQueueDepthTotal(rm, svcID) > 0 {
+		return true
+	}
+	if p, ok := pressure[svcID]; ok && (p.HasBacklog || p.HasInFlight || p.HasDrops || p.HasDLQ || p.MaxOldestAgeMs > 0) {
 		return true
 	}
 	tot := float64(runMetrics.TotalRequests)
@@ -1156,6 +1270,11 @@ func (e *RunExecutor) runOnlineController(
 			runMetrics := metrics.ConvertToRunMetrics(collector, serviceLabels, e.runMetricsOptsForRun(runID))
 			attachHostMetrics(scenario, rm, runMetrics, collector)
 			currentP95 := runMetrics.LatencyP95
+			snapshotAt := rm.LastSimTime()
+			if snapshotAt.IsZero() {
+				snapshotAt = time.Now()
+			}
+			brokerPressure := brokerPressureByConsumerService(rm, snapshotAt)
 
 			// Compute current score from primary target (same metric used for scaling decisions)
 			var currentScore float64
@@ -1403,6 +1522,13 @@ func (e *RunExecutor) runOnlineController(
 					// Utilization-driven: scale up when util > targetHigh, scale down when
 					// util < targetLow and P95 guardrail allows (do not scale down if P95 would exceed target).
 					switch {
+					case brokerPressure[svc.ID].HasBacklog || brokerPressure[svc.ID].HasInFlight || brokerPressure[svc.ID].MaxOldestAgeMs > 0:
+						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
+							newCPUCores = currentCores + cpuStep
+							scaledVertically = true
+						} else if config.ServiceAllowsHorizontalScaling(&svc) {
+							newReplicas = currentReplicas + step
+						}
 					case util > targetUtilHigh:
 						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
@@ -1418,6 +1544,13 @@ func (e *RunExecutor) runOnlineController(
 				} else {
 					// P95-primary (default): scale up on P95 above target, scale down on P95 below target with utilization gates.
 					switch {
+					case brokerPressure[svc.ID].HasBacklog || brokerPressure[svc.ID].HasInFlight || brokerPressure[svc.ID].MaxOldestAgeMs > 0:
+						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
+							newCPUCores = currentCores + cpuStep
+							scaledVertically = true
+						} else if config.ServiceAllowsHorizontalScaling(&svc) {
+							newReplicas = currentReplicas + step
+						}
 					case p95Guard && currentP95 > targetP95*1.05:
 						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
@@ -1435,7 +1568,7 @@ func (e *RunExecutor) runOnlineController(
 				// Utilization-primary: vertical CPU/memory downscale (stabilized like replica drain).
 				wantVertCPU := primaryTarget == "cpu_utilization" && config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
-					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac)
+					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
 				var targetVertCPU float64
 				if wantVertCPU {
 					nc := currentCores - cpuStep
@@ -1461,7 +1594,7 @@ func (e *RunExecutor) runOnlineController(
 
 				wantVertMem := primaryTarget == "memory_utilization" && config.ServiceAllowsVerticalMemory(&svc) && svcMemUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
-					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac)
+					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
 				var targetVertMem float64
 				if wantVertMem {
 					nm := currentMemMB - float64(step)*128
@@ -1493,7 +1626,7 @@ func (e *RunExecutor) runOnlineController(
 				} else {
 					stableRepDown[svc.ID] = 0
 				}
-				if newReplicas < currentReplicas && onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac) {
+				if newReplicas < currentReplicas && onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure) {
 					newReplicas = currentReplicas
 					stableRepDown[svc.ID] = 0
 				}
@@ -1644,29 +1777,43 @@ func attachHostMetrics(scenario *config.Scenario, rm *resource.Manager, engineMe
 // convertMetricsToProto converts engine RunMetrics to protobuf RunMetrics
 func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMetrics {
 	pbMetrics := &simulationv1.RunMetrics{
-		TotalRequests:         engineMetrics.TotalRequests,
-		SuccessfulRequests:    engineMetrics.SuccessfulRequests,
-		FailedRequests:        engineMetrics.FailedRequests,
-		LatencyP50Ms:          engineMetrics.LatencyP50,
-		LatencyP95Ms:          engineMetrics.LatencyP95,
-		LatencyP99Ms:          engineMetrics.LatencyP99,
-		LatencyMeanMs:         engineMetrics.LatencyMean,
-		ThroughputRps:         engineMetrics.ThroughputRPS,
-		IngressRequests:       engineMetrics.IngressRequests,
-		InternalRequests:      engineMetrics.InternalRequests,
-		IngressThroughputRps:  engineMetrics.IngressThroughputRPS,
-		IngressFailedRequests: engineMetrics.IngressFailedRequests,
-		IngressErrorRate:      engineMetrics.IngressErrorRate,
-		AttemptFailedRequests: engineMetrics.AttemptFailedRequests,
-		AttemptErrorRate:      engineMetrics.AttemptErrorRate,
-		RetryAttempts:         engineMetrics.RetryAttempts,
-		TimeoutErrors:         engineMetrics.TimeoutErrors,
+		TotalRequests:             engineMetrics.TotalRequests,
+		SuccessfulRequests:        engineMetrics.SuccessfulRequests,
+		FailedRequests:            engineMetrics.FailedRequests,
+		LatencyP50Ms:              engineMetrics.LatencyP50,
+		LatencyP95Ms:              engineMetrics.LatencyP95,
+		LatencyP99Ms:              engineMetrics.LatencyP99,
+		LatencyMeanMs:             engineMetrics.LatencyMean,
+		ThroughputRps:             engineMetrics.ThroughputRPS,
+		IngressRequests:           engineMetrics.IngressRequests,
+		InternalRequests:          engineMetrics.InternalRequests,
+		IngressThroughputRps:      engineMetrics.IngressThroughputRPS,
+		IngressFailedRequests:     engineMetrics.IngressFailedRequests,
+		IngressErrorRate:          engineMetrics.IngressErrorRate,
+		AttemptFailedRequests:     engineMetrics.AttemptFailedRequests,
+		AttemptErrorRate:          engineMetrics.AttemptErrorRate,
+		RetryAttempts:             engineMetrics.RetryAttempts,
+		TimeoutErrors:             engineMetrics.TimeoutErrors,
 		QueueEnqueueCountTotal:    engineMetrics.QueueEnqueueCountTotal,
 		QueueDequeueCountTotal:    engineMetrics.QueueDequeueCountTotal,
 		QueueDropCountTotal:       engineMetrics.QueueDropCountTotal,
 		QueueRedeliveryCountTotal: engineMetrics.QueueRedeliveryCountTotal,
 		QueueDlqCountTotal:        engineMetrics.QueueDlqCountTotal,
 		QueueDepthSum:             engineMetrics.QueueDepthSum,
+		TopicPublishCountTotal:    engineMetrics.TopicPublishCountTotal,
+		TopicDeliverCountTotal:    engineMetrics.TopicDeliverCountTotal,
+		TopicDropCountTotal:       engineMetrics.TopicDropCountTotal,
+		TopicRedeliveryCountTotal: engineMetrics.TopicRedeliveryCountTotal,
+		TopicDlqCountTotal:        engineMetrics.TopicDlqCountTotal,
+		TopicBacklogDepthSum:      engineMetrics.TopicBacklogDepthSum,
+		TopicConsumerLagSum:       engineMetrics.TopicConsumerLagSum,
+		QueueOldestMessageAgeMs:   engineMetrics.QueueOldestMessageAgeMs,
+		TopicOldestMessageAgeMs:   engineMetrics.TopicOldestMessageAgeMs,
+		MaxQueueDepth:             engineMetrics.MaxQueueDepth,
+		MaxTopicBacklogDepth:      engineMetrics.MaxTopicBacklogDepth,
+		MaxTopicConsumerLag:       engineMetrics.MaxTopicConsumerLag,
+		QueueDropRate:             engineMetrics.QueueDropRate,
+		TopicDropRate:             engineMetrics.TopicDropRate,
 	}
 
 	// Convert service metrics
@@ -1701,26 +1848,26 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 				queueLen = int32(svcMetrics.QueueLength)
 			}
 			pbSvcMetrics := &simulationv1.ServiceMetrics{
-				ServiceName:               serviceName,
-				RequestCount:              svcMetrics.RequestCount,
-				ErrorCount:                svcMetrics.ErrorCount,
-				LatencyP50Ms:              svcMetrics.LatencyP50,
-				LatencyP95Ms:              svcMetrics.LatencyP95,
-				LatencyP99Ms:              svcMetrics.LatencyP99,
-				LatencyMeanMs:             svcMetrics.LatencyMean,
-				CpuUtilization:            svcMetrics.CPUUtilization,
-				MemoryUtilization:         svcMetrics.MemoryUtilization,
-				ActiveReplicas:            activeReplicas,
-				ConcurrentRequests:        concurrentReqs,
-				QueueLength:               queueLen,
-				QueueWaitP50Ms:            svcMetrics.QueueWaitP50Ms,
-				QueueWaitP95Ms:            svcMetrics.QueueWaitP95Ms,
-				QueueWaitP99Ms:            svcMetrics.QueueWaitP99Ms,
-				QueueWaitMeanMs:           svcMetrics.QueueWaitMeanMs,
-				ProcessingLatencyP50Ms:    svcMetrics.ProcessingLatencyP50Ms,
-				ProcessingLatencyP95Ms:    svcMetrics.ProcessingLatencyP95Ms,
-				ProcessingLatencyP99Ms:    svcMetrics.ProcessingLatencyP99Ms,
-				ProcessingLatencyMeanMs:   svcMetrics.ProcessingLatencyMeanMs,
+				ServiceName:             serviceName,
+				RequestCount:            svcMetrics.RequestCount,
+				ErrorCount:              svcMetrics.ErrorCount,
+				LatencyP50Ms:            svcMetrics.LatencyP50,
+				LatencyP95Ms:            svcMetrics.LatencyP95,
+				LatencyP99Ms:            svcMetrics.LatencyP99,
+				LatencyMeanMs:           svcMetrics.LatencyMean,
+				CpuUtilization:          svcMetrics.CPUUtilization,
+				MemoryUtilization:       svcMetrics.MemoryUtilization,
+				ActiveReplicas:          activeReplicas,
+				ConcurrentRequests:      concurrentReqs,
+				QueueLength:             queueLen,
+				QueueWaitP50Ms:          svcMetrics.QueueWaitP50Ms,
+				QueueWaitP95Ms:          svcMetrics.QueueWaitP95Ms,
+				QueueWaitP99Ms:          svcMetrics.QueueWaitP99Ms,
+				QueueWaitMeanMs:         svcMetrics.QueueWaitMeanMs,
+				ProcessingLatencyP50Ms:  svcMetrics.ProcessingLatencyP50Ms,
+				ProcessingLatencyP95Ms:  svcMetrics.ProcessingLatencyP95Ms,
+				ProcessingLatencyP99Ms:  svcMetrics.ProcessingLatencyP99Ms,
+				ProcessingLatencyMeanMs: svcMetrics.ProcessingLatencyMeanMs,
 			}
 			pbMetrics.ServiceMetrics = append(pbMetrics.ServiceMetrics, pbSvcMetrics)
 		}

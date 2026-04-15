@@ -140,3 +140,29 @@ func TestComputeBatchScoreIngressErrorRateViolation(t *testing.T) {
 		t.Fatalf("expected infeasible error-rate from ingress 10 percent, got feasible=%v errV=%v", sc.Feasible, sc.ErrViolation)
 	}
 }
+
+func TestComputeBatchScoreTopicLagViolation(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 32}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{MaxTopicConsumerLagSum: 5}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &simulationv1.RunMetrics{
+		LatencyP95Ms:         1,
+		LatencyP99Ms:         1,
+		TopicConsumerLagSum:  20,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc1", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	sc := ComputeBatchScore(spec, base, base, m)
+	if sc.Feasible || sc.TopicLagViolation <= 0 {
+		t.Fatalf("expected infeasible topic lag violation, got %+v", sc)
+	}
+}

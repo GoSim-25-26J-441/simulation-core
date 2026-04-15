@@ -33,6 +33,12 @@ func EffectiveQueueBehavior(q *QueueBehavior) *QueueBehavior {
 	if q.ConsumerConcurrency > 0 {
 		out.ConsumerConcurrency = q.ConsumerConcurrency
 	}
+	if q.MinConsumerConcurrency > 0 {
+		out.MinConsumerConcurrency = q.MinConsumerConcurrency
+	}
+	if q.MaxConsumerConcurrency > 0 {
+		out.MaxConsumerConcurrency = q.MaxConsumerConcurrency
+	}
 	if strings.TrimSpace(q.ConsumerTarget) != "" {
 		out.ConsumerTarget = strings.TrimSpace(q.ConsumerTarget)
 	}
@@ -62,6 +68,27 @@ func ValidateQueueBehavior(svcID string, q *QueueBehavior, endpointRef map[strin
 	if q == nil {
 		return fmt.Errorf("service %s: behavior.queue is required for kind queue", svcID)
 	}
+	if q.Capacity < -1 {
+		return fmt.Errorf("service %s: behavior.queue.capacity must be >= -1 (-1 = unlimited)", svcID)
+	}
+	if q.ConsumerConcurrency < 0 {
+		return fmt.Errorf("service %s: behavior.queue.consumer_concurrency cannot be negative", svcID)
+	}
+	if q.MinConsumerConcurrency < 0 {
+		return fmt.Errorf("service %s: behavior.queue.min_consumer_concurrency cannot be negative", svcID)
+	}
+	if q.MaxConsumerConcurrency < 0 {
+		return fmt.Errorf("service %s: behavior.queue.max_consumer_concurrency cannot be negative", svcID)
+	}
+	if q.DeliveryLatencyMs.Mean < 0 || q.DeliveryLatencyMs.Sigma < 0 {
+		return fmt.Errorf("service %s: behavior.queue.delivery_latency_ms mean/sigma cannot be negative", svcID)
+	}
+	if q.AckTimeoutMs < 0 {
+		return fmt.Errorf("service %s: behavior.queue.ack_timeout_ms cannot be negative", svcID)
+	}
+	if q.MaxRedeliveries < 0 {
+		return fmt.Errorf("service %s: behavior.queue.max_redeliveries cannot be negative", svcID)
+	}
 	eff := EffectiveQueueBehavior(q)
 	if strings.TrimSpace(eff.ConsumerTarget) == "" {
 		return fmt.Errorf("service %s: behavior.queue.consumer_target is required (format serviceID:path)", svcID)
@@ -77,20 +104,29 @@ func ValidateQueueBehavior(svcID string, q *QueueBehavior, endpointRef map[strin
 	if !endpointRef[cs+":"+cp] {
 		return fmt.Errorf("service %s: queue consumer_target endpoint %s:%s does not exist", svcID, cs, cp)
 	}
-	if q.Capacity < -1 {
-		return fmt.Errorf("service %s: behavior.queue.capacity must be >= -1 (-1 = unlimited)", svcID)
-	}
 	if eff.ConsumerConcurrency < 0 {
 		return fmt.Errorf("service %s: behavior.queue.consumer_concurrency cannot be negative", svcID)
 	}
-	if eff.DeliveryLatencyMs.Mean < 0 || eff.DeliveryLatencyMs.Sigma < 0 {
-		return fmt.Errorf("service %s: behavior.queue.delivery_latency_ms mean/sigma cannot be negative", svcID)
+	if eff.MinConsumerConcurrency < 0 {
+		return fmt.Errorf("service %s: behavior.queue.min_consumer_concurrency cannot be negative", svcID)
 	}
-	if eff.AckTimeoutMs < 0 {
-		return fmt.Errorf("service %s: behavior.queue.ack_timeout_ms cannot be negative", svcID)
+	if eff.MaxConsumerConcurrency < 0 {
+		return fmt.Errorf("service %s: behavior.queue.max_consumer_concurrency cannot be negative", svcID)
 	}
-	if eff.MaxRedeliveries < 0 {
-		return fmt.Errorf("service %s: behavior.queue.max_redeliveries cannot be negative", svcID)
+	if eff.MinConsumerConcurrency > 0 && eff.MinConsumerConcurrency < 1 {
+		return fmt.Errorf("service %s: behavior.queue.min_consumer_concurrency must be >= 1 when set", svcID)
+	}
+	if eff.MaxConsumerConcurrency > 0 && eff.MaxConsumerConcurrency < 1 {
+		return fmt.Errorf("service %s: behavior.queue.max_consumer_concurrency must be >= 1 when set", svcID)
+	}
+	if eff.MinConsumerConcurrency > 0 && eff.MaxConsumerConcurrency > 0 && eff.MinConsumerConcurrency > eff.MaxConsumerConcurrency {
+		return fmt.Errorf("service %s: behavior.queue min_consumer_concurrency cannot exceed max_consumer_concurrency", svcID)
+	}
+	if eff.ConsumerConcurrency > 0 && eff.MinConsumerConcurrency > 0 && eff.ConsumerConcurrency < eff.MinConsumerConcurrency {
+		return fmt.Errorf("service %s: behavior.queue.consumer_concurrency cannot be below min_consumer_concurrency", svcID)
+	}
+	if eff.ConsumerConcurrency > 0 && eff.MaxConsumerConcurrency > 0 && eff.ConsumerConcurrency > eff.MaxConsumerConcurrency {
+		return fmt.Errorf("service %s: behavior.queue.consumer_concurrency cannot exceed max_consumer_concurrency", svcID)
 	}
 	dp := strings.ToLower(strings.TrimSpace(eff.DropPolicy))
 	validDrop := map[string]bool{"block": true, "reject": true, "drop_oldest": true, "drop_newest": true}

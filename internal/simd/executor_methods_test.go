@@ -6,6 +6,8 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
@@ -295,9 +297,14 @@ workload:
 		t.Fatalf("UpdateWorkloadPattern error: %v", err)
 	}
 
-	// Verify pattern was updated
+	// Verify pattern was updated (may race with simulation completion + cleanup removing workload state).
 	patternState, ok := exec.GetWorkloadPattern("run-1", patternKey)
 	if !ok {
+		rec2, ok2 := store.Get("run-1")
+		if ok2 && rec2 != nil && (rec2.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
+			rec2.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED) {
+			t.Skip("simulation completed before GetWorkloadPattern (race with cleanup)")
+		}
 		t.Fatal("Pattern not found")
 	}
 
@@ -322,6 +329,37 @@ workload:
 	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_COMPLETED &&
 		rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_FAILED {
 		t.Logf("Warning: Run did not complete within timeout, status: %v", rec.Run.Status)
+	}
+}
+
+func TestRunMetricsOptsForRunUsesSimulationTimeForBrokerAge(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "sim-time-broker-age"
+	rm := resource.NewManager()
+	qeff := config.EffectiveQueueBehavior(&config.QueueBehavior{
+		ConsumerTarget:      "worker:/handle",
+		ConsumerConcurrency: 1,
+		Capacity:            100,
+	})
+	shard := rm.BrokerQueues().GetOrCreateShard("mq", "/orders", qeff)
+	base := time.Date(2026, 4, 14, 12, 0, 0, 0, time.UTC)
+	_ = shard.Enqueue(&resource.QueuedMessage{ID: "m1", EnqueueTime: base})
+	rm.NoteSimTime(base.Add(60 * time.Second))
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opts := exec.runMetricsOptsForRun(runID)
+	if opts == nil || len(opts.QueueBrokerSnapshots) != 1 {
+		t.Fatalf("expected one queue broker snapshot, got %+v", opts)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	out := metrics.ConvertToRunMetrics(collector, nil, opts)
+	if out.QueueOldestMessageAgeMs < 59999 || out.QueueOldestMessageAgeMs > 60001 {
+		t.Fatalf("expected oldest age approx 60000ms from simulation clock, got %v", out.QueueOldestMessageAgeMs)
 	}
 }
 

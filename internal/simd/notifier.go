@@ -37,6 +37,7 @@ type NotificationPayload struct {
 	// FinalConfig is the settled run configuration: prefer RunRecord.FinalConfig (snapshot before cleanup);
 	// otherwise last optimization step's current_config when optimization history exists.
 	FinalConfig map[string]any `json:"final_config,omitempty"`
+	Resources   map[string]any `json:"resources,omitempty"`
 }
 
 // Notifier handles backend notifications for simulation completion
@@ -72,7 +73,7 @@ func NewNotifierWithWhitelist(whitelist []string) *Notifier {
 
 // Notify sends a notification to the callback URL asynchronously
 // This method returns immediately and performs the notification in a goroutine
-func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *RunRecord) {
+func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *RunRecord, resources ...map[string]any) {
 	if callbackURL == "" {
 		return
 	}
@@ -139,6 +140,9 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 		if lastStep != nil && lastStep.CurrentConfig != nil {
 			payload.FinalConfig = convertRunConfigurationToJSON(lastStep.CurrentConfig, scen)
 		}
+	}
+	if len(resources) > 0 && resources[0] != nil {
+		payload.Resources = resources[0]
 	}
 
 	// Send notification asynchronously

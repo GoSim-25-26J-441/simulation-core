@@ -69,12 +69,14 @@ func TestCloneScenarioPreservesQueueBehavior(t *testing.T) {
 				ID: "brk", Kind: "queue", Replicas: 1, Model: "cpu",
 				Behavior: &config.ServiceBehavior{
 					Queue: &config.QueueBehavior{
-						ConsumerTarget:      "consumer:/handle",
-						Capacity:              50,
-						ConsumerConcurrency:   2,
-						MaxRedeliveries:       3,
-						DropPolicy:            "reject",
-						AsyncFireAndForget:    true,
+						ConsumerTarget:         "consumer:/handle",
+						Capacity:               50,
+						ConsumerConcurrency:    2,
+						MinConsumerConcurrency: 1,
+						MaxConsumerConcurrency: 6,
+						MaxRedeliveries:        3,
+						DropPolicy:             "reject",
+						AsyncFireAndForget:     true,
 					},
 				},
 				Endpoints: []config.Endpoint{{Path: "/orders", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
@@ -89,8 +91,77 @@ func TestCloneScenarioPreservesQueueBehavior(t *testing.T) {
 	if q == nil || q.Capacity != 50 || q.ConsumerConcurrency != 2 || !q.AsyncFireAndForget {
 		t.Fatalf("queue behavior: %+v", q)
 	}
+	if q.MinConsumerConcurrency != 1 || q.MaxConsumerConcurrency != 6 {
+		t.Fatalf("queue concurrency bounds: %+v", q)
+	}
 	q.Capacity = 999
 	if original.Services[1].Behavior.Queue.Capacity != 50 {
 		t.Fatal("clone mutation leaked to original queue")
+	}
+}
+
+func TestCloneScenarioPreservesTopicBehavior(t *testing.T) {
+	original := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4}},
+		Services: []config.Service{
+			{
+				ID: "consumer", Kind: "service", Replicas: 1, Model: "cpu",
+				Endpoints: []config.Endpoint{{Path: "/handle", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+			},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu",
+				Behavior: &config.ServiceBehavior{
+					Topic: &config.TopicBehavior{
+						Partitions:         2,
+						RetentionMs:        900000,
+						Capacity:           5000,
+						PublishAck:         "leader_ack",
+						AsyncFireAndForget: true,
+						Subscribers: []config.TopicSubscriber{
+							{Name: "sub1", ConsumerGroup: "g1", ConsumerTarget: "consumer:/handle", ConsumerConcurrency: 3, MinConsumerConcurrency: 1, MaxConsumerConcurrency: 8, AckTimeoutMs: 7000, MaxRedeliveries: 2, DropPolicy: "reject"},
+						},
+					},
+				},
+				Endpoints: []config.Endpoint{{Path: "/events", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+			},
+		},
+		Workload: []config.WorkloadPattern{
+			{From: "c", To: "consumer:/handle", Arrival: config.ArrivalSpec{Type: "poisson", RateRPS: 1}},
+		},
+	}
+	cl := cloneScenario(original)
+	tb := cl.Services[1].Behavior.Topic
+	if tb == nil || tb.Partitions != 2 || tb.RetentionMs != 900000 || tb.Capacity != 5000 || !tb.AsyncFireAndForget {
+		t.Fatalf("topic behavior: %+v", tb)
+	}
+	if len(tb.Subscribers) != 1 || tb.Subscribers[0].ConsumerGroup != "g1" || tb.Subscribers[0].ConsumerConcurrency != 3 {
+		t.Fatalf("topic subscribers: %+v", tb.Subscribers)
+	}
+	if tb.Subscribers[0].MinConsumerConcurrency != 1 || tb.Subscribers[0].MaxConsumerConcurrency != 8 {
+		t.Fatalf("topic subscriber concurrency bounds: %+v", tb.Subscribers[0])
+	}
+	tb.Subscribers[0].ConsumerConcurrency = 99
+	if original.Services[1].Behavior.Topic.Subscribers[0].ConsumerConcurrency != 3 {
+		t.Fatal("clone mutation leaked to original topic subscribers")
+	}
+}
+
+func TestCloneScenarioPreservesDownstreamPartitionKeyFields(t *testing.T) {
+	original := &config.Scenario{
+		Services: []config.Service{{
+			ID: "api", Replicas: 1, Model: "cpu",
+			Endpoints: []config.Endpoint{{
+				Path: "/p", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
+				Downstream: []config.DownstreamCall{{
+					To: "t:/x", Kind: "topic", Mode: "async",
+					PartitionKey: "k1", PartitionKeyFrom: "tenant_id",
+				}},
+			}},
+		}},
+	}
+	cl := cloneScenario(original)
+	ds := cl.Services[0].Endpoints[0].Downstream[0]
+	if ds.PartitionKey != "k1" || ds.PartitionKeyFrom != "tenant_id" {
+		t.Fatalf("downstream partition fields: %+v", ds)
 	}
 }

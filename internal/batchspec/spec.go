@@ -20,39 +20,48 @@ type BatchSpec struct {
 	FreezeWorkload bool
 	FreezePolicies bool
 
-	MaxP95Ms      float64
-	MaxP99Ms      float64
-	MaxErrorRate  float64
-	MinThroughput float64
+	MaxP95Ms                   float64
+	MaxP99Ms                   float64
+	MaxErrorRate               float64
+	MinThroughput              float64
+	MaxQueueDepthSum           float64
+	MaxTopicBacklogDepthSum    float64
+	MaxTopicConsumerLagSum     float64
+	MaxQueueOldestMessageAgeMs float64
+	MaxTopicOldestMessageAgeMs float64
+	MaxQueueDropCount          float64
+	MaxTopicDropCount          float64
+	MaxQueueDlqCount           float64
+	MaxTopicDlqCount           float64
 
-	ServiceCPUBandLow    float64
-	ServiceCPUBandHigh   float64
-	ServiceMemBandLow    float64
-	ServiceMemBandHigh   float64
-	HostCPUBandLow       float64
-	HostCPUBandHigh      float64
-	HostMemBandLow       float64
-	HostMemBandHigh      float64
+	ServiceCPUBandLow  float64
+	ServiceCPUBandHigh float64
+	ServiceMemBandLow  float64
+	ServiceMemBandHigh float64
+	HostCPUBandLow     float64
+	HostCPUBandHigh    float64
+	HostMemBandLow     float64
+	HostMemBandHigh    float64
 
-	MinHosts            int32
-	MaxHosts            int32
-	MinReplicasPerSvc   int32
-	MaxReplicasPerSvc   int32
-	MinCPUPerInst       float64
-	MaxCPUPerInst       float64
-	MinMemPerInst       float64
-	MaxMemPerInst       float64
-	MinHostCPUCores     int32
-	MaxHostCPUCores     int32
-	MinHostMemGB        int32
-	MaxHostMemGB        int32
+	MinHosts          int32
+	MaxHosts          int32
+	MinReplicasPerSvc int32
+	MaxReplicasPerSvc int32
+	MinCPUPerInst     float64
+	MaxCPUPerInst     float64
+	MinMemPerInst     float64
+	MaxMemPerInst     float64
+	MinHostCPUCores   int32
+	MaxHostCPUCores   int32
+	MinHostMemGB      int32
+	MaxHostMemGB      int32
 
-	ReplicaStep        int32
-	ServiceCPURatio    float64
-	ServiceMemRatio    float64
-	HostCountStep      int32
-	HostCPUStepCores   int32
-	HostMemStepGB      int32
+	ReplicaStep      int32
+	ServiceCPURatio  float64
+	ServiceMemRatio  float64
+	HostCountStep    int32
+	HostCPUStepCores int32
+	HostMemStepGB    int32
 
 	BeamWidth            int32
 	MaxSearchDepth       int32
@@ -116,6 +125,15 @@ func DefaultBatchSpec(base *config.Scenario) *BatchSpec {
 			ServiceMemoryBalance: 1,
 			HostCpuBalance:       1,
 			HostMemoryBalance:    1,
+			QueueDepth:           1,
+			TopicBacklog:         1,
+			TopicLag:             1,
+			QueueOldestAge:       1,
+			TopicOldestAge:       1,
+			QueueDrop:            1,
+			TopicDrop:            1,
+			QueueDlq:             1,
+			TopicDlq:             1,
 		},
 	}
 	s.AllowedActions = allBatchScalingActions()
@@ -148,6 +166,10 @@ func batchScalingActionEnumOrder() []simulationv1.BatchScalingAction {
 		simulationv1.BatchScalingAction_HOST_SCALE_DOWN_CPU,
 		simulationv1.BatchScalingAction_HOST_SCALE_UP_MEMORY,
 		simulationv1.BatchScalingAction_HOST_SCALE_DOWN_MEMORY,
+		simulationv1.BatchScalingAction_QUEUE_SCALE_UP_CONCURRENCY,
+		simulationv1.BatchScalingAction_QUEUE_SCALE_DOWN_CONCURRENCY,
+		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_UP_CONCURRENCY,
+		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_DOWN_CONCURRENCY,
 	}
 }
 
@@ -237,6 +259,33 @@ func ParseBatchSpec(pb *simulationv1.BatchOptimizationConfig, base *config.Scena
 	}
 	if pb.GetMinThroughputRps() > 0 {
 		s.MinThroughput = pb.GetMinThroughputRps()
+	}
+	if pb.GetMaxQueueDepthSum() > 0 {
+		s.MaxQueueDepthSum = pb.GetMaxQueueDepthSum()
+	}
+	if pb.GetMaxTopicBacklogDepthSum() > 0 {
+		s.MaxTopicBacklogDepthSum = pb.GetMaxTopicBacklogDepthSum()
+	}
+	if pb.GetMaxTopicConsumerLagSum() > 0 {
+		s.MaxTopicConsumerLagSum = pb.GetMaxTopicConsumerLagSum()
+	}
+	if pb.GetMaxQueueOldestMessageAgeMs() > 0 {
+		s.MaxQueueOldestMessageAgeMs = pb.GetMaxQueueOldestMessageAgeMs()
+	}
+	if pb.GetMaxTopicOldestMessageAgeMs() > 0 {
+		s.MaxTopicOldestMessageAgeMs = pb.GetMaxTopicOldestMessageAgeMs()
+	}
+	if pb.GetMaxQueueDropCount() > 0 {
+		s.MaxQueueDropCount = pb.GetMaxQueueDropCount()
+	}
+	if pb.GetMaxTopicDropCount() > 0 {
+		s.MaxTopicDropCount = pb.GetMaxTopicDropCount()
+	}
+	if pb.GetMaxQueueDlqCount() > 0 {
+		s.MaxQueueDlqCount = pb.GetMaxQueueDlqCount()
+	}
+	if pb.GetMaxTopicDlqCount() > 0 {
+		s.MaxTopicDlqCount = pb.GetMaxTopicDlqCount()
 	}
 	if b := pb.GetServiceCpuUtilizationBand(); b != nil {
 		if b.Low > 0 || b.High > 0 {
@@ -359,6 +408,15 @@ func validateBatchSpec(s *BatchSpec) error {
 	}
 	if s.MaxErrorRate <= 0 || s.MaxErrorRate > 1 {
 		return fmt.Errorf("max_error_rate must be in (0,1]")
+	}
+	if s.MaxQueueDepthSum < 0 || s.MaxTopicBacklogDepthSum < 0 || s.MaxTopicConsumerLagSum < 0 {
+		return fmt.Errorf("broker backlog/lag limits cannot be negative")
+	}
+	if s.MaxQueueOldestMessageAgeMs < 0 || s.MaxTopicOldestMessageAgeMs < 0 {
+		return fmt.Errorf("broker oldest message age limits cannot be negative")
+	}
+	if s.MaxQueueDropCount < 0 || s.MaxTopicDropCount < 0 || s.MaxQueueDlqCount < 0 || s.MaxTopicDlqCount < 0 {
+		return fmt.Errorf("broker drop/dlq limits cannot be negative")
 	}
 	if s.ServiceCPUBandLow >= s.ServiceCPUBandHigh || s.ServiceMemBandLow >= s.ServiceMemBandHigh {
 		return fmt.Errorf("invalid service utilization bands")

@@ -56,3 +56,36 @@ func TestOptionalBoolsExplicitFalseOverridesDefaults(t *testing.T) {
 		t.Fatalf("expected explicit false to override defaults")
 	}
 }
+
+func TestParseBatchSpecBrokerGuardrails(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4, MemoryGB: 16}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{
+		MaxQueueDepthSum:           100,
+		MaxTopicBacklogDepthSum:    200,
+		MaxTopicConsumerLagSum:     300,
+		MaxQueueOldestMessageAgeMs: 400,
+		MaxTopicOldestMessageAgeMs: 500,
+		MaxQueueDropCount:          5,
+		MaxTopicDropCount:          6,
+		MaxQueueDlqCount:           7,
+		MaxTopicDlqCount:           8,
+	}
+	spec, err := ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatalf("ParseBatchSpec: %v", err)
+	}
+	if spec.MaxQueueDepthSum != 100 || spec.MaxTopicBacklogDepthSum != 200 || spec.MaxTopicConsumerLagSum != 300 {
+		t.Fatalf("unexpected backlog guardrails: %+v", spec)
+	}
+	if spec.MaxQueueOldestMessageAgeMs != 400 || spec.MaxTopicOldestMessageAgeMs != 500 {
+		t.Fatalf("unexpected oldest-age guardrails: %+v", spec)
+	}
+	if spec.MaxQueueDropCount != 5 || spec.MaxTopicDropCount != 6 || spec.MaxQueueDlqCount != 7 || spec.MaxTopicDlqCount != 8 {
+		t.Fatalf("unexpected drop/dlq guardrails: %+v", spec)
+	}
+}

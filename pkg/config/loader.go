@@ -266,7 +266,7 @@ func validateScenario(s *Scenario) error {
 
 		kindNorm := strings.ToLower(strings.TrimSpace(svc.Kind))
 		validKinds := map[string]bool{
-			"": true, "api_gateway": true, "service": true, "database": true, "cache": true, "external": true, "queue": true,
+			"": true, "api_gateway": true, "service": true, "database": true, "cache": true, "external": true, "queue": true, "topic": true,
 		}
 		if !validKinds[kindNorm] {
 			return fmt.Errorf("service %s: unknown or unsupported kind %q", svc.ID, svc.Kind)
@@ -363,11 +363,24 @@ func validateScenario(s *Scenario) error {
 		}
 	}
 
+	for _, svc := range s.Services {
+		if strings.ToLower(strings.TrimSpace(svc.Kind)) != "topic" {
+			continue
+		}
+		var t *TopicBehavior
+		if svc.Behavior != nil {
+			t = svc.Behavior.Topic
+		}
+		if err := ValidateTopicBehavior(svc.ID, t, endpointRef, serviceIDs); err != nil {
+			return err
+		}
+	}
+
 	validDownstreamModes := map[string]bool{
 		"": true, "sync": true, "async": true, "event": true,
 	}
 	validDownstreamKinds := map[string]bool{
-		"": true, "rest": true, "grpc": true, "db": true, "queue": true, "external": true,
+		"": true, "rest": true, "grpc": true, "db": true, "queue": true, "topic": true, "external": true,
 	}
 
 	// Second pass: validate downstream calls now that all service IDs are known
@@ -413,6 +426,12 @@ func validateScenario(s *Scenario) error {
 				}
 				if tgtKind == "queue" && kind != "" && kind != "queue" {
 					return fmt.Errorf("service %s, endpoint %s: downstream to queue service %s must use kind queue (or omit kind)", svc.ID, ep.Path, tgtSvc)
+				}
+				if kind == "topic" && tgtKind != "topic" {
+					return fmt.Errorf("service %s, endpoint %s: downstream kind topic requires target service %s to have kind topic", svc.ID, ep.Path, tgtSvc)
+				}
+				if tgtKind == "topic" && kind != "" && kind != "topic" {
+					return fmt.Errorf("service %s, endpoint %s: downstream to topic service %s must use kind topic (or omit kind)", svc.ID, ep.Path, tgtSvc)
 				}
 			}
 		}

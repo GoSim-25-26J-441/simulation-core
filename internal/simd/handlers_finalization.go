@@ -33,6 +33,7 @@ const (
 	metaAsyncOpTimedOut    = "async_operation_timed_out"
 	metaSyncWaitTimedOut   = "sync_wait_timed_out"
 	metaDownstreamAsync    = "downstream_call_async"
+	metaBrokerAckTimedOut  = "broker_ack_timed_out"
 )
 
 func finalizeRequestCompletion(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, request *models.Request, simTime time.Time, labels map[string]string) {
@@ -46,6 +47,14 @@ func finalizeRequestCompletion(state *scenarioState, eng *engine.Engine, rm *eng
 		request.Status = models.RequestStatusCompleted
 		request.CompletionTime = simTime
 		request.Duration = simTime.Sub(request.ArrivalTime)
+		return
+	}
+	if request.Status == models.RequestStatusFailed {
+		request.Metadata[metaDESFinalized] = true
+		if request.CompletionTime.IsZero() {
+			request.CompletionTime = simTime
+			request.Duration = simTime.Sub(request.ArrivalTime)
+		}
 		return
 	}
 	request.Metadata[metaDESFinalized] = true

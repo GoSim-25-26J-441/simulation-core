@@ -55,6 +55,14 @@ const (
 	EventTypeQueueRedelivery    EventType = "queue_redelivery"
 	EventTypeQueueDLQ           EventType = "queue_dlq"
 	EventTypeAsyncParentFinalize EventType = "async_parent_finalize"
+
+	// Topic / pub-sub DES events (kind: topic services and downstream kind: topic).
+	EventTypeTopicPublish  EventType = "topic_publish"
+	EventTypeTopicDequeue  EventType = "topic_dequeue"
+	EventTypeTopicAckTimeout EventType = "topic_ack_timeout"
+	EventTypeTopicDLQ      EventType = "topic_dlq"
+	// EventTypeTopicRetentionExpire removes queued messages past retention at DES time (per shard/partition/group).
+	EventTypeTopicRetentionExpire EventType = "topic_retention_expire"
 )
 
 // Event represents a discrete event in the simulation

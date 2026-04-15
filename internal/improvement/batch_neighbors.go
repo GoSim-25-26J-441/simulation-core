@@ -3,6 +3,7 @@ package improvement
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
@@ -70,6 +71,33 @@ func neighborStress(spec *batchspec.BatchSpec, m *simulationv1.RunMetrics) bool 
 	if spec.MinThroughput > 0 && tput < spec.MinThroughput*0.95 {
 		return true
 	}
+	if spec.MaxQueueDepthSum > 0 && m.GetQueueDepthSum() > spec.MaxQueueDepthSum*1.01 {
+		return true
+	}
+	if spec.MaxTopicBacklogDepthSum > 0 && m.GetTopicBacklogDepthSum() > spec.MaxTopicBacklogDepthSum*1.01 {
+		return true
+	}
+	if spec.MaxTopicConsumerLagSum > 0 && m.GetTopicConsumerLagSum() > spec.MaxTopicConsumerLagSum*1.01 {
+		return true
+	}
+	if spec.MaxQueueOldestMessageAgeMs > 0 && m.GetQueueOldestMessageAgeMs() > spec.MaxQueueOldestMessageAgeMs*1.01 {
+		return true
+	}
+	if spec.MaxTopicOldestMessageAgeMs > 0 && m.GetTopicOldestMessageAgeMs() > spec.MaxTopicOldestMessageAgeMs*1.01 {
+		return true
+	}
+	if spec.MaxQueueDropCount > 0 && float64(m.GetQueueDropCountTotal()) > spec.MaxQueueDropCount*1.01 {
+		return true
+	}
+	if spec.MaxTopicDropCount > 0 && float64(m.GetTopicDropCountTotal()) > spec.MaxTopicDropCount*1.01 {
+		return true
+	}
+	if spec.MaxQueueDlqCount > 0 && float64(m.GetQueueDlqCountTotal()) > spec.MaxQueueDlqCount*1.01 {
+		return true
+	}
+	if spec.MaxTopicDlqCount > 0 && float64(m.GetTopicDlqCountTotal()) > spec.MaxTopicDlqCount*1.01 {
+		return true
+	}
 	return false
 }
 
@@ -89,6 +117,76 @@ func capacityDelta(cur, nb *config.Scenario) float64 {
 	}
 	d += float64(len(nb.Hosts)-len(cur.Hosts)) * 80
 	return d
+}
+
+func serviceIndexByID(s *config.Scenario) map[string]int {
+	out := make(map[string]int, len(s.Services))
+	for i, svc := range s.Services {
+		out[svc.ID] = i
+	}
+	return out
+}
+
+func servicePressureScore(lastMetrics *simulationv1.RunMetrics) map[string]float64 {
+	scores := map[string]float64{}
+	if lastMetrics == nil {
+		return scores
+	}
+	for _, sm := range lastMetrics.GetServiceMetrics() {
+		if sm == nil || strings.TrimSpace(sm.GetServiceName()) == "" {
+			continue
+		}
+		scores[sm.GetServiceName()] = sm.GetCpuUtilization() + sm.GetMemoryUtilization() +
+			float64(sm.GetConcurrentRequests())*0.01 + float64(sm.GetQueueLength())*0.05
+	}
+	return scores
+}
+
+func brokerConsumerTargetServiceIndices(cur *config.Scenario, lastMetrics *simulationv1.RunMetrics) []int {
+	if cur == nil {
+		return nil
+	}
+	byID := serviceIndexByID(cur)
+	seen := map[int]bool{}
+	for _, svc := range cur.Services {
+		if svc.Behavior == nil {
+			continue
+		}
+		if svc.Behavior.Queue != nil {
+			target := strings.TrimSpace(svc.Behavior.Queue.ConsumerTarget)
+			if parts := strings.SplitN(target, ":", 2); len(parts) == 2 {
+				if idx, ok := byID[strings.TrimSpace(parts[0])]; ok {
+					seen[idx] = true
+				}
+			}
+		}
+		if svc.Behavior.Topic != nil {
+			for _, sub := range svc.Behavior.Topic.Subscribers {
+				target := strings.TrimSpace(sub.ConsumerTarget)
+				if parts := strings.SplitN(target, ":", 2); len(parts) == 2 {
+					if idx, ok := byID[strings.TrimSpace(parts[0])]; ok {
+						seen[idx] = true
+					}
+				}
+			}
+		}
+	}
+	indices := make([]int, 0, len(seen))
+	for idx := range seen {
+		indices = append(indices, idx)
+	}
+	scores := servicePressureScore(lastMetrics)
+	sort.SliceStable(indices, func(i, j int) bool {
+		si := cur.Services[indices[i]].ID
+		sj := cur.Services[indices[j]].ID
+		pi := scores[si]
+		pj := scores[sj]
+		if pi == pj {
+			return si < sj
+		}
+		return pi > pj
+	})
+	return indices
 }
 
 func orderNeighborsForExpansion(spec *batchspec.BatchSpec, cur *config.Scenario, lastMetrics *simulationv1.RunMetrics, neighbors []*config.Scenario) []*config.Scenario {
@@ -134,7 +232,16 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 	for _, act := range actions {
 		switch act {
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_OUT:
-			for i := range cur.Services {
+			scaleIndices := make([]int, 0, len(cur.Services))
+			if neighborStress(spec, lastMetrics) {
+				scaleIndices = brokerConsumerTargetServiceIndices(cur, lastMetrics)
+			}
+			if len(scaleIndices) == 0 {
+				for i := range cur.Services {
+					scaleIndices = append(scaleIndices, i)
+				}
+			}
+			for _, i := range scaleIndices {
 				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
 					continue
 				}
@@ -164,7 +271,16 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 				add(ns)
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_UP_CPU:
-			for i := range cur.Services {
+			scaleIndices := make([]int, 0, len(cur.Services))
+			if neighborStress(spec, lastMetrics) {
+				scaleIndices = brokerConsumerTargetServiceIndices(cur, lastMetrics)
+			}
+			if len(scaleIndices) == 0 {
+				for i := range cur.Services {
+					scaleIndices = append(scaleIndices, i)
+				}
+			}
+			for _, i := range scaleIndices {
 				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
 					continue
 				}
@@ -196,7 +312,16 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 				add(ns)
 			}
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_UP_MEMORY:
-			for i := range cur.Services {
+			scaleIndices := make([]int, 0, len(cur.Services))
+			if neighborStress(spec, lastMetrics) {
+				scaleIndices = brokerConsumerTargetServiceIndices(cur, lastMetrics)
+			}
+			if len(scaleIndices) == 0 {
+				for i := range cur.Services {
+					scaleIndices = append(scaleIndices, i)
+				}
+			}
+			for _, i := range scaleIndices {
 				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
 					continue
 				}
@@ -286,6 +411,120 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 				}
 				add(ns)
 			}
+		case simulationv1.BatchScalingAction_QUEUE_SCALE_UP_CONCURRENCY:
+			for i := range cur.Services {
+				svc := &cur.Services[i]
+				if svc.Behavior == nil || svc.Behavior.Queue == nil {
+					continue
+				}
+				ns := cloneScenario(cur)
+				q := ns.Services[i].Behavior.Queue
+				curC := q.ConsumerConcurrency
+				if curC <= 0 {
+					curC = 1
+				}
+				maxC := q.MaxConsumerConcurrency
+				if maxC <= 0 {
+					maxC = int(spec.MaxReplicasPerSvc)
+					if maxC < 1 {
+						maxC = 64
+					}
+				}
+				if curC >= maxC {
+					continue
+				}
+				next := curC + int(spec.ReplicaStep)
+				if next > maxC {
+					next = maxC
+				}
+				q.ConsumerConcurrency = next
+				add(ns)
+			}
+		case simulationv1.BatchScalingAction_QUEUE_SCALE_DOWN_CONCURRENCY:
+			for i := range cur.Services {
+				svc := &cur.Services[i]
+				if svc.Behavior == nil || svc.Behavior.Queue == nil {
+					continue
+				}
+				ns := cloneScenario(cur)
+				q := ns.Services[i].Behavior.Queue
+				curC := q.ConsumerConcurrency
+				if curC <= 0 {
+					curC = 1
+				}
+				minC := q.MinConsumerConcurrency
+				if minC <= 0 {
+					minC = 1
+				}
+				if curC <= minC {
+					continue
+				}
+				next := curC - int(spec.ReplicaStep)
+				if next < minC {
+					next = minC
+				}
+				q.ConsumerConcurrency = next
+				add(ns)
+			}
+		case simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_UP_CONCURRENCY:
+			for i := range cur.Services {
+				svc := &cur.Services[i]
+				if svc.Behavior == nil || svc.Behavior.Topic == nil {
+					continue
+				}
+				for j := range svc.Behavior.Topic.Subscribers {
+					ns := cloneScenario(cur)
+					sub := &ns.Services[i].Behavior.Topic.Subscribers[j]
+					curC := sub.ConsumerConcurrency
+					if curC <= 0 {
+						curC = 1
+					}
+					maxC := sub.MaxConsumerConcurrency
+					if maxC <= 0 {
+						maxC = int(spec.MaxReplicasPerSvc)
+						if maxC < 1 {
+							maxC = 64
+						}
+					}
+					if curC >= maxC {
+						continue
+					}
+					next := curC + int(spec.ReplicaStep)
+					if next > maxC {
+						next = maxC
+					}
+					sub.ConsumerConcurrency = next
+					add(ns)
+				}
+			}
+		case simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_DOWN_CONCURRENCY:
+			for i := range cur.Services {
+				svc := &cur.Services[i]
+				if svc.Behavior == nil || svc.Behavior.Topic == nil {
+					continue
+				}
+				for j := range svc.Behavior.Topic.Subscribers {
+					ns := cloneScenario(cur)
+					sub := &ns.Services[i].Behavior.Topic.Subscribers[j]
+					curC := sub.ConsumerConcurrency
+					if curC <= 0 {
+						curC = 1
+					}
+					minC := sub.MinConsumerConcurrency
+					if minC <= 0 {
+						minC = 1
+					}
+					if curC <= minC {
+						continue
+					}
+					next := curC - int(spec.ReplicaStep)
+					if next < minC {
+						next = minC
+					}
+					sub.ConsumerConcurrency = next
+					add(ns)
+				}
+			}
 		}
 	}
 
@@ -337,6 +576,25 @@ func withinBatchBounds(spec *batchspec.BatchSpec, base, cur *config.Scenario) bo
 		}
 		if svc.MemoryMB < spec.MinMemPerInst || svc.MemoryMB > spec.MaxMemPerInst {
 			return false
+		}
+		if svc.Behavior != nil && svc.Behavior.Queue != nil {
+			q := svc.Behavior.Queue
+			if q.MinConsumerConcurrency > 0 && q.ConsumerConcurrency > 0 && q.ConsumerConcurrency < q.MinConsumerConcurrency {
+				return false
+			}
+			if q.MaxConsumerConcurrency > 0 && q.ConsumerConcurrency > 0 && q.ConsumerConcurrency > q.MaxConsumerConcurrency {
+				return false
+			}
+		}
+		if svc.Behavior != nil && svc.Behavior.Topic != nil {
+			for _, sub := range svc.Behavior.Topic.Subscribers {
+				if sub.MinConsumerConcurrency > 0 && sub.ConsumerConcurrency > 0 && sub.ConsumerConcurrency < sub.MinConsumerConcurrency {
+					return false
+				}
+				if sub.MaxConsumerConcurrency > 0 && sub.ConsumerConcurrency > 0 && sub.ConsumerConcurrency > sub.MaxConsumerConcurrency {
+					return false
+				}
+			}
 		}
 	}
 	for _, h := range cur.Hosts {

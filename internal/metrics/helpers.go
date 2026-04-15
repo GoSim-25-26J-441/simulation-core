@@ -4,41 +4,54 @@ import (
 	"sort"
 	"time"
 
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 // Common metric names
 const (
-	MetricRequestLatency            = "request_latency_ms"
-	MetricServiceRequestLatency     = "service_request_latency_ms"
-	MetricServiceProcessingLatency  = "service_processing_latency_ms"
-	MetricQueueWait                 = "queue_wait_ms"
-	MetricRootRequestLatency        = "root_request_latency_ms"
-	MetricRequestCount              = "request_count"
-	MetricRequestErrorCount         = "request_error_count"
-	MetricCPUUtilization            = "cpu_utilization"
-	MetricMemoryUtilization         = "memory_utilization"
-	MetricQueueLength               = "queue_length"
-	MetricThroughputRPS             = "throughput_rps"
-	MetricConcurrentRequests        = "concurrent_requests"
+	MetricRequestLatency           = "request_latency_ms"
+	MetricServiceRequestLatency    = "service_request_latency_ms"
+	MetricServiceProcessingLatency = "service_processing_latency_ms"
+	MetricQueueWait                = "queue_wait_ms"
+	MetricRootRequestLatency       = "root_request_latency_ms"
+	MetricRequestCount             = "request_count"
+	MetricRequestErrorCount        = "request_error_count"
+	MetricCPUUtilization           = "cpu_utilization"
+	MetricMemoryUtilization        = "memory_utilization"
+	MetricQueueLength              = "queue_length"
+	MetricThroughputRPS            = "throughput_rps"
+	MetricConcurrentRequests       = "concurrent_requests"
 	// MetricIngressLogicalFailure counts user-visible ingress/root trace failures (SLO error rate numerator).
 	MetricIngressLogicalFailure = "ingress_logical_failure_count"
-	MetricDbWaitMs                = "db_wait_ms"
-	MetricActiveConnections       = "active_connections"
-	MetricCacheHitCount           = "cache_hit_count"
-	MetricCacheMissCount          = "cache_miss_count"
+	MetricDbWaitMs              = "db_wait_ms"
+	MetricActiveConnections     = "active_connections"
+	MetricCacheHitCount         = "cache_hit_count"
+	MetricCacheMissCount        = "cache_miss_count"
 	// MetricDownstreamCallerCPU records caller-side CPU work for downstream serialization / client overhead (ms per edge attempt).
 	MetricDownstreamCallerCPU = "downstream_caller_cpu_ms"
 
 	// Broker / messaging queue metrics (kind: queue services and downstream kind: queue).
-	MetricQueueDepth             = "queue_depth"
-	MetricQueueEnqueueCount      = "queue_enqueue_count"
-	MetricQueueDequeueCount      = "queue_dequeue_count"
-	MetricQueueDropCount         = "queue_drop_count"
-	MetricQueueRedeliveryCount   = "queue_redelivery_count"
-	MetricQueueDlqCount          = "queue_dlq_count"
-	MetricMessageAgeMs           = "message_age_ms"
-	MetricQueuePublishLatencyMs  = "queue_publish_latency_ms"
+	MetricQueueDepth               = "queue_depth"
+	MetricQueuePublishAttemptCount = "queue_publish_attempt_count"
+	MetricQueueEnqueueCount        = "queue_enqueue_count"
+	MetricQueueDequeueCount        = "queue_dequeue_count"
+	MetricQueueDropCount           = "queue_drop_count"
+	MetricQueueRedeliveryCount     = "queue_redelivery_count"
+	MetricQueueDlqCount            = "queue_dlq_count"
+	MetricMessageAgeMs             = "message_age_ms"
+	MetricQueuePublishLatencyMs    = "queue_publish_latency_ms"
+
+	// Topic / pub-sub broker metrics (kind: topic).
+	MetricTopicPublishCount     = "topic_publish_count"
+	MetricTopicDeliverCount     = "topic_deliver_count"
+	MetricTopicDropCount        = "topic_drop_count"
+	MetricTopicRedeliveryCount  = "topic_redelivery_count"
+	MetricTopicDlqCount         = "topic_dlq_count"
+	MetricTopicBacklogDepth     = "topic_backlog_depth"
+	MetricTopicMessageAgeMs     = "topic_message_age_ms"
+	MetricTopicPublishLatencyMs = "topic_publish_latency_ms"
+	MetricTopicConsumerLag      = "topic_consumer_lag"
 )
 
 // RecordLatency records end-to-end latency for a completed request (per-hop total duration when the request node finishes).
@@ -138,6 +151,11 @@ func RecordQueueEnqueueCount(collector *Collector, count float64, timestamp time
 	collector.Record(MetricQueueEnqueueCount, count, timestamp, labels)
 }
 
+// RecordQueuePublishAttemptCount records a producer publish attempt (accepted or dropped).
+func RecordQueuePublishAttemptCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricQueuePublishAttemptCount, count, timestamp, labels)
+}
+
 // RecordQueueDequeueCount records one message dispatched to a consumer.
 func RecordQueueDequeueCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricQueueDequeueCount, count, timestamp, labels)
@@ -166,6 +184,42 @@ func RecordMessageAgeMs(collector *Collector, ageMs float64, timestamp time.Time
 // RecordQueuePublishLatencyMs records producer-side publish/ack latency for a broker edge (delivery_latency_ms sample path).
 func RecordQueuePublishLatencyMs(collector *Collector, latencyMs float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricQueuePublishLatencyMs, latencyMs, timestamp, labels)
+}
+
+func RecordTopicPublishCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicPublishCount, count, timestamp, labels)
+}
+
+func RecordTopicDeliverCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicDeliverCount, count, timestamp, labels)
+}
+
+func RecordTopicDropCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicDropCount, count, timestamp, labels)
+}
+
+func RecordTopicRedeliveryCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicRedeliveryCount, count, timestamp, labels)
+}
+
+func RecordTopicDlqCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicDlqCount, count, timestamp, labels)
+}
+
+func RecordTopicBacklogDepth(collector *Collector, depth float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicBacklogDepth, depth, timestamp, labels)
+}
+
+func RecordTopicMessageAgeMs(collector *Collector, ageMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicMessageAgeMs, ageMs, timestamp, labels)
+}
+
+func RecordTopicPublishLatencyMs(collector *Collector, latencyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicPublishLatencyMs, latencyMs, timestamp, labels)
+}
+
+func RecordTopicConsumerLag(collector *Collector, lag float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopicConsumerLag, lag, timestamp, labels)
 }
 
 // RecordIngressLogicalFailure records one user-visible ingress/root logical failure (for SLO error rate).
@@ -210,6 +264,9 @@ type RunMetricsOptions struct {
 	// instance, treating missing series as 0 (idle replicas that never emitted samples).
 	// ConcurrentRequests and QueueLength use the sum of the latest gauge per listed instance.
 	InstanceIDsByService map[string][]string
+	// Optional live broker snapshots from resource manager at conversion time.
+	QueueBrokerSnapshots []resource.QueueBrokerHealthSnapshot
+	TopicBrokerSnapshots []resource.TopicBrokerHealthSnapshot
 }
 
 func optsInstanceIDs(opts *RunMetricsOptions, serviceName string) []string {
@@ -243,6 +300,18 @@ func sumLatestGaugeAcrossLabels(collector *Collector, metricName string) float64
 		}
 	}
 	return sum
+}
+
+// maxLatestGaugeAcrossLabels returns the maximum latest gauge sample per label combination.
+func maxLatestGaugeAcrossLabels(collector *Collector, metricName string) float64 {
+	maxV := 0.0
+	for _, labels := range collector.GetLabelsForMetric(metricName) {
+		points := collector.GetTimeSeries(metricName, labels)
+		if len(points) > 0 && points[len(points)-1].Value > maxV {
+			maxV = points[len(points)-1].Value
+		}
+	}
+	return maxV
 }
 
 // sumRequestCountWithLabel sums request_count samples where labels[key] == value.
@@ -541,31 +610,88 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		attemptErrRate = float64(failedRequests) / float64(totalRequests)
 	}
 
+	queueEnq := int64(sumSampleValuesForMetric(collector, MetricQueueEnqueueCount))
+	queueAttempts := int64(sumSampleValuesForMetric(collector, MetricQueuePublishAttemptCount))
+	queueDrop := int64(sumSampleValuesForMetric(collector, MetricQueueDropCount))
+	topicPub := int64(sumSampleValuesForMetric(collector, MetricTopicPublishCount))
+	topicDrop := int64(sumSampleValuesForMetric(collector, MetricTopicDropCount))
+
+	queueOldestAge := 0.0
+	topicOldestAge := 0.0
+	maxQueueDepth := maxLatestGaugeAcrossLabels(collector, MetricQueueDepth)
+	maxTopicBacklogDepth := maxLatestGaugeAcrossLabels(collector, MetricTopicBacklogDepth)
+	maxTopicLag := maxLatestGaugeAcrossLabels(collector, MetricTopicConsumerLag)
+	if opts != nil {
+		for _, s := range opts.QueueBrokerSnapshots {
+			if s.OldestMessageAgeMs > queueOldestAge {
+				queueOldestAge = s.OldestMessageAgeMs
+			}
+			if float64(s.Depth) > maxQueueDepth {
+				maxQueueDepth = float64(s.Depth)
+			}
+		}
+		for _, s := range opts.TopicBrokerSnapshots {
+			if s.OldestMessageAgeMs > topicOldestAge {
+				topicOldestAge = s.OldestMessageAgeMs
+			}
+			if float64(s.Depth) > maxTopicBacklogDepth {
+				maxTopicBacklogDepth = float64(s.Depth)
+			}
+			if float64(s.Depth) > maxTopicLag {
+				maxTopicLag = float64(s.Depth)
+			}
+		}
+	}
+
+	queueDropRate := 0.0
+	if queueAttempts > 0 {
+		queueDropRate = float64(queueDrop) / float64(queueAttempts)
+	}
+	topicDropRate := 0.0
+	topicDeliveryAttempts := int64(sumSampleValuesForMetric(collector, MetricTopicDeliverCount)) + topicDrop
+	if topicDeliveryAttempts > 0 {
+		topicDropRate = float64(topicDrop) / float64(topicDeliveryAttempts)
+	}
+
 	return &models.RunMetrics{
-		TotalRequests:         totalRequests,
-		SuccessfulRequests:    successfulRequests,
-		FailedRequests:        failedRequests,
-		LatencyP50:            latencyP50,
-		LatencyP95:            latencyP95,
-		LatencyP99:            latencyP99,
-		LatencyMean:           latencyMean,
-		ThroughputRPS:         throughputRPS,
-		IngressRequests:       ingressReq,
-		InternalRequests:      internalReq,
-		IngressThroughputRPS:  ingressThroughputRPS,
-		IngressFailedRequests: ingressFailed,
-		IngressErrorRate:      ingressErrRate,
-		AttemptFailedRequests: failedRequests,
-		AttemptErrorRate:      attemptErrRate,
-		RetryAttempts:         retryAttempts,
-		TimeoutErrors:         timeoutErrors,
-		QueueEnqueueCountTotal:    int64(sumSampleValuesForMetric(collector, MetricQueueEnqueueCount)),
-		QueueDequeueCountTotal:     int64(sumSampleValuesForMetric(collector, MetricQueueDequeueCount)),
-		QueueDropCountTotal:        int64(sumSampleValuesForMetric(collector, MetricQueueDropCount)),
-		QueueRedeliveryCountTotal:  int64(sumSampleValuesForMetric(collector, MetricQueueRedeliveryCount)),
-		QueueDlqCountTotal:         int64(sumSampleValuesForMetric(collector, MetricQueueDlqCount)),
-		QueueDepthSum:              sumLatestGaugeAcrossLabels(collector, MetricQueueDepth),
-		ServiceMetrics:        serviceMetrics,
+		TotalRequests:             totalRequests,
+		SuccessfulRequests:        successfulRequests,
+		FailedRequests:            failedRequests,
+		LatencyP50:                latencyP50,
+		LatencyP95:                latencyP95,
+		LatencyP99:                latencyP99,
+		LatencyMean:               latencyMean,
+		ThroughputRPS:             throughputRPS,
+		IngressRequests:           ingressReq,
+		InternalRequests:          internalReq,
+		IngressThroughputRPS:      ingressThroughputRPS,
+		IngressFailedRequests:     ingressFailed,
+		IngressErrorRate:          ingressErrRate,
+		AttemptFailedRequests:     failedRequests,
+		AttemptErrorRate:          attemptErrRate,
+		RetryAttempts:             retryAttempts,
+		TimeoutErrors:             timeoutErrors,
+		QueueEnqueueCountTotal:    queueEnq,
+		QueueDequeueCountTotal:    int64(sumSampleValuesForMetric(collector, MetricQueueDequeueCount)),
+		QueueDropCountTotal:       queueDrop,
+		QueueRedeliveryCountTotal: int64(sumSampleValuesForMetric(collector, MetricQueueRedeliveryCount)),
+		QueueDlqCountTotal:        int64(sumSampleValuesForMetric(collector, MetricQueueDlqCount)),
+		QueueDepthSum:             sumLatestGaugeAcrossLabels(collector, MetricQueueDepth),
+		TopicPublishCountTotal:    topicPub,
+		TopicDeliverCountTotal:    int64(sumSampleValuesForMetric(collector, MetricTopicDeliverCount)),
+		TopicDropCountTotal:       topicDrop,
+		TopicRedeliveryCountTotal: int64(sumSampleValuesForMetric(collector, MetricTopicRedeliveryCount)),
+		TopicDlqCountTotal:        int64(sumSampleValuesForMetric(collector, MetricTopicDlqCount)),
+		TopicBacklogDepthSum:      sumLatestGaugeAcrossLabels(collector, MetricTopicBacklogDepth),
+		TopicConsumerLagSum:       sumLatestGaugeAcrossLabels(collector, MetricTopicConsumerLag),
+		QueueOldestMessageAgeMs:   queueOldestAge,
+		TopicOldestMessageAgeMs:   topicOldestAge,
+		MaxQueueDepth:             maxQueueDepth,
+		MaxTopicBacklogDepth:      maxTopicBacklogDepth,
+		MaxTopicConsumerLag:       maxTopicLag,
+		QueueDropRate:             queueDropRate,
+		TopicDropRate:             topicDropRate,
+		ServiceMetrics:            serviceMetrics,
 	}
 }
 

@@ -500,6 +500,53 @@ func TestNotifierNotify_PrefersFinalConfigOnRecordOverOptimizationHistory(t *tes
 	}
 }
 
+func TestNotifierNotify_IncludesBrokerResourcesWhenProvided(t *testing.T) {
+	payloadCh := make(chan map[string]interface{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "run-with-resources",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+	}
+	resources := map[string]any{
+		"queues": []map[string]any{{"broker_service": "mq", "topic": "/orders", "depth": 1.0}},
+		"topics": []map[string]any{{"broker_service": "evt", "topic": "/events", "consumer_group": "g1", "depth": 2.0}},
+	}
+	NewNotifier().Notify(callbackURL, "", rec, resources)
+
+	select {
+	case payload := <-payloadCh:
+		rs, ok := payload["resources"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("expected resources object, got %T", payload["resources"])
+		}
+		if _, ok := rs["queues"]; !ok {
+			t.Fatalf("expected resources.queues in callback payload, got %v", rs)
+		}
+		if _, ok := rs["topics"]; !ok {
+			t.Fatalf("expected resources.topics in callback payload, got %v", rs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for callback payload")
+	}
+}
+
 func TestNotifierNotify_EmptyURL(t *testing.T) {
 	notifier := NewNotifier()
 	rec := &RunRecord{

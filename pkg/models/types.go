@@ -60,6 +60,21 @@ type RunMetrics struct {
 	QueueRedeliveryCountTotal   int64   `json:"queue_redelivery_count_total,omitempty"`
 	QueueDlqCountTotal          int64   `json:"queue_dlq_count_total,omitempty"`
 	QueueDepthSum               float64 `json:"queue_depth_sum,omitempty"`
+	// Topic / pub-sub broker rollups (counters sum all label series; *_depth_sum sums latest gauge per label set).
+	TopicPublishCountTotal     int64   `json:"topic_publish_count_total,omitempty"`
+	TopicDeliverCountTotal     int64   `json:"topic_deliver_count_total,omitempty"`
+	TopicDropCountTotal        int64   `json:"topic_drop_count_total,omitempty"`
+	TopicRedeliveryCountTotal  int64   `json:"topic_redelivery_count_total,omitempty"`
+	TopicDlqCountTotal         int64   `json:"topic_dlq_count_total,omitempty"`
+	TopicBacklogDepthSum       float64 `json:"topic_backlog_depth_sum,omitempty"`
+	TopicConsumerLagSum        float64 `json:"topic_consumer_lag_sum,omitempty"`
+	QueueOldestMessageAgeMs    float64 `json:"queue_oldest_message_age_ms,omitempty"`
+	TopicOldestMessageAgeMs    float64 `json:"topic_oldest_message_age_ms,omitempty"`
+	MaxQueueDepth              float64 `json:"max_queue_depth,omitempty"`
+	MaxTopicBacklogDepth       float64 `json:"max_topic_backlog_depth,omitempty"`
+	MaxTopicConsumerLag        float64 `json:"max_topic_consumer_lag,omitempty"`
+	QueueDropRate              float64 `json:"queue_drop_rate,omitempty"`
+	TopicDropRate              float64 `json:"topic_drop_rate,omitempty"`
 	CPUUtilization   float64 `json:"cpu_utilization"`
 	MemoryUtilization  float64                    `json:"memory_utilization"`
 	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`

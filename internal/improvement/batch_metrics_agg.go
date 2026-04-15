@@ -44,6 +44,13 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	var tput float64
 	var ingressTput float64
 	var maxIngressErr, maxAttemptErr float64
+	var qe, qd, qdrop, qred, qdlq int64
+	var qdepth float64
+	var tp, td, tdrop, tred, tdlq int64
+	var tbd, tcl float64
+	var maxQueueDepth, maxTopicBacklog, maxTopicLag float64
+	var maxQueueOldestAge, maxTopicOldestAge float64
+	var maxQueueDropRate, maxTopicDropRate float64
 	firstPerc := true
 	for _, m := range runs {
 		if m == nil {
@@ -81,6 +88,40 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 		}
 		tput += m.GetThroughputRps()
 		ingressTput += m.GetIngressThroughputRps()
+		qe += m.GetQueueEnqueueCountTotal()
+		qd += m.GetQueueDequeueCountTotal()
+		qdrop += m.GetQueueDropCountTotal()
+		qred += m.GetQueueRedeliveryCountTotal()
+		qdlq += m.GetQueueDlqCountTotal()
+		qdepth += m.GetQueueDepthSum()
+		tp += m.GetTopicPublishCountTotal()
+		td += m.GetTopicDeliverCountTotal()
+		tdrop += m.GetTopicDropCountTotal()
+		tred += m.GetTopicRedeliveryCountTotal()
+		tdlq += m.GetTopicDlqCountTotal()
+		tbd += m.GetTopicBacklogDepthSum()
+		tcl += m.GetTopicConsumerLagSum()
+		if v := m.GetMaxQueueDepth(); v > maxQueueDepth {
+			maxQueueDepth = v
+		}
+		if v := m.GetMaxTopicBacklogDepth(); v > maxTopicBacklog {
+			maxTopicBacklog = v
+		}
+		if v := m.GetMaxTopicConsumerLag(); v > maxTopicLag {
+			maxTopicLag = v
+		}
+		if v := m.GetQueueOldestMessageAgeMs(); v > maxQueueOldestAge {
+			maxQueueOldestAge = v
+		}
+		if v := m.GetTopicOldestMessageAgeMs(); v > maxTopicOldestAge {
+			maxTopicOldestAge = v
+		}
+		if v := m.GetQueueDropRate(); v > maxQueueDropRate {
+			maxQueueDropRate = v
+		}
+		if v := m.GetTopicDropRate(); v > maxTopicDropRate {
+			maxTopicDropRate = v
+		}
 	}
 	out.TotalRequests = int64(float64(tr) / n)
 	out.SuccessfulRequests = int64(float64(sr) / n)
@@ -109,6 +150,26 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	}
 	out.ThroughputRps = tput / n
 	out.IngressThroughputRps = ingressTput / n
+	out.QueueEnqueueCountTotal = int64(float64(qe) / n)
+	out.QueueDequeueCountTotal = int64(float64(qd) / n)
+	out.QueueDropCountTotal = int64(float64(qdrop) / n)
+	out.QueueRedeliveryCountTotal = int64(float64(qred) / n)
+	out.QueueDlqCountTotal = int64(float64(qdlq) / n)
+	out.QueueDepthSum = qdepth / n
+	out.TopicPublishCountTotal = int64(float64(tp) / n)
+	out.TopicDeliverCountTotal = int64(float64(td) / n)
+	out.TopicDropCountTotal = int64(float64(tdrop) / n)
+	out.TopicRedeliveryCountTotal = int64(float64(tred) / n)
+	out.TopicDlqCountTotal = int64(float64(tdlq) / n)
+	out.TopicBacklogDepthSum = tbd / n
+	out.TopicConsumerLagSum = tcl / n
+	out.MaxQueueDepth = maxQueueDepth
+	out.MaxTopicBacklogDepth = maxTopicBacklog
+	out.MaxTopicConsumerLag = maxTopicLag
+	out.QueueOldestMessageAgeMs = maxQueueOldestAge
+	out.TopicOldestMessageAgeMs = maxTopicOldestAge
+	out.QueueDropRate = maxQueueDropRate
+	out.TopicDropRate = maxTopicDropRate
 
 	byName := make(map[string][]*simulationv1.ServiceMetrics)
 	for _, m := range runs {

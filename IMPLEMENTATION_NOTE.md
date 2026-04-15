@@ -67,7 +67,67 @@
 - **Mixed sync + async queue**: If the hop has both **sync** children and **async queue** edges with deferred ack, parent finalize waits for **both** the last sync child and the publish-ack deadline (`max(ack_time, sync_completion)`).
 - **Backpressure**: **`drop_policy`** applies when **`capacity`** is reached (`block` rejects with `reason=block_full`; `reject` / `drop_newest` drop the publish; `drop_oldest` evicts the oldest message). **`queue_drop_count`** records drops with **`reason`**.
 - **Consumers**: **`queue_dequeue`** starts a consumer request when **concurrency** allows; **`queue_ack_timeout`** fails slow consumers, increments **redelivery** up to **`max_redeliveries`**, then **`queue_dlq`** (metrics + optional DLQ endpoint in config).
-- **Metrics**: **`queue_depth`** (gauge), **`queue_enqueue_count`**, **`queue_dequeue_count`**, **`queue_drop_count`**, **`queue_redelivery_count`**, **`queue_dlq_count`**, **`message_age_ms`**, **`queue_publish_latency_ms`**, with **`broker_service`**, **`topic`/`queue`**, producer/consumer **`service`/`endpoint`**, **`origin`**, **`traffic_class`**, **`source_kind`**, **`reason`** where applicable. **RunMetrics** rollups include **`queue_*_count_total`** and **`queue_depth_sum`** (sum of latest **`queue_depth`** gauges per label set). **Ingress** **`request_count`** remains workload arrivals; broker consumer work is **`origin=downstream`**.
+- **Metrics**: **`queue_depth`** (gauge), **`queue_enqueue_count`**, **`queue_dequeue_count`**, **`queue_drop_count`**, **`queue_redelivery_count`**, **`queue_dlq_count`**, **`message_age_ms`**, **`queue_publish_latency_ms`**. State gauges (`queue_depth`, topic backlog/lag gauges) use shard-identity labels only (`broker_service`, `topic`/`queue`, and topic `consumer_group`/`subscriber`), while event counters/latency keep rich producer/consumer labels plus **`origin`**, **`traffic_class`**, **`source_kind`**, **`reason`** where applicable. **`queue_enqueue_count_total`** is accepted enqueues only; `queue_drop_rate` uses queue publish attempts as denominator (accepted + rejected attempts) so it stays in `[0,1]` even when all attempts are dropped. **RunMetrics** rollups include **`queue_*_count_total`** and **`queue_depth_sum`** (sum of latest **`queue_depth`** gauges per shard label set). **Ingress** **`request_count`** remains workload arrivals; broker consumer work is **`origin=downstream`**.
+
+## Broker / pub-sub topic (`kind: topic` + `downstream.kind: topic`)
+
+- **Semantics**: **`kind: topic`** models **fan-out** to **independent consumer groups** (Kafka-style offsets / RabbitMQ fan-out) and partition-scoped queues. Runtime shards are keyed by `(broker_service, topic, partition, consumer_group)`. Each **`behavior.topic.subscribers[]`** entry is one group: **`consumer_group`** key, **`consumer_target`**, **`consumer_concurrency`**, **`ack_timeout_ms`**, **`max_redeliveries`**, **`dlq`**, **`drop_policy`**. A **publish** creates **one queued message per subscriber group** in one assigned partition; backlog depth, in-flight, redelivery, and DLQ are **per partition per group**.
+- **Offsets / commit / lag**: Each `(broker, topic, partition)` has a monotonic **log offset** (0,1,2,…) assigned at publish (one logical offset per publish, shared across subscriber fan-out). Each subscriber group tracks a **committed offset frontier** (contiguous offsets considered done). **`topic_consumer_lag`** (gauge) uses **`max(0, high_watermark_exclusive − committed_offset_exclusive)`**, so in-flight work before commit still counts as lag, matching **HW − committed** semantics (not raw queue depth alone). Successful consumer completion **commits** the message offset. Ack-timeout / redelivery **does not** commit until success or DLQ.
+- **Per-group enqueue drops**: If a subscriber shard rejects a message (`reject` / `drop_newest` / `block_full` when full), the partition offset was still allocated for that publish; the simulator **commits/skips** that offset for **that group only** via `RecordTopicOffsetProcessed` so consumer lag does not stick permanently while depth/in_flight are zero. `drop_oldest` still commits the evicted head offset separately from accepting the new message.
+- **Retention (`topic_retention_expire`)**: When **`retention_ms > 0`**, a DES **`topic_retention_expire`** event is scheduled for **oldest queued enqueue time + retention_ms** (per shard/partition/group), with **per-shard dedup**: a new event is scheduled only if there is no pending schedule or the new **fire time** is **strictly earlier** than the next already-scheduled retention fire (avoids O(publishes) duplicate events for the same earliest-expiry instant). The handler removes queued messages whose age is ≥ retention at the current simulation time, emits **`topic_drop_count`** with **`reason=retention_expired`**, advances the commit frontier for removed offsets (treat as skipped/expired), clears the dedup token, refreshes backlog/lag gauges, and reschedules the next expiry if backlog remains. Late/stale retention events are idempotent.
+- **DLQ**: When **`topic_dlq`** fires after max redeliveries, the shard records DLQ and **commits** that message’s offset so lag cannot stick unbounded (“resolved” DLQ, not unresolved ghost lag).
+- **Edges**: Use **`downstream.kind: topic`** targeting a **`kind: topic`** service; the **topic path** is the broker **endpoint** (e.g. `to: events-broker:/orders`). Optional edge fields: **`partition_key`** (static string) and **`partition_key_from`** (parent **`Request.Metadata`** field name); if both are set, **`partition_key`** wins for routing hash / round-robin partition choice.
+- **Producer timing**: Same async pattern as queue: caller CPU + **`delivery_latency_ms`** unless **`async_fire_and_forget: true`**. **`max_async_hops`** / **`max_trace_depth`** still apply.
+- **Metrics**: **`topic_*`** series (`topic_publish_count`, `topic_deliver_count`, `topic_drop_count`, `topic_redelivery_count`, `topic_dlq_count`, `topic_backlog_depth`, `topic_message_age_ms`, `topic_publish_latency_ms`, optional **`topic_consumer_lag`**) with labels **`topic_service`/`broker_service`**, **`topic`**, **`partition`**, **`subscriber`**, **`consumer_group`**, producer/consumer **`service`/`endpoint`**, **`origin`**, **`source_kind`**, **`traffic_class`**, **`reason`**. **`topic_drop_rate`** uses subscriber delivery attempts as denominator (`topic_deliver_count + topic_drop_count`), so fan-out drop rates stay bounded by 1. Retention uses simulated time (`retention_ms`) and emits drops with `reason=retention_expired`. **RunMetrics** rollups: **`topic_*_count_total`**, **`topic_backlog_depth_sum`**, **`topic_consumer_lag_sum`**.
+
+## Broker health SLO snapshots (optimizer/controller inputs)
+
+- **Ingress SLOs vs async SLOs**: Ingress latency/error describe user-visible synchronous paths. Broker backlog/lag SLOs describe asynchronous health and must be tracked independently.
+- **Live snapshot fields**: Resource manager exposes queue/topic shard snapshots with **`depth`**, **`in_flight`**, **`max_concurrency`**, **`consumer_target`**, **`oldest_message_age_ms`**, and shard counters (**drop/redelivery/dlq** where tracked).
+- **RunMetrics broker risk fields**: `queue_oldest_message_age_ms`, `topic_oldest_message_age_ms`, `max_queue_depth`, `max_topic_backlog_depth`, `max_topic_consumer_lag`, `queue_drop_rate`, `topic_drop_rate` (plus existing queue/topic totals and sums).
+- **Aggregation semantics**: Multi-seed aggregation keeps broker risk fields conservative via **max** (`max_*`, oldest-age, drop-rate) while keeping count/sum totals averaged as run-level summaries.
+
+### Batch optimization broker guardrails
+
+- `BatchOptimizationConfig` supports broker guardrails: `max_queue_depth_sum`, `max_topic_backlog_depth_sum`, `max_topic_consumer_lag_sum`, `max_queue_oldest_message_age_ms`, `max_topic_oldest_message_age_ms`, `max_queue_drop_count`, `max_topic_drop_count`, `max_queue_dlq_count`, `max_topic_dlq_count`.
+- `ComputeBatchScore` treats broker guardrail breaches as **violation terms** (feasibility-first), alongside p95/p99/error/throughput violations.
+- Neighbor ordering (`GenerateBatchNeighbors`) treats broker pressure breaches as **stress**, prioritizing capacity-increasing neighbors first.
+
+### Online controller broker awareness
+
+- The online controller derives broker pressure per consumer target service from live queue/topic shard snapshots.
+- Scale-down guard blocks when broker pressure exists for that service (`backlog`, `in_flight`, `oldest_message_age_ms`, drops, or DLQ).
+- Scale-up preference is broker-aware: when a consumer target has broker pressure, controller prefers scaling that consumer service (vertical CPU first when allowed, otherwise horizontal replicas).
+
+### Broker resources payload schema
+
+- Broker shard snapshots are exposed under `resources.queues` and `resources.topics` in:
+  - `GET /v1/runs/{id}/metrics` (when run manager state is available),
+  - SSE `metrics_snapshot` payload (`/metrics/stream`),
+  - `GET /v1/runs/{id}/export`,
+  - callback notifications (`NotificationPayload.resources`).
+- `resources.queues[]` fields:
+  - `broker_service`, `topic`,
+  - `depth`, `in_flight`, `max_concurrency`,
+  - `consumer_target`,
+  - `oldest_message_age_ms`,
+  - `drop_count`, `redelivery_count`, `dlq_count`.
+- `resources.topics[]` fields:
+  - `broker_service`, `topic`, `partition`, `subscriber`, `consumer_group`,
+  - `high_watermark`, `committed_offset`, `consumer_lag` (partition log end offset exclusive, group commit frontier exclusive, and lag in offset units),
+  - `depth`, `in_flight`, `max_concurrency`,
+  - `consumer_target`,
+  - `oldest_message_age_ms`,
+  - `drop_count`, `redelivery_count`, `dlq_count`.
+
+### Upstream app-map → scenario (transformer guidance)
+
+- **`type: user` / `type: client`**: map to **`workload.from`** with **`source_kind: user|client`** and **`traffic_class: ingress|background`** (not simulator **`services`** entries).
+- **`type: gateway`**: **`kind: api_gateway`**, **`role: ingress`**.
+- **`type: service`**: **`kind: service`**, **`role: internal`**.
+- **`type: database`**: **`kind: database`**, **`role: datastore`**, **`model: db_latency`**.
+- **`type: external`**: **`kind: external`**.
+- **`type: topic`**: **`kind: topic`** when **multiple subscribers / groups** are required; dependencies **into** a topic are **async/event publish** edges; dependencies **out** are **subscriber** processing, not synchronous RPC.
 
 ## Service model, kind, and role
 

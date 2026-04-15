@@ -15,17 +15,17 @@ import (
 )
 
 const (
-	metaQueueEdge            = "queue_edge"
-	metaBrokerService        = "broker_service"
-	metaBrokerTopic          = "broker_topic"
-	metaQueueConsumer        = "queue_consumer"
-	metaQueueMsgID           = "queue_msg_id"
-	metaQueueShardKey        = "queue_shard_key"
-	metaQueueProducerService = "queue_producer_service"
+	metaQueueEdge             = "queue_edge"
+	metaBrokerService         = "broker_service"
+	metaBrokerTopic           = "broker_topic"
+	metaQueueConsumer         = "queue_consumer"
+	metaQueueMsgID            = "queue_msg_id"
+	metaQueueShardKey         = "queue_shard_key"
+	metaQueueProducerService  = "queue_producer_service"
 	metaQueueProducerEp       = "queue_producer_endpoint"
-	metaDeferredQueueFinalize   = "deferred_queue_finalize"
-	metaQueueAckDeadline        = "queue_ack_deadline"
-	metaDeferredCallerExtraMs   = "deferred_caller_extra_ms"
+	metaDeferredQueueFinalize = "deferred_queue_finalize"
+	metaQueueAckDeadline      = "queue_ack_deadline"
+	metaDeferredCallerExtraMs = "deferred_caller_extra_ms"
 )
 
 // usesQueueBroker reports whether this edge should use broker semantics (not direct HTTP spawn).
@@ -62,6 +62,14 @@ func queueBrokerLabels(state *scenarioState, brokerID, topic, producerSvc, produ
 	lbl["topic"] = topic
 	lbl["queue"] = topic
 	return lbl
+}
+
+func queueStateLabels(brokerID, topic string) map[string]string {
+	return map[string]string{
+		"broker_service": brokerID,
+		"topic":          topic,
+		"queue":          topic,
+	}
 }
 
 func sampleQueueDeliveryMs(state *scenarioState, brokerID string) float64 {
@@ -146,15 +154,20 @@ func handleQueueEnqueue(state *scenarioState, eng *engine.Engine) engine.EventHa
 		}
 		res := shard.Enqueue(msg)
 		lbl := queueBrokerLabels(state, brokerID, topic, parent.ServiceName, parent.Endpoint)
-		metrics.RecordQueueEnqueueCount(state.collector, 1.0, simTime, lbl)
+		stateLbl := queueStateLabels(brokerID, topic)
+		metrics.RecordQueuePublishAttemptCount(state.collector, 1.0, simTime, lbl)
 		if !res.Accepted {
 			metrics.RecordQueueDropCount(state.collector, 1.0, simTime, withReason(lbl, res.DropReason))
-			metrics.RecordQueueDepth(state.collector, float64(shard.Depth()), simTime, lbl)
+			metrics.RecordQueueDepth(state.collector, float64(shard.Depth()), simTime, stateLbl)
 			return nil
+		}
+		metrics.RecordQueueEnqueueCount(state.collector, 1.0, simTime, lbl)
+		if res.DroppedOldest {
+			metrics.RecordQueueDropCount(state.collector, 1.0, simTime, withReason(lbl, "drop_oldest"))
 		}
 		deliveryMs := metadataFloat64(evt.Data, "delivery_ms")
 		metrics.RecordQueuePublishLatencyMs(state.collector, deliveryMs, simTime, lbl)
-		metrics.RecordQueueDepth(state.collector, float64(shard.Depth()), simTime, lbl)
+		metrics.RecordQueueDepth(state.collector, float64(shard.Depth()), simTime, stateLbl)
 		metrics.RecordMessageAgeMs(state.collector, 0, simTime, lbl)
 
 		eng.ScheduleAt(engine.EventTypeQueueDequeue, simTime, nil, brokerID, map[string]interface{}{
@@ -294,6 +307,7 @@ func handleQueueAckTimeout(state *scenarioState, eng *engine.Engine) engine.Even
 		if child.Metadata == nil {
 			child.Metadata = make(map[string]interface{})
 		}
+		child.Metadata[metaBrokerAckTimedOut] = true
 		lbl := labelsForRequestMetrics(child, child.ServiceName, child.Endpoint)
 		el := metrics.EndpointErrorLabels(lbl, metrics.ReasonTimeout)
 		metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
@@ -326,6 +340,7 @@ func handleQueueAckTimeout(state *scenarioState, eng *engine.Engine) engine.Even
 			})
 		} else {
 			shard.RequeueFront(msg)
+			shard.NoteRedelivery()
 			metrics.RecordQueueRedeliveryCount(state.collector, 1.0, simTime, qLbl)
 		}
 
@@ -382,6 +397,11 @@ func handleQueueDLQ(state *scenarioState, eng *engine.Engine) engine.EventHandle
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
+		if topic := metadataString(evt.Data, metaBrokerTopic); topic != "" {
+			if shard, ok := state.rm.BrokerQueues().GetShard(evt.ServiceID, topic); ok {
+				shard.NoteDLQ()
+			}
+		}
 		lbl := queueBrokerLabels(state, evt.ServiceID, metadataString(evt.Data, metaBrokerTopic), "", "")
 		metrics.RecordQueueDlqCount(state.collector, 1.0, simTime, lbl)
 		return nil
@@ -416,7 +436,7 @@ func metaQueueConsumerDone(state *scenarioState, eng *engine.Engine, request *mo
 		return
 	}
 	shard.ConsumerFinished()
-	lbl := queueBrokerLabels(state, parts[0], parts[1], request.ServiceName, request.Endpoint)
+	lbl := queueStateLabels(parts[0], parts[1])
 	metrics.RecordQueueDepth(state.collector, float64(shard.Depth()), simTime, lbl)
 	eng.ScheduleAt(engine.EventTypeQueueDequeue, simTime, nil, parts[0], map[string]interface{}{
 		metaBrokerService: parts[0],

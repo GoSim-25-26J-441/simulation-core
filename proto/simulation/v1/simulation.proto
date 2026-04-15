@@ -393,6 +393,10 @@ enum BatchScalingAction {
   HOST_SCALE_DOWN_CPU = 10;
   HOST_SCALE_UP_MEMORY = 11;
   HOST_SCALE_DOWN_MEMORY = 12;
+  QUEUE_SCALE_UP_CONCURRENCY = 13;
+  QUEUE_SCALE_DOWN_CONCURRENCY = 14;
+  TOPIC_SUBSCRIBER_SCALE_UP_CONCURRENCY = 15;
+  TOPIC_SUBSCRIBER_SCALE_DOWN_CONCURRENCY = 16;
 }
 
 message UtilizationBand {
@@ -428,6 +432,15 @@ message BatchPenaltyWeights {
   double service_memory_balance = 6;
   double host_cpu_balance = 7;
   double host_memory_balance = 8;
+  double queue_depth = 9;
+  double topic_backlog = 10;
+  double topic_lag = 11;
+  double queue_oldest_age = 12;
+  double topic_oldest_age = 13;
+  double queue_drop = 14;
+  double topic_drop = 15;
+  double queue_dlq = 16;
+  double topic_dlq = 17;
 }
 
 message BatchOptimizationConfig {
@@ -466,6 +479,15 @@ message BatchOptimizationConfig {
   // Optional: when unset, server defaults apply (local refinement on; deterministic seeds on).
   optional bool enable_local_refinement = 33;
   optional bool deterministic_candidate_seeds = 34;
+  double max_queue_depth_sum = 35;
+  double max_topic_backlog_depth_sum = 36;
+  double max_topic_consumer_lag_sum = 37;
+  double max_queue_oldest_message_age_ms = 38;
+  double max_topic_oldest_message_age_ms = 39;
+  double max_queue_drop_count = 40;
+  double max_topic_drop_count = 41;
+  double max_queue_dlq_count = 42;
+  double max_topic_dlq_count = 43;
 }
 
 message Run {
@@ -547,6 +569,22 @@ message RunMetrics {
   int64 queue_redelivery_count_total = 23;
   int64 queue_dlq_count_total = 24;
   double queue_depth_sum = 25;
+
+  // Topic / pub-sub broker rollups (same semantics as queue_* fields).
+  int64 topic_publish_count_total = 26;
+  int64 topic_deliver_count_total = 27;
+  int64 topic_drop_count_total = 28;
+  int64 topic_redelivery_count_total = 29;
+  int64 topic_dlq_count_total = 30;
+  double topic_backlog_depth_sum = 31;
+  double topic_consumer_lag_sum = 32;
+  double queue_oldest_message_age_ms = 33;
+  double topic_oldest_message_age_ms = 34;
+  double max_queue_depth = 35;
+  double max_topic_backlog_depth = 36;
+  double max_topic_consumer_lag = 37;
+  double queue_drop_rate = 38;
+  double topic_drop_rate = 39;
 
   repeated ServiceMetrics service_metrics = 9;
   // Per-host utilization when the simulator records host-level CPU/memory gauges.

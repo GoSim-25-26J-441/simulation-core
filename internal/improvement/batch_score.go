@@ -20,6 +20,15 @@ type BatchScore struct {
 	P99Violation     float64
 	ErrViolation     float64
 	TputViolation    float64
+	QueueDepthViolation        float64
+	TopicBacklogViolation      float64
+	TopicLagViolation          float64
+	QueueOldestAgeViolation    float64
+	TopicOldestAgeViolation    float64
+	QueueDropViolation         float64
+	TopicDropViolation         float64
+	QueueDlqViolation          float64
+	TopicDlqViolation          float64
 	InfraCost        float64
 	ServiceCPUBal    float64
 	ServiceMemBal    float64
@@ -174,6 +183,8 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 		pw = &simulationv1.BatchPenaltyWeights{
 			P95: 1, P99: 1, ErrorRate: 1, Throughput: 1,
 			ServiceCpuBalance: 1, ServiceMemoryBalance: 1, HostCpuBalance: 1, HostMemoryBalance: 1,
+			QueueDepth: 1, TopicBacklog: 1, TopicLag: 1,
+			QueueOldestAge: 1, TopicOldestAge: 1, QueueDrop: 1, TopicDrop: 1, QueueDlq: 1, TopicDlq: 1,
 		}
 	}
 	cw := spec.CostWeights
@@ -205,11 +216,49 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 	if spec.MinThroughput > 0 {
 		out.TputViolation = math.Max(0, spec.MinThroughput/math.Max(tput, scoreEps)-1)
 	}
+	if m != nil {
+		if spec.MaxQueueDepthSum > 0 {
+			out.QueueDepthViolation = math.Max(0, m.GetQueueDepthSum()/spec.MaxQueueDepthSum-1)
+		}
+		if spec.MaxTopicBacklogDepthSum > 0 {
+			out.TopicBacklogViolation = math.Max(0, m.GetTopicBacklogDepthSum()/spec.MaxTopicBacklogDepthSum-1)
+		}
+		if spec.MaxTopicConsumerLagSum > 0 {
+			out.TopicLagViolation = math.Max(0, m.GetTopicConsumerLagSum()/spec.MaxTopicConsumerLagSum-1)
+		}
+		if spec.MaxQueueOldestMessageAgeMs > 0 {
+			out.QueueOldestAgeViolation = math.Max(0, m.GetQueueOldestMessageAgeMs()/spec.MaxQueueOldestMessageAgeMs-1)
+		}
+		if spec.MaxTopicOldestMessageAgeMs > 0 {
+			out.TopicOldestAgeViolation = math.Max(0, m.GetTopicOldestMessageAgeMs()/spec.MaxTopicOldestMessageAgeMs-1)
+		}
+		if spec.MaxQueueDropCount > 0 {
+			out.QueueDropViolation = math.Max(0, float64(m.GetQueueDropCountTotal())/spec.MaxQueueDropCount-1)
+		}
+		if spec.MaxTopicDropCount > 0 {
+			out.TopicDropViolation = math.Max(0, float64(m.GetTopicDropCountTotal())/spec.MaxTopicDropCount-1)
+		}
+		if spec.MaxQueueDlqCount > 0 {
+			out.QueueDlqViolation = math.Max(0, float64(m.GetQueueDlqCountTotal())/spec.MaxQueueDlqCount-1)
+		}
+		if spec.MaxTopicDlqCount > 0 {
+			out.TopicDlqViolation = math.Max(0, float64(m.GetTopicDlqCountTotal())/spec.MaxTopicDlqCount-1)
+		}
+	}
 
 	out.ViolationScore = pw.P95*out.LatViolation +
 		pw.P99*out.P99Violation +
 		pw.ErrorRate*out.ErrViolation +
-		pw.Throughput*out.TputViolation
+		pw.Throughput*out.TputViolation +
+		pw.QueueDepth*out.QueueDepthViolation +
+		pw.TopicBacklog*out.TopicBacklogViolation +
+		pw.TopicLag*out.TopicLagViolation +
+		pw.QueueOldestAge*out.QueueOldestAgeViolation +
+		pw.TopicOldestAge*out.TopicOldestAgeViolation +
+		pw.QueueDrop*out.QueueDropViolation +
+		pw.TopicDrop*out.TopicDropViolation +
+		pw.QueueDlq*out.QueueDlqViolation +
+		pw.TopicDlq*out.TopicDlqViolation
 
 	maxCPU, meanCPU, maxMem, meanMem, n := serviceUtilStats(m)
 	if n > 0 {

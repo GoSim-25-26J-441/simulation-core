@@ -114,11 +114,8 @@ services:
               sigma: 1
 
   - id: messaging-queue
-    # Topic-style sample for upstream app-map `type: topic`.
-    # Current simulator support models topics as endpoint paths on a broker-like
-    # kind: queue service (for example messaging-queue:/user-events). Once
-    # first-class kind: topic is implemented, the transformer can map type: topic
-    # directly to kind: topic instead of this queue-backed representation.
+    # Point-to-point broker (kind: queue). For pub/sub with multiple independent
+    # consumer groups, use kind: topic (see notifications-topic in this file).
     kind: queue
     role: internal
     replicas: 1
@@ -158,6 +155,52 @@ services:
           sigma: 0.3
         downstream: []
       - path: /user-events
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0.5
+        default_memory_mb: 4
+        net_latency_ms:
+          mean: 1
+          sigma: 0.3
+        downstream: []
+
+  # First-class pub/sub: fan-out per consumer group (distinct from point-to-point messaging-queue above).
+  - id: notifications-topic
+    kind: topic
+    role: internal
+    replicas: 1
+    model: cpu
+    cpu_cores: 0.5
+    memory_mb: 256
+    scaling:
+      horizontal: true
+      vertical_cpu: true
+      vertical_memory: true
+    behavior:
+      topic:
+        partitions: 3
+        retention_ms: 600000
+        capacity: 100000
+        delivery_latency_ms:
+          mean: 2
+          sigma: 0.5
+        publish_ack: leader_ack
+        subscribers:
+          - name: to-processor
+            consumer_group: notif-processor
+            consumer_target: "messaging:/process"
+            consumer_concurrency: 4
+            ack_timeout_ms: 8000
+            max_redeliveries: 3
+            drop_policy: reject
+          - name: to-notify
+            consumer_group: notif-sidecar
+            consumer_target: "messaging:/notify"
+            consumer_concurrency: 2
+            ack_timeout_ms: 8000
+            max_redeliveries: 3
+            drop_policy: reject
+    endpoints:
+      - path: /broadcast
         mean_cpu_ms: 1
         cpu_sigma_ms: 0.5
         default_memory_mb: 4
@@ -295,6 +338,18 @@ services:
             call_count_mean: 1
             timeout_ms: 500
             downstream_fraction_cpu: 0.1
+            call_latency_ms:
+              mean: 2
+              sigma: 0.5
+          - to: notifications-topic:/broadcast
+            mode: async
+            kind: topic
+            probability: 0.1
+            call_count_mean: 1
+            timeout_ms: 500
+            downstream_fraction_cpu: 0.08
+            # DES demo: all async publishes on this edge share one partition key → hotspot on one shard.
+            partition_key: "hotspot-tenant-a"
             call_latency_ms:
               mean: 2
               sigma: 0.5

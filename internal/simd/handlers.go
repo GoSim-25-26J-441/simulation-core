@@ -35,6 +35,8 @@ type scenarioState struct {
 	pendingSyncMu sync.Mutex
 	// pendingSync counts synchronous downstream subtrees not yet reported complete for a request ID.
 	pendingSync map[string]int
+	// topicPartitionCursor keeps deterministic round-robin partition assignment per topic path.
+	topicPartitionCursor map[string]int
 }
 
 // SetSimEndTime sets the simulation end time used by periodic drain sweeps.
@@ -55,15 +57,16 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 	}
 
 	state := &scenarioState{
-		scenario:  scenario,
-		services:  make(map[string]*config.Service),
-		endpoints: make(map[string]*config.Endpoint),
-		rng:       utils.NewRandSource(rngSeed),
-		rm:        rm,
-		collector: collector,
-		policies:  policies,
-		interact:  interact,
-		pendingSync: make(map[string]int),
+		scenario:             scenario,
+		services:             make(map[string]*config.Service),
+		endpoints:            make(map[string]*config.Endpoint),
+		rng:                  utils.NewRandSource(rngSeed),
+		rm:                   rm,
+		collector:            collector,
+		policies:             policies,
+		interact:             interact,
+		pendingSync:          make(map[string]int),
+		topicPartitionCursor: make(map[string]int),
 	}
 
 	// Build service and endpoint maps (kept for backward compatibility and quick lookups)
@@ -115,6 +118,11 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeQueueRedelivery, handleQueueRedelivery(state, eng))
 	eng.RegisterHandler(engine.EventTypeQueueDLQ, handleQueueDLQ(state, eng))
 	eng.RegisterHandler(engine.EventTypeAsyncParentFinalize, handleAsyncParentFinalize(state, eng))
+	eng.RegisterHandler(engine.EventTypeTopicPublish, handleTopicPublish(state, eng))
+	eng.RegisterHandler(engine.EventTypeTopicDequeue, handleTopicDequeue(state, eng))
+	eng.RegisterHandler(engine.EventTypeTopicAckTimeout, handleTopicAckTimeout(state, eng))
+	eng.RegisterHandler(engine.EventTypeTopicDLQ, handleTopicDLQ(state, eng))
+	eng.RegisterHandler(engine.EventTypeTopicRetentionExpire, handleTopicRetentionExpire(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamTimeout, handleDownstreamTimeout(state, eng))
 	eng.RegisterHandler(engine.EventTypeDrainSweep, handleDrainSweep(state))
 }
@@ -164,6 +172,28 @@ func metadataInt(m map[string]interface{}, key string) int {
 		return int(t)
 	case float64:
 		return int(t)
+	default:
+		return 0
+	}
+}
+
+func metadataInt64(m map[string]interface{}, key string) int64 {
+	if m == nil {
+		return 0
+	}
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch t := v.(type) {
+	case int64:
+		return t
+	case int:
+		return int64(t)
+	case int32:
+		return int64(t)
+	case float64:
+		return int64(t)
 	default:
 		return 0
 	}
@@ -264,7 +294,7 @@ func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interac
 	lim := state.scenario.SimulationLimits
 	for _, downstreamCall := range downstreamCalls {
 		nextTD := td + 1
-		isAsync := downstreamCall.Call.IsAsync() || usesQueueBroker(state, downstreamCall)
+		isAsync := downstreamCall.Call.IsAsync() || usesAsyncBroker(state, downstreamCall)
 		nextAD := ad
 		if isAsync {
 			nextAD++
@@ -277,7 +307,7 @@ func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interac
 				continue
 			}
 		}
-		if usesQueueBroker(state, downstreamCall) {
+		if usesAsyncBroker(state, downstreamCall) {
 			asyncCalls = append(asyncCalls, downstreamCall)
 			continue
 		}
@@ -775,8 +805,20 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 
 		labels := labelsForRequestMetrics(request, serviceID, endpointPath)
 
-		if metadataBool(request.Metadata, metaQueueConsumer) {
+		brokerTimedOut := metadataBool(request.Metadata, metaBrokerAckTimedOut)
+		if !brokerTimedOut && metadataBool(request.Metadata, metaQueueConsumer) {
 			metaQueueConsumerDone(state, eng, request, simTime)
+		}
+		if !brokerTimedOut && metadataBool(request.Metadata, metaTopicConsumer) {
+			metaTopicConsumerDone(state, eng, request, simTime)
+		}
+		if brokerTimedOut {
+			if hasInstance {
+				if err := dequeueNextRequestForInstance(state, eng, rm, instanceID, serviceID, endpointPath, simTime); err != nil {
+					return err
+				}
+			}
+			return nil
 		}
 
 		if metadataBool(request.Metadata, "local_timeout") {
@@ -825,7 +867,12 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 
 		deferQueueFinalize := false
 		for _, dc := range asyncCalls {
-			if usesQueueBroker(state, dc) {
+			if usesTopicBroker(state, dc) {
+				eff := effectiveTopicForBroker(state, dc.ServiceID)
+				if !eff.AsyncFireAndForget {
+					deferQueueFinalize = true
+				}
+			} else if usesQueueBroker(state, dc) {
 				eff := effectiveQueueForBroker(state, dc.ServiceID)
 				if !eff.AsyncFireAndForget {
 					deferQueueFinalize = true

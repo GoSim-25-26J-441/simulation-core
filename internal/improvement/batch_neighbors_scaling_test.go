@@ -60,3 +60,83 @@ func TestGenerateBatchNeighborsDatabaseHorizontalWhenExplicit(t *testing.T) {
 		t.Fatal("expected scale-out neighbor when database horizontal is explicit")
 	}
 }
+
+func TestGenerateBatchNeighborsQueueConcurrencyActions(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 16, MemoryGB: 32}},
+		Services: []config.Service{
+			{
+				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
+				Behavior: &config.ServiceBehavior{Queue: &config.QueueBehavior{
+					ConsumerTarget: "svc:/p", ConsumerConcurrency: 2, MinConsumerConcurrency: 1, MaxConsumerConcurrency: 4,
+				}},
+				Endpoints: []config.Endpoint{{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+			},
+			{ID: "svc", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256, Endpoints: []config.Endpoint{{Path: "/p", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}}},
+		},
+	}
+	spec := batchspec.DefaultBatchSpec(base)
+	spec.AllowedActions = map[simulationv1.BatchScalingAction]struct{}{
+		simulationv1.BatchScalingAction_QUEUE_SCALE_UP_CONCURRENCY:   {},
+		simulationv1.BatchScalingAction_QUEUE_SCALE_DOWN_CONCURRENCY: {},
+	}
+	spec.AllowedActionsOrdered = []simulationv1.BatchScalingAction{
+		simulationv1.BatchScalingAction_QUEUE_SCALE_UP_CONCURRENCY,
+		simulationv1.BatchScalingAction_QUEUE_SCALE_DOWN_CONCURRENCY,
+	}
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil)
+	var up, down bool
+	for _, n := range neighbors {
+		cc := n.Services[0].Behavior.Queue.ConsumerConcurrency
+		if cc > 2 {
+			up = true
+		}
+		if cc < 2 {
+			down = true
+		}
+	}
+	if !up || !down {
+		t.Fatalf("expected queue concurrency up/down neighbors, got up=%v down=%v", up, down)
+	}
+}
+
+func TestGenerateBatchNeighborsTopicSubscriberConcurrencyActions(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 16, MemoryGB: 32}},
+		Services: []config.Service{
+			{ID: "svc", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256, Endpoints: []config.Endpoint{{Path: "/p", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}}},
+			{
+				ID: "evt", Kind: "topic", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
+				Behavior: &config.ServiceBehavior{Topic: &config.TopicBehavior{
+					Subscribers: []config.TopicSubscriber{
+						{Name: "sub", ConsumerGroup: "g1", ConsumerTarget: "svc:/p", ConsumerConcurrency: 2, MinConsumerConcurrency: 1, MaxConsumerConcurrency: 4},
+					},
+				}},
+				Endpoints: []config.Endpoint{{Path: "/ev", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+			},
+		},
+	}
+	spec := batchspec.DefaultBatchSpec(base)
+	spec.AllowedActions = map[simulationv1.BatchScalingAction]struct{}{
+		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_UP_CONCURRENCY:   {},
+		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_DOWN_CONCURRENCY: {},
+	}
+	spec.AllowedActionsOrdered = []simulationv1.BatchScalingAction{
+		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_UP_CONCURRENCY,
+		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_DOWN_CONCURRENCY,
+	}
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil)
+	var up, down bool
+	for _, n := range neighbors {
+		cc := n.Services[1].Behavior.Topic.Subscribers[0].ConsumerConcurrency
+		if cc > 2 {
+			up = true
+		}
+		if cc < 2 {
+			down = true
+		}
+	}
+	if !up || !down {
+		t.Fatalf("expected topic subscriber concurrency up/down neighbors, got up=%v down=%v", up, down)
+	}
+}

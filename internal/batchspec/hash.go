@@ -28,6 +28,9 @@ func ConfigHash(s *config.Scenario) uint64 {
 	writeI := func(x int) {
 		_ = binary.Write(h, binary.LittleEndian, int64(x))
 	}
+	writeI64 := func(x int64) {
+		_ = binary.Write(h, binary.LittleEndian, x)
+	}
 	writeB := func(x bool) {
 		_ = binary.Write(h, binary.LittleEndian, x)
 	}
@@ -126,6 +129,8 @@ func ConfigHash(s *config.Scenario) uint64 {
 				q := b.Queue
 				writeI(q.Capacity)
 				writeI(q.ConsumerConcurrency)
+				writeI(q.MinConsumerConcurrency)
+				writeI(q.MaxConsumerConcurrency)
 				writeStr(q.ConsumerTarget)
 				writeF(q.DeliveryLatencyMs.Mean)
 				writeF(q.DeliveryLatencyMs.Sigma)
@@ -134,6 +139,33 @@ func ConfigHash(s *config.Scenario) uint64 {
 				writeStr(q.DLQTarget)
 				writeStr(q.DropPolicy)
 				writeB(q.AsyncFireAndForget)
+			}
+			if b.Topic == nil {
+				writeStr("topic_nil")
+			} else {
+				writeStr("topic")
+				t := b.Topic
+				writeI(t.Partitions)
+				writeI64(t.RetentionMs)
+				writeI(t.Capacity)
+				writeF(t.DeliveryLatencyMs.Mean)
+				writeF(t.DeliveryLatencyMs.Sigma)
+				writeStr(t.PublishAck)
+				writeB(t.AsyncFireAndForget)
+				subs := config.CanonicalTopicSubscribersForHash(t)
+				writeI(len(subs))
+				for _, sub := range subs {
+					writeStr(sub.Name)
+					writeStr(sub.ConsumerTarget)
+					writeStr(sub.ConsumerGroup)
+					writeI(sub.ConsumerConcurrency)
+					writeI(sub.MinConsumerConcurrency)
+					writeI(sub.MaxConsumerConcurrency)
+					writeF(sub.AckTimeoutMs)
+					writeI(sub.MaxRedeliveries)
+					writeStr(sub.DLQ)
+					writeStr(sub.DropPolicy)
+				}
 			}
 		}
 
@@ -197,6 +229,12 @@ func ConfigHash(s *config.Scenario) uint64 {
 				if a.DownstreamFractionCPU != b.DownstreamFractionCPU {
 					return a.DownstreamFractionCPU < b.DownstreamFractionCPU
 				}
+				if a.PartitionKey != b.PartitionKey {
+					return a.PartitionKey < b.PartitionKey
+				}
+				if a.PartitionKeyFrom != b.PartitionKeyFrom {
+					return a.PartitionKeyFrom < b.PartitionKeyFrom
+				}
 				if a.FailureRate != b.FailureRate {
 					return a.FailureRate < b.FailureRate
 				}
@@ -231,6 +269,8 @@ func ConfigHash(s *config.Scenario) uint64 {
 					writeB(*d.Retryable)
 				}
 				writeF(d.DownstreamFractionCPU)
+				writeStr(d.PartitionKey)
+				writeStr(d.PartitionKeyFrom)
 			}
 		}
 	}

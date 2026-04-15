@@ -78,6 +78,12 @@ func TestConfigHashServiceKindChange(t *testing.T) {
 	assertHashDiffers(t, a, b, "kind")
 }
 
+func TestConfigHashDownstreamPartitionKeyChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	b.Services[0].Endpoints[0].Downstream[0].PartitionKey = "tenant-a"
+	assertHashDiffers(t, a, b, "downstream.partition_key")
+}
+
 func TestConfigHashServiceRoleChange(t *testing.T) {
 	a, b := scenarioV2(), scenarioV2()
 	b.Services[0].Role = "datastore"
@@ -160,6 +166,84 @@ func TestConfigHashWorkloadBurstFieldsChange(t *testing.T) {
 	d := scenarioV2()
 	d.Workload[0].Arrival.QuietDurationSeconds = 99
 	assertHashDiffers(t, a, d, "quiet_duration_seconds")
+}
+
+func TestConfigHashTopicBehaviorSubscriberConcurrencyChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	topicSvc := func(conc int) config.Service {
+		return config.Service{
+			ID: "evt", Kind: "topic", Role: "internal", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
+			Behavior: &config.ServiceBehavior{
+				Topic: &config.TopicBehavior{
+					Subscribers: []config.TopicSubscriber{
+						{Name: "s", ConsumerGroup: "g1", ConsumerTarget: "api:/x", ConsumerConcurrency: conc},
+					},
+				},
+			},
+			Endpoints: []config.Endpoint{{Path: "/ev", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+		}
+	}
+	a.Services = append(a.Services, topicSvc(2))
+	b.Services = append(b.Services, topicSvc(4))
+	assertHashDiffers(t, a, b, "topic subscriber concurrency")
+}
+
+func TestConfigHashTopicRetentionChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	topicBase := func(ret int64) config.Service {
+		return config.Service{
+			ID: "evt", Kind: "topic", Role: "internal", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
+			Behavior: &config.ServiceBehavior{
+				Topic: &config.TopicBehavior{
+					RetentionMs: ret,
+					Subscribers: []config.TopicSubscriber{
+						{Name: "s", ConsumerGroup: "g1", ConsumerTarget: "api:/x", ConsumerConcurrency: 1},
+					},
+				},
+			},
+			Endpoints: []config.Endpoint{{Path: "/ev", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+		}
+	}
+	a.Services = append(a.Services, topicBase(600000))
+	b.Services = append(b.Services, topicBase(1200000))
+	assertHashDiffers(t, a, b, "topic retention_ms")
+}
+
+func TestConfigHashQueueConcurrencyBoundsChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services = append(a.Services, config.Service{
+		ID: "mqb", Kind: "queue", Role: "internal", Replicas: 1, Model: "cpu",
+		Behavior: &config.ServiceBehavior{Queue: &config.QueueBehavior{
+			ConsumerTarget: "api:/x", ConsumerConcurrency: 2, MinConsumerConcurrency: 1, MaxConsumerConcurrency: 4,
+		}},
+		Endpoints: []config.Endpoint{{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+	})
+	b.Services = append(b.Services, config.Service{
+		ID: "mqb", Kind: "queue", Role: "internal", Replicas: 1, Model: "cpu",
+		Behavior: &config.ServiceBehavior{Queue: &config.QueueBehavior{
+			ConsumerTarget: "api:/x", ConsumerConcurrency: 2, MinConsumerConcurrency: 1, MaxConsumerConcurrency: 8,
+		}},
+		Endpoints: []config.Endpoint{{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+	})
+	assertHashDiffers(t, a, b, "queue max_consumer_concurrency")
+}
+
+func TestConfigHashTopicSubscriberConcurrencyBoundsChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	topic := func(maxc int) config.Service {
+		return config.Service{
+			ID: "evtb", Kind: "topic", Role: "internal", Replicas: 1, Model: "cpu",
+			Behavior: &config.ServiceBehavior{Topic: &config.TopicBehavior{
+				Subscribers: []config.TopicSubscriber{{
+					Name: "s1", ConsumerGroup: "g1", ConsumerTarget: "api:/x", ConsumerConcurrency: 2, MinConsumerConcurrency: 1, MaxConsumerConcurrency: maxc,
+				}},
+			}},
+			Endpoints: []config.Endpoint{{Path: "/ev", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}}},
+		}
+	}
+	a.Services = append(a.Services, topic(4))
+	b.Services = append(b.Services, topic(6))
+	assertHashDiffers(t, a, b, "topic subscriber max_consumer_concurrency")
 }
 
 func TestConfigHashQueueBehaviorCapacityChange(t *testing.T) {

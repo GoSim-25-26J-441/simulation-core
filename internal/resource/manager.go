@@ -196,12 +196,35 @@ func (m *Manager) GetBrokerQueue(brokerID, topic string, eff *config.QueueBehavi
 	return m.brokerQueues.GetOrCreateShard(brokerID, topic, eff)
 }
 
+// GetBrokerTopicSubscriberShard returns (or creates) broker state for one topic subscriber group.
+func (m *Manager) GetBrokerTopicSubscriberShard(brokerID, topicPath, consumerGroup string, topicEff *config.TopicBehavior, sub *config.TopicSubscriber) *BrokerQueueShard {
+	return m.GetBrokerTopicSubscriberPartitionShard(brokerID, topicPath, 0, consumerGroup, topicEff, sub)
+}
+
+// GetBrokerTopicSubscriberPartitionShard returns (or creates) broker state for one topic partition+subscriber group.
+func (m *Manager) GetBrokerTopicSubscriberPartitionShard(brokerID, topicPath string, partition int, consumerGroup string, topicEff *config.TopicBehavior, sub *config.TopicSubscriber) *BrokerQueueShard {
+	if m.brokerQueues == nil {
+		m.brokerQueues = newBrokerQueues()
+	}
+	return m.brokerQueues.GetOrCreateTopicSubscriberPartitionShard(brokerID, topicPath, partition, consumerGroup, topicEff, sub)
+}
+
 // BrokerQueues returns the broker registry (for metrics).
 func (m *Manager) BrokerQueues() *BrokerQueues {
 	if m.brokerQueues == nil {
 		m.brokerQueues = newBrokerQueues()
 	}
 	return m.brokerQueues
+}
+
+// QueueBrokerHealthSnapshots returns queue shard runtime state for live/control snapshots.
+func (m *Manager) QueueBrokerHealthSnapshots(now time.Time) []QueueBrokerHealthSnapshot {
+	return m.BrokerQueues().QueueHealthSnapshots(now)
+}
+
+// TopicBrokerHealthSnapshots returns topic subscriber-group runtime state for live/control snapshots.
+func (m *Manager) TopicBrokerHealthSnapshots(now time.Time) []TopicBrokerHealthSnapshot {
+	return m.BrokerQueues().TopicHealthSnapshots(now)
 }
 
 // GetServiceInstance returns a service instance by ID
