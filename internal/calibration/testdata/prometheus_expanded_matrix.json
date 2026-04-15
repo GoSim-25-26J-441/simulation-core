@@ -1,0 +1,27 @@
+{
+  "window_seconds": 30,
+  "samples": [
+    {"metric": "sim_ingress_throughput_rps", "value": 12},
+    {"metric": "sim_root_latency_p95_ms", "value": 40},
+    {"metric": "sim_service_cpu_utilization", "labels": {"service": "api"}, "value": 0.42},
+    {"metric": "sim_service_memory_utilization", "labels": {"service": "api"}, "value": 0.55},
+    {"metric": "sim_endpoint_latency_p95_ms", "labels": {"service": "api", "endpoint": "/a"}, "value": 40},
+    {"metric": "sim_endpoint_queue_wait_mean_ms", "labels": {"service": "api", "endpoint": "/a"}, "value": 4},
+    {"metric": "sim_endpoint_processing_latency_mean_ms", "labels": {"service": "api", "endpoint": "/a"}, "value": 8},
+    {"metric": "sim_endpoint_request_count", "labels": {"service": "api", "endpoint": "/a"}, "value": 100.4},
+    {"metric": "sim_endpoint_error_count", "labels": {"service": "api", "endpoint": "/a"}, "value": 2.6},
+    {"metric": "sim_queue_depth", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 3},
+    {"metric": "sim_queue_drops", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 5},
+    {"metric": "sim_queue_publish_attempts", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 120},
+    {"metric": "sim_queue_oldest_age_ms", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 18},
+    {"metric": "sim_queue_dlq_count", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 1},
+    {"metric": "sim_topic_backlog_depth", "labels": {"broker_service": "t", "topic": "/ev", "partition": "2", "consumer_group": "g1"}, "value": 9},
+    {"metric": "sim_topic_consumer_lag", "labels": {"broker_service": "t", "topic": "/ev", "partition": "2", "consumer_group": "g1"}, "value": 7},
+    {"metric": "sim_topic_deliver_count", "labels": {"broker_service": "t", "topic": "/ev", "partition": "2", "consumer_group": "g1"}, "value": 200},
+    {"metric": "sim_topic_drop_count", "labels": {"broker_service": "t", "topic": "/ev", "partition": "2", "consumer_group": "g1"}, "value": 10},
+    {"metric": "sim_topic_oldest_age_ms", "labels": {"broker_service": "t", "topic": "/ev", "partition": "2", "consumer_group": "g1"}, "value": 33},
+    {"metric": "sim_topic_dlq_count", "labels": {"broker_service": "t", "topic": "/ev", "partition": "2", "consumer_group": "g1"}, "value": 3},
+    {"metric": "sim_retry_attempts", "value": 2},
+    {"metric": "sim_timeout_errors", "value": 1}
+  ]
+}

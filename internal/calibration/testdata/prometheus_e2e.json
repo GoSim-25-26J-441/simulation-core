@@ -1,0 +1,14 @@
+{
+  "window_seconds": 1,
+  "samples": [
+    {"metric": "sim_ingress_throughput_rps", "value": 11},
+    {"metric": "sim_endpoint_processing_latency_mean_ms", "labels": {"service": "api", "endpoint": "/missing"}, "value": 24},
+    {"metric": "sim_service_cpu_utilization", "labels": {"service": "api"}, "value": 0.7},
+    {"metric": "sim_service_memory_utilization", "labels": {"service": "api"}, "value": 0.6},
+    {"metric": "sim_queue_depth", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 10},
+    {"metric": "sim_queue_drops", "labels": {"broker_service": "q", "topic": "/orders"}, "value": 2},
+    {"metric": "sim_topic_backlog_depth", "labels": {"broker_service": "t", "topic": "/events", "partition": "0", "consumer_group": "g1"}, "value": 6},
+    {"metric": "sim_topic_consumer_lag", "labels": {"broker_service": "t", "topic": "/events", "partition": "0", "consumer_group": "g1"}, "value": 4},
+    {"metric": "sim_topic_drop_count", "labels": {"broker_service": "t", "topic": "/events", "partition": "0", "consumer_group": "g1"}, "value": 1}
+  ]
+}

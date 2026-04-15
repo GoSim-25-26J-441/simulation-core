@@ -560,8 +560,9 @@ func TestNonRealtimeUniformBoundedCountRound(t *testing.T) {
 }
 
 func TestLazyUniformDeterministicSeed(t *testing.T) {
+	fixedStart := time.Unix(1700000000, 0).UTC()
 	build := func() []time.Time {
-		eng := engine.NewEngine("det")
+		eng := engine.NewEngineWithSimStart("det", fixedStart)
 		start := eng.GetSimTime()
 		end := start.Add(500 * time.Second)
 		ws := NewWorkloadState("det", eng, end, 42)

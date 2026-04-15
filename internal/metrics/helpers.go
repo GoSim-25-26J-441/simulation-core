@@ -653,7 +653,7 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		topicDropRate = float64(topicDrop) / float64(topicDeliveryAttempts)
 	}
 
-	return &models.RunMetrics{
+	rm := &models.RunMetrics{
 		TotalRequests:             totalRequests,
 		SuccessfulRequests:        successfulRequests,
 		FailedRequests:            failedRequests,
@@ -693,6 +693,8 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		TopicDropRate:             topicDropRate,
 		ServiceMetrics:            serviceMetrics,
 	}
+	AttachEndpointRequestStats(collector, rm)
+	return rm
 }
 
 // splitRequestCountByOrigin sums request_count series by origin label.
@@ -716,6 +718,99 @@ func splitRequestCountByOrigin(collector *Collector) (ingress, internal int64) {
 		}
 	}
 	return ingress, internal
+}
+
+func float64Ptr(v float64) *float64 { return &v }
+
+func aggregationLatencyFields(agg *models.Aggregation) (p50, p95, p99, mean *float64) {
+	if agg == nil || agg.Count <= 0 {
+		return nil, nil, nil, nil
+	}
+	return float64Ptr(agg.P50), float64Ptr(agg.P95), float64Ptr(agg.P99), float64Ptr(agg.Mean)
+}
+
+// attachEndpointLatencyRollups fills optional latency / queue / processing fields when the collector
+// has matching label subsets (service + endpoint). Omitted pointers mean no samples (not zero latency).
+func attachEndpointLatencyRollups(collector *Collector, subset map[string]string, st *models.EndpointRequestStats) {
+	if collector == nil || st == nil {
+		return
+	}
+	hop := collector.GetOrComputeAggregationForLabelSubset(MetricServiceRequestLatency, subset)
+	if hop == nil || hop.Count <= 0 {
+		hop = collector.GetOrComputeAggregationForLabelSubset(MetricRequestLatency, subset)
+	}
+	st.LatencyP50Ms, st.LatencyP95Ms, st.LatencyP99Ms, st.LatencyMeanMs = aggregationLatencyFields(hop)
+
+	root := collector.GetOrComputeAggregationForLabelSubset(MetricRootRequestLatency, subset)
+	st.RootLatencyP50Ms, st.RootLatencyP95Ms, st.RootLatencyP99Ms, st.RootLatencyMeanMs = aggregationLatencyFields(root)
+
+	qw := collector.GetOrComputeAggregationForLabelSubset(MetricQueueWait, subset)
+	st.QueueWaitP50Ms, st.QueueWaitP95Ms, st.QueueWaitP99Ms, st.QueueWaitMeanMs = aggregationLatencyFields(qw)
+
+	proc := collector.GetOrComputeAggregationForLabelSubset(MetricServiceProcessingLatency, subset)
+	st.ProcessingLatencyP50Ms, st.ProcessingLatencyP95Ms, st.ProcessingLatencyP99Ms, st.ProcessingLatencyMeanMs = aggregationLatencyFields(proc)
+}
+
+// AttachEndpointRequestStats fills rm.EndpointRequestStats from request_count and request_error_count
+// summed per (service, endpoint) label pair (matches validation granularity for endpoint error rates).
+func AttachEndpointRequestStats(collector *Collector, rm *models.RunMetrics) {
+	if collector == nil || rm == nil {
+		return
+	}
+	type epKey struct {
+		svc, ep string
+	}
+	req := make(map[epKey]float64)
+	err := make(map[epKey]float64)
+
+	for _, labels := range collector.GetLabelsForMetric(MetricRequestCount) {
+		if labels == nil {
+			continue
+		}
+		svc := labels["service"]
+		ep := labels["endpoint"]
+		if svc == "" || ep == "" {
+			continue
+		}
+		k := epKey{svc, ep}
+		for _, p := range collector.GetTimeSeries(MetricRequestCount, labels) {
+			req[k] += p.Value
+		}
+	}
+	for _, labels := range collector.GetLabelsForMetric(MetricRequestErrorCount) {
+		if labels == nil {
+			continue
+		}
+		svc := labels["service"]
+		ep := labels["endpoint"]
+		if svc == "" || ep == "" {
+			continue
+		}
+		k := epKey{svc, ep}
+		for _, p := range collector.GetTimeSeries(MetricRequestErrorCount, labels) {
+			err[k] += p.Value
+		}
+	}
+
+	stats := make([]models.EndpointRequestStats, 0, len(req))
+	for k, sum := range req {
+		subset := map[string]string{"service": k.svc, "endpoint": k.ep}
+		st := models.EndpointRequestStats{
+			ServiceName:  k.svc,
+			EndpointPath: k.ep,
+			RequestCount: int64(sum),
+			ErrorCount:   int64(err[k]),
+		}
+		attachEndpointLatencyRollups(collector, subset, &st)
+		stats = append(stats, st)
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].ServiceName != stats[j].ServiceName {
+			return stats[i].ServiceName < stats[j].ServiceName
+		}
+		return stats[i].EndpointPath < stats[j].EndpointPath
+	})
+	rm.EndpointRequestStats = stats
 }
 
 // AttachHostUtilization fills per-host CPU/memory utilization from the latest gauge sample per host

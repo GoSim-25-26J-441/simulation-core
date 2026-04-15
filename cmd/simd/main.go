@@ -15,6 +15,7 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/calibrationserver"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/improvement"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/simd"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -227,6 +228,15 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "validate":
+			os.Exit(runValidateCLI(os.Args[2:]))
+		case "calibrate":
+			os.Exit(runCalibrateCLI(os.Args[2:]))
+		}
+	}
+
 	var grpcAddr string
 	var httpAddr string
 	var logLevel string
@@ -257,9 +267,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	httpS := simd.NewHTTPServer(store, executor)
+	calibrationserver.Register(httpS.ServeMux())
 	httpSrv := &http.Server{
 		Addr:              httpAddr,
-		Handler:           simd.NewHTTPServer(store, executor).Handler(),
+		Handler:           httpS.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      0, // Disabled for SSE streaming (long-lived connections)
 		IdleTimeout:       120 * time.Second,

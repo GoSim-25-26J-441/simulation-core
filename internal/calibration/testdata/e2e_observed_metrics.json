@@ -1,0 +1,9 @@
+{
+  "window": {
+    "duration": "10s",
+    "source": "fixture_observed_metrics"
+  },
+  "global": {
+    "ingress_throughput_rps": 10
+  }
+}

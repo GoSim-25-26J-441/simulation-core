@@ -1,0 +1,41 @@
+{
+  "window": {
+    "duration": "30s",
+    "source": "fixture_observed_metrics_matrix"
+  },
+  "global": {
+    "ingress_throughput_rps": 12,
+    "ingress_error_rate": 0.03,
+    "root_latency_p95_ms": 40,
+    "retry_attempts": 2,
+    "timeout_errors": 1
+  },
+  "endpoints": [
+    {
+      "service_id": "api",
+      "endpoint_path": "/a",
+      "latency_p95_ms": 40,
+      "queue_wait_mean_ms": 4,
+      "processing_latency_mean_ms": 8,
+      "request_count": 100,
+      "error_count": 3
+    }
+  ],
+  "topic_brokers": [
+    {
+      "broker_service": "t",
+      "topic": "/ev",
+      "partition": 2,
+      "consumer_group": "g1",
+      "backlog_depth": 9,
+      "consumer_lag": 7
+    }
+  ],
+  "queue_brokers": [
+    {
+      "broker_service": "q",
+      "topic": "/orders",
+      "depth_mean": 3
+    }
+  ]
+}

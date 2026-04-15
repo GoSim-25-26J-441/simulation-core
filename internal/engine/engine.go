@@ -26,12 +26,17 @@ type Engine struct {
 // EventHandler is a function that handles a specific event type
 type EventHandler func(*Engine, *Event) error
 
-// NewEngine creates a new simulation engine
+// NewEngine creates a new simulation engine with simulation time starting at wall-clock now.
 func NewEngine(runID string) *Engine {
+	return NewEngineWithSimStart(runID, time.Now())
+}
+
+// NewEngineWithSimStart creates an engine whose simulation clock starts at simStart (for deterministic tests).
+func NewEngineWithSimStart(runID string, simStart time.Time) *Engine {
 	return &Engine{
 		eventQueue: NewEventQueue(),
 		runManager: NewRunManager(runID),
-		simTime:    utils.NewSimTime(time.Now()),
+		simTime:    utils.NewSimTime(simStart),
 		handlers:   make(map[EventType]EventHandler),
 		logger:     logger.Default,
 	}

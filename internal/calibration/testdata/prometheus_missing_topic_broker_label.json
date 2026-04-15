@@ -1,0 +1,6 @@
+{
+  "window_seconds": 30,
+  "samples": [
+    {"metric": "sim_topic_consumer_lag", "labels": {"topic": "/ev"}, "value": 2}
+  ]
+}

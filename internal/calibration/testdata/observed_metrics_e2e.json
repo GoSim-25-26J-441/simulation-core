@@ -1,0 +1,18 @@
+{
+  "window": {
+    "duration": "800ms",
+    "source": "fixture_observed_metrics"
+  },
+  "global": {
+    "ingress_throughput_rps": 12,
+    "root_latency_p50_ms": 6,
+    "root_latency_p95_ms": 15
+  },
+  "endpoints": [
+    {
+      "service_id": "api",
+      "endpoint_path": "/missing",
+      "processing_latency_mean_ms": 20
+    }
+  ]
+}

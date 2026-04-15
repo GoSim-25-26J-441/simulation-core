@@ -157,3 +157,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 
 	return out
 }
+
+// CloneScenario returns a deep copy of the scenario for safe mutation (optimizer, calibration).
+func CloneScenario(scenario *config.Scenario) *config.Scenario {
+	return cloneScenario(scenario)
+}

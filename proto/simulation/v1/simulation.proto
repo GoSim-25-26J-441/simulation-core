@@ -589,6 +589,37 @@ message RunMetrics {
   repeated ServiceMetrics service_metrics = 9;
   // Per-host utilization when the simulator records host-level CPU/memory gauges.
   repeated HostMetrics host_metrics = 10;
+
+  // Per-endpoint rollups when collector labels include service + endpoint (matches JSON RunMetrics).
+  repeated EndpointRequestStats endpoint_request_stats = 40;
+}
+
+// EndpointRequestStats mirrors pkg/models.EndpointRequestStats (optional latencies use proto3 optional).
+message EndpointRequestStats {
+  string service_name = 1;
+  string endpoint_path = 2;
+  int64 request_count = 3;
+  int64 error_count = 4;
+
+  optional double latency_p50_ms = 5;
+  optional double latency_p95_ms = 6;
+  optional double latency_p99_ms = 7;
+  optional double latency_mean_ms = 8;
+
+  optional double root_latency_p50_ms = 9;
+  optional double root_latency_p95_ms = 10;
+  optional double root_latency_p99_ms = 11;
+  optional double root_latency_mean_ms = 12;
+
+  optional double queue_wait_p50_ms = 13;
+  optional double queue_wait_p95_ms = 14;
+  optional double queue_wait_p99_ms = 15;
+  optional double queue_wait_mean_ms = 16;
+
+  optional double processing_latency_p50_ms = 17;
+  optional double processing_latency_p95_ms = 18;
+  optional double processing_latency_p99_ms = 19;
+  optional double processing_latency_mean_ms = 20;
 }
 
 message HostMetrics {

@@ -40,6 +40,11 @@ func (s *HTTPServer) Handler() http.Handler {
 	return s.mux
 }
 
+// ServeMux exposes the underlying mux so cmd/simd can register extra routes (e.g. calibration) without import cycles.
+func (s *HTTPServer) ServeMux() *http.ServeMux {
+	return s.mux
+}
+
 func (s *HTTPServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]any{
@@ -1772,6 +1777,44 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		if len(hm) > 0 {
 			result["host_metrics"] = hm
 		}
+	}
+
+	if len(metrics.EndpointRequestStats) > 0 {
+		eps := make([]map[string]any, 0, len(metrics.EndpointRequestStats))
+		for _, e := range metrics.EndpointRequestStats {
+			if e == nil {
+				continue
+			}
+			row := map[string]any{
+				"service_name":  e.ServiceName,
+				"endpoint_path": e.EndpointPath,
+				"request_count": e.RequestCount,
+				"error_count":   e.ErrorCount,
+			}
+			putOpt := func(key string, p *float64) {
+				if p != nil {
+					row[key] = *p
+				}
+			}
+			putOpt("latency_p50_ms", e.LatencyP50Ms)
+			putOpt("latency_p95_ms", e.LatencyP95Ms)
+			putOpt("latency_p99_ms", e.LatencyP99Ms)
+			putOpt("latency_mean_ms", e.LatencyMeanMs)
+			putOpt("root_latency_p50_ms", e.RootLatencyP50Ms)
+			putOpt("root_latency_p95_ms", e.RootLatencyP95Ms)
+			putOpt("root_latency_p99_ms", e.RootLatencyP99Ms)
+			putOpt("root_latency_mean_ms", e.RootLatencyMeanMs)
+			putOpt("queue_wait_p50_ms", e.QueueWaitP50Ms)
+			putOpt("queue_wait_p95_ms", e.QueueWaitP95Ms)
+			putOpt("queue_wait_p99_ms", e.QueueWaitP99Ms)
+			putOpt("queue_wait_mean_ms", e.QueueWaitMeanMs)
+			putOpt("processing_latency_p50_ms", e.ProcessingLatencyP50Ms)
+			putOpt("processing_latency_p95_ms", e.ProcessingLatencyP95Ms)
+			putOpt("processing_latency_p99_ms", e.ProcessingLatencyP99Ms)
+			putOpt("processing_latency_mean_ms", e.ProcessingLatencyMeanMs)
+			eps = append(eps, row)
+		}
+		result["endpoint_request_stats"] = eps
 	}
 
 	return result

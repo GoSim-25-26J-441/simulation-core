@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 func TestConvertToRunMetricsQueueWaitAndProcessingLatency(t *testing.T) {
@@ -182,5 +183,50 @@ func TestQueueDropRateUsesPublishAttemptsDenominator(t *testing.T) {
 	rm = ConvertToRunMetrics(collector, nil, nil)
 	if rm.QueueDropRate < 0 || rm.QueueDropRate > 1 {
 		t.Fatalf("queue drop rate must stay in [0,1], got %v", rm.QueueDropRate)
+	}
+}
+
+func TestConvertToRunMetricsEndpointRequestStats(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	l1 := map[string]string{"service": "api", "endpoint": "/a"}
+	l2 := map[string]string{"service": "api", "endpoint": "/b"}
+	collector.Record(MetricRequestCount, 10, ts, l1)
+	collector.Record(MetricRequestErrorCount, 0, ts, l1)
+	collector.Record(MetricRequestCount, 10, ts, l2)
+	collector.Record(MetricRequestErrorCount, 5, ts, l2)
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if len(rm.EndpointRequestStats) != 2 {
+		t.Fatalf("endpoint stats len=%d %+v", len(rm.EndpointRequestStats), rm.EndpointRequestStats)
+	}
+	by := make(map[string]int64)
+	for _, es := range rm.EndpointRequestStats {
+		by[es.EndpointPath] = es.ErrorCount
+	}
+	if by["/b"] != 5 || by["/a"] != 0 {
+		t.Fatalf("unexpected errors %+v", by)
+	}
+}
+
+func TestConvertToRunMetricsEndpointRequestStatsLatencyPointers(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	lbl := map[string]string{"service": "api", "endpoint": "/x"}
+	collector.Record(MetricRequestCount, 5, ts, lbl)
+	collector.Record(MetricServiceRequestLatency, 10, ts, lbl)
+	collector.Record(MetricServiceRequestLatency, 20, ts, lbl)
+	collector.Record(MetricServiceRequestLatency, 30, ts, lbl)
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	var got *models.EndpointRequestStats
+	for i := range rm.EndpointRequestStats {
+		if rm.EndpointRequestStats[i].EndpointPath == "/x" {
+			got = &rm.EndpointRequestStats[i]
+			break
+		}
+	}
+	if got == nil || got.LatencyP50Ms == nil {
+		t.Fatalf("expected hop latency rollup for endpoint, got %+v", got)
 	}
 }

@@ -79,6 +79,35 @@ type RunMetrics struct {
 	MemoryUtilization  float64                    `json:"memory_utilization"`
 	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
 	HostMetrics        map[string]*HostMetrics    `json:"host_metrics,omitempty"`
+	// EndpointRequestStats is optional per-endpoint request/error totals when collector labels include service+endpoint.
+	EndpointRequestStats []EndpointRequestStats `json:"endpoint_request_stats,omitempty"`
+}
+
+// EndpointRequestStats aggregates ingress/hop request and error counts for one endpoint (from collector labels).
+// Optional latency and queue/processing rollups use pointers so JSON omits unset fields (distinct from explicit zero).
+type EndpointRequestStats struct {
+	ServiceName  string `json:"service_name"`
+	EndpointPath string `json:"endpoint_path"`
+	RequestCount int64  `json:"request_count"`
+	ErrorCount   int64  `json:"error_count"`
+	// Hop / service-request latency (service_request_latency_ms or request_latency_ms for this service+endpoint).
+	LatencyP50Ms  *float64 `json:"latency_p50_ms,omitempty"`
+	LatencyP95Ms  *float64 `json:"latency_p95_ms,omitempty"`
+	LatencyP99Ms  *float64 `json:"latency_p99_ms,omitempty"`
+	LatencyMeanMs *float64 `json:"latency_mean_ms,omitempty"`
+	// RootRequestLatency for ingress roots only (same label subset when emitted).
+	RootLatencyP50Ms  *float64 `json:"root_latency_p50_ms,omitempty"`
+	RootLatencyP95Ms  *float64 `json:"root_latency_p95_ms,omitempty"`
+	RootLatencyP99Ms  *float64 `json:"root_latency_p99_ms,omitempty"`
+	RootLatencyMeanMs *float64 `json:"root_latency_mean_ms,omitempty"`
+	QueueWaitP50Ms  *float64 `json:"queue_wait_p50_ms,omitempty"`
+	QueueWaitP95Ms  *float64 `json:"queue_wait_p95_ms,omitempty"`
+	QueueWaitP99Ms  *float64 `json:"queue_wait_p99_ms,omitempty"`
+	QueueWaitMeanMs *float64 `json:"queue_wait_mean_ms,omitempty"`
+	ProcessingLatencyP50Ms  *float64 `json:"processing_latency_p50_ms,omitempty"`
+	ProcessingLatencyP95Ms  *float64 `json:"processing_latency_p95_ms,omitempty"`
+	ProcessingLatencyP99Ms  *float64 `json:"processing_latency_p99_ms,omitempty"`
+	ProcessingLatencyMeanMs *float64 `json:"processing_latency_mean_ms,omitempty"`
 }
 
 // HostMetrics holds utilization observed on a host (when the simulator records host-level gauges).

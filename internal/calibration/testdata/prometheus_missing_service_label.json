@@ -1,0 +1,6 @@
+{
+  "window_seconds": 30,
+  "samples": [
+    {"metric": "sim_service_cpu_utilization", "value": 0.4}
+  ]
+}

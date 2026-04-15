@@ -123,6 +123,37 @@ func TestConvertMetricsToProtoWithServiceMetrics(t *testing.T) {
 	}
 }
 
+func TestConvertMetricsToProtoEndpointRequestStats(t *testing.T) {
+	p50 := 11.0
+	engineMetrics := &models.RunMetrics{
+		TotalRequests:      1,
+		SuccessfulRequests:   1,
+		FailedRequests:     0,
+		LatencyP50:           1,
+		LatencyP95:           2,
+		LatencyP99:           3,
+		LatencyMean:          1.5,
+		ThroughputRPS:        1,
+		EndpointRequestStats: []models.EndpointRequestStats{
+			{
+				ServiceName: "api", EndpointPath: "/z", RequestCount: 3, ErrorCount: 0,
+				LatencyP50Ms: &p50,
+			},
+		},
+	}
+	pb := convertMetricsToProto(engineMetrics)
+	if len(pb.EndpointRequestStats) != 1 {
+		t.Fatalf("expected endpoint_request_stats in proto, got %d", len(pb.EndpointRequestStats))
+	}
+	es := pb.EndpointRequestStats[0]
+	if es.GetServiceName() != "api" || es.GetEndpointPath() != "/z" {
+		t.Fatalf("unexpected endpoint stats %+v", es)
+	}
+	if es.GetLatencyP50Ms() != p50 {
+		t.Fatalf("latency p50: want %v got %v", p50, es.GetLatencyP50Ms())
+	}
+}
+
 func TestConvertMetricsToProtoWithNilServiceMetrics(t *testing.T) {
 	engineMetrics := &models.RunMetrics{
 		TotalRequests:      10,

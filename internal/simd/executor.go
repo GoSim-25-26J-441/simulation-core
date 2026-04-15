@@ -1886,5 +1886,46 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 		}
 	}
 
+	for i := range engineMetrics.EndpointRequestStats {
+		es := &engineMetrics.EndpointRequestStats[i]
+		pbMetrics.EndpointRequestStats = append(pbMetrics.EndpointRequestStats, endpointStatsModelToProto(es))
+	}
+
 	return pbMetrics
+}
+
+func endpointStatsModelToProto(es *models.EndpointRequestStats) *simulationv1.EndpointRequestStats {
+	if es == nil {
+		return nil
+	}
+	return &simulationv1.EndpointRequestStats{
+		ServiceName:               es.ServiceName,
+		EndpointPath:              es.EndpointPath,
+		RequestCount:              es.RequestCount,
+		ErrorCount:                es.ErrorCount,
+		LatencyP50Ms:              cloneOptFloat64(es.LatencyP50Ms),
+		LatencyP95Ms:              cloneOptFloat64(es.LatencyP95Ms),
+		LatencyP99Ms:              cloneOptFloat64(es.LatencyP99Ms),
+		LatencyMeanMs:             cloneOptFloat64(es.LatencyMeanMs),
+		RootLatencyP50Ms:          cloneOptFloat64(es.RootLatencyP50Ms),
+		RootLatencyP95Ms:          cloneOptFloat64(es.RootLatencyP95Ms),
+		RootLatencyP99Ms:          cloneOptFloat64(es.RootLatencyP99Ms),
+		RootLatencyMeanMs:         cloneOptFloat64(es.RootLatencyMeanMs),
+		QueueWaitP50Ms:            cloneOptFloat64(es.QueueWaitP50Ms),
+		QueueWaitP95Ms:            cloneOptFloat64(es.QueueWaitP95Ms),
+		QueueWaitP99Ms:            cloneOptFloat64(es.QueueWaitP99Ms),
+		QueueWaitMeanMs:           cloneOptFloat64(es.QueueWaitMeanMs),
+		ProcessingLatencyP50Ms:    cloneOptFloat64(es.ProcessingLatencyP50Ms),
+		ProcessingLatencyP95Ms:    cloneOptFloat64(es.ProcessingLatencyP95Ms),
+		ProcessingLatencyP99Ms:    cloneOptFloat64(es.ProcessingLatencyP99Ms),
+		ProcessingLatencyMeanMs:   cloneOptFloat64(es.ProcessingLatencyMeanMs),
+	}
+}
+
+func cloneOptFloat64(p *float64) *float64 {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

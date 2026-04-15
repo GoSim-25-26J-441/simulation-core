@@ -1,0 +1,6 @@
+{
+  "window_seconds": 30,
+  "samples": [
+    {"metric": "sim_endpoint_latency_p95_ms", "labels": {"service": "api"}, "value": 10}
+  ]
+}

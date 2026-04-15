@@ -1,0 +1,24 @@
+{
+  "window_seconds": 1,
+  "run_metrics": {
+    "total_requests": 100,
+    "successful_requests": 95,
+    "failed_requests": 5,
+    "ingress_requests": 100,
+    "ingress_error_rate": 0.05,
+    "latency_p50_ms": 8,
+    "latency_p95_ms": 20,
+    "latency_p99_ms": 35,
+    "latency_mean_ms": 10,
+    "ingress_throughput_rps": 11,
+    "endpoint_request_stats": [
+      {
+        "service_name": "api",
+        "endpoint_path": "/missing",
+        "request_count": 100,
+        "error_count": 5,
+        "processing_latency_mean_ms": 22
+      }
+    ]
+  }
+}

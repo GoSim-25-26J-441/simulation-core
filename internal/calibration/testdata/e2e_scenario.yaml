@@ -1,0 +1,18 @@
+hosts:
+  - id: h1
+    cores: 8
+    memory_gb: 16
+services:
+  - id: api
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /a
+        mean_cpu_ms: 0.5
+        cpu_sigma_ms: 0
+        net_latency_ms: {mean: 0, sigma: 0}
+        failure_rate: 0
+workload:
+  - from: c
+    to: "api:/a"
+    arrival: {type: constant, rate_rps: 1}
