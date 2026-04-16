@@ -85,5 +85,7 @@ You can also tune tolerance bands:
 - If **`vr.Pass`** is true, the simulator is within default bands for the compared metrics (only fields marked **present** in `obs` participate).
 - If false, read **`vr.Checks`** and **`vr.LargestErrors`** for the biggest gaps (throughput, tails, utilization, broker gauges).
 - Always read **`vr.Warnings`** for skipped checks (missing broker denominators) or **service-level** fallbacks for endpoint error rates.
+- `observed_metrics` can include optional `instance_routing` rows (`service_id`, `endpoint_path`, `instance_id`, `request_share`, `request_count`) for routing skew validation against predicted `route_selection_count` distributions.
+- If route-selection samples are unavailable for a row (e.g., no traffic for that endpoint), validation skips that row and emits an explicit warning.
 
 Multi-seed runs use **mean** for central metrics and **max across seeds** for stress-oriented quantities (tail latency, broker sums, drops, DLQ, retries), so validation errs on the side of catching worst-case divergence.

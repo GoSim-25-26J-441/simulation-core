@@ -29,12 +29,18 @@ type BatchScore struct {
 	TopicDropViolation         float64
 	QueueDlqViolation          float64
 	TopicDlqViolation          float64
+	LocalityViolation          float64
+	CrossZoneViolation         float64
+	TopologyLatencyViolation   float64
 	InfraCost        float64
 	ServiceCPUBal    float64
 	ServiceMemBal    float64
 	HostCPUBal       float64
 	HostMemBal       float64
 	Churn            float64
+	LocalityPenalty  float64
+	CrossZonePenalty float64
+	TopologyPenalty  float64
 }
 
 func bandPenalty(u, low, high float64) float64 {
@@ -185,6 +191,7 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 			ServiceCpuBalance: 1, ServiceMemoryBalance: 1, HostCpuBalance: 1, HostMemoryBalance: 1,
 			QueueDepth: 1, TopicBacklog: 1, TopicLag: 1,
 			QueueOldestAge: 1, TopicOldestAge: 1, QueueDrop: 1, TopicDrop: 1, QueueDlq: 1, TopicDlq: 1,
+			Locality: 1, CrossZone: 1, TopologyLatency: 1,
 		}
 	}
 	cw := spec.CostWeights
@@ -244,6 +251,15 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 		if spec.MaxTopicDlqCount > 0 {
 			out.TopicDlqViolation = math.Max(0, float64(m.GetTopicDlqCountTotal())/spec.MaxTopicDlqCount-1)
 		}
+		if spec.MinLocalityHitRate > 0 {
+			out.LocalityViolation = math.Max(0, spec.MinLocalityHitRate/math.Max(m.GetLocalityHitRate(), scoreEps)-1)
+		}
+		if spec.MaxCrossZoneRequestFraction > 0 {
+			out.CrossZoneViolation = math.Max(0, m.GetCrossZoneRequestFraction()/spec.MaxCrossZoneRequestFraction-1)
+		}
+		if spec.MaxTopologyLatencyPenaltyMeanMs > 0 {
+			out.TopologyLatencyViolation = math.Max(0, m.GetTopologyLatencyPenaltyMsMean()/spec.MaxTopologyLatencyPenaltyMeanMs-1)
+		}
 	}
 
 	out.ViolationScore = pw.P95*out.LatViolation +
@@ -258,7 +274,10 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 		pw.QueueDrop*out.QueueDropViolation +
 		pw.TopicDrop*out.TopicDropViolation +
 		pw.QueueDlq*out.QueueDlqViolation +
-		pw.TopicDlq*out.TopicDlqViolation
+		pw.TopicDlq*out.TopicDlqViolation +
+		pw.Locality*out.LocalityViolation +
+		pw.CrossZone*out.CrossZoneViolation +
+		pw.TopologyLatency*out.TopologyLatencyViolation
 
 	maxCPU, meanCPU, maxMem, meanMem, n := serviceUtilStats(m)
 	if n > 0 {
@@ -277,12 +296,20 @@ func ComputeBatchScore(spec *batchspec.BatchSpec, baseline, scenario *config.Sce
 
 	out.InfraCost = ComputeInfraCostWeighted(scenario, cw)
 	out.Churn = ComputeChurn(baseline, scenario)
+	if m != nil {
+		out.LocalityPenalty = math.Max(0, 1-m.GetLocalityHitRate())
+		out.CrossZonePenalty = m.GetCrossZoneRequestFraction()
+		out.TopologyPenalty = m.GetTopologyLatencyPenaltyMsMean()
+	}
 
 	out.EfficiencyScore = out.InfraCost +
 		pw.ServiceCpuBalance*out.ServiceCPUBal +
 		pw.ServiceMemoryBalance*out.ServiceMemBal +
 		pw.HostCpuBalance*out.HostCPUBal +
 		pw.HostMemoryBalance*out.HostMemBal +
+		pw.Locality*out.LocalityPenalty +
+		pw.CrossZone*out.CrossZonePenalty +
+		pw.TopologyLatency*out.TopologyPenalty +
 		cw.Churn*out.Churn
 
 	out.Feasible = out.ViolationScore <= scoreEps

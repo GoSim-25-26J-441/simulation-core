@@ -1,0 +1,162 @@
+# Research purpose: Multi-zone placement and locality-aware routing with topology latency overlays.
+# Expected behavior: Locality hit rate, same/cross-zone counts, and topology latency penalties are observable.
+metadata:
+  schema_version: "0.2.0"
+
+simulation_limits:
+  max_trace_depth: 24
+  max_async_hops: 8
+
+network:
+  symmetric_cross_zone_latency: true
+  same_zone_latency_ms:
+    mean: 2
+    sigma: 0.5
+  default_cross_zone_latency_ms:
+    mean: 14
+    sigma: 3
+
+hosts:
+  - id: edge-a
+    cores: 8
+    memory_gb: 16
+    zone: zone-a
+  - id: edge-b
+    cores: 8
+    memory_gb: 16
+    zone: zone-b
+  - id: app-a
+    cores: 12
+    memory_gb: 32
+    zone: zone-a
+  - id: app-b
+    cores: 12
+    memory_gb: 32
+    zone: zone-b
+  - id: data-a
+    cores: 16
+    memory_gb: 64
+    zone: zone-a
+
+services:
+  - id: api-gateway
+    kind: api_gateway
+    role: ingress
+    replicas: 4
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 768
+    placement:
+      spread_across_zones: true
+    routing:
+      strategy: least_queue
+      locality_zone_from: client_zone
+    endpoints:
+      - path: /checkout
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 8
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream:
+          - to: checkout-core:/place-order
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 550
+            call_latency_ms:
+              mean: 3
+              sigma: 1
+
+  - id: checkout-core
+    kind: service
+    role: internal
+    replicas: 4
+    model: mixed
+    cpu_cores: 1.25
+    memory_mb: 1024
+    placement:
+      spread_across_zones: true
+    routing:
+      strategy: least_queue
+      locality_zone_from: client_zone
+    endpoints:
+      - path: /place-order
+        mean_cpu_ms: 14
+        cpu_sigma_ms: 4
+        default_memory_mb: 24
+        net_latency_ms:
+          mean: 3
+          sigma: 1
+        downstream:
+          - to: profile-service:/lookup
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 300
+            call_latency_ms:
+              mean: 4
+              sigma: 1
+          - to: inventory-db:/reserve
+            mode: sync
+            kind: db
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 400
+            call_latency_ms:
+              mean: 4
+              sigma: 1
+
+  - id: profile-service
+    kind: service
+    role: internal
+    replicas: 3
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 512
+    placement:
+      spread_across_zones: true
+    endpoints:
+      - path: /lookup
+        mean_cpu_ms: 8
+        cpu_sigma_ms: 2
+        default_memory_mb: 12
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+
+  - id: inventory-db
+    kind: database
+    role: datastore
+    replicas: 1
+    model: db_latency
+    cpu_cores: 2.0
+    memory_mb: 4096
+    placement:
+      preferred_zones: [zone-a]
+    endpoints:
+      - path: /reserve
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 24
+        io_ms:
+          mean: 13
+          sigma: 3
+        connection_pool: 48
+        net_latency_ms:
+          mean: 3
+          sigma: 1
+
+workload:
+  - from: synthetic-client
+    source_kind: client
+    traffic_class: checkout
+    metadata:
+      client_zone: zone-a
+    to: api-gateway:/checkout
+    arrival:
+      type: constant
+      rate_rps: 120

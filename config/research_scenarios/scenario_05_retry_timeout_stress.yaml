@@ -1,0 +1,152 @@
+# Research purpose: Payment flow under external failures, timeouts, and retry/backoff behavior.
+# Expected behavior: Retry attempts, timeout/dependency errors, and increased tail latency are observable.
+metadata:
+  schema_version: "0.2.0"
+
+simulation_limits:
+  max_trace_depth: 24
+  max_async_hops: 8
+
+hosts:
+  - id: edge-a
+    cores: 8
+    memory_gb: 16
+    zone: zone-a
+  - id: app-a
+    cores: 12
+    memory_gb: 32
+    zone: zone-a
+  - id: app-b
+    cores: 12
+    memory_gb: 32
+    zone: zone-b
+  - id: external-a
+    cores: 8
+    memory_gb: 16
+    zone: zone-b
+
+services:
+  - id: api-gateway
+    kind: api_gateway
+    role: ingress
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 768
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /payment
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 8
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream:
+          - to: payment-service:/charge
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 220
+            call_latency_ms:
+              mean: 4
+              sigma: 1
+
+  - id: payment-service
+    kind: service
+    role: internal
+    replicas: 2
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 1024
+    behavior:
+      failure_rate: 0.015
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /charge
+        mean_cpu_ms: 16
+        cpu_sigma_ms: 5
+        default_memory_mb: 24
+        failure_rate: 0.02
+        timeout_ms: 180
+        net_latency_ms:
+          mean: 4
+          sigma: 1.5
+        downstream:
+          - to: fraud-service:/score
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 120
+            failure_rate: 0.03
+            call_latency_ms:
+              mean: 8
+              sigma: 3
+          - to: payment-provider:/authorize
+            mode: sync
+            kind: external
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 160
+            failure_rate: 0.025
+            call_latency_ms:
+              mean: 18
+              sigma: 8
+
+  - id: fraud-service
+    kind: service
+    role: internal
+    replicas: 2
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 768
+    endpoints:
+      - path: /score
+        mean_cpu_ms: 14
+        cpu_sigma_ms: 5
+        default_memory_mb: 18
+        timeout_ms: 100
+        net_latency_ms:
+          mean: 5
+          sigma: 2
+
+  - id: payment-provider
+    kind: external
+    role: external
+    replicas: 1
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 512
+    external_network_latency_ms:
+      mean: 22
+      sigma: 8
+    endpoints:
+      - path: /authorize
+        mean_cpu_ms: 8
+        cpu_sigma_ms: 3
+        default_memory_mb: 8
+        failure_rate: 0.03
+        timeout_ms: 140
+        net_latency_ms:
+          mean: 8
+          sigma: 4
+
+policies:
+  retries:
+    enabled: true
+    max_retries: 2
+    backoff: exponential
+    base_ms: 40
+
+workload:
+  - from: synthetic-client
+    source_kind: client
+    traffic_class: payment
+    to: api-gateway:/payment
+    arrival:
+      type: constant
+      rate_rps: 120

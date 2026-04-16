@@ -33,6 +33,9 @@ type BatchSpec struct {
 	MaxTopicDropCount          float64
 	MaxQueueDlqCount           float64
 	MaxTopicDlqCount           float64
+	MinLocalityHitRate         float64
+	MaxCrossZoneRequestFraction float64
+	MaxTopologyLatencyPenaltyMeanMs float64
 
 	ServiceCPUBandLow  float64
 	ServiceCPUBandHigh float64
@@ -134,6 +137,9 @@ func DefaultBatchSpec(base *config.Scenario) *BatchSpec {
 			TopicDrop:            1,
 			QueueDlq:             1,
 			TopicDlq:             1,
+			Locality:             1,
+			CrossZone:            1,
+			TopologyLatency:      1,
 		},
 	}
 	s.AllowedActions = allBatchScalingActions()
@@ -287,6 +293,15 @@ func ParseBatchSpec(pb *simulationv1.BatchOptimizationConfig, base *config.Scena
 	if pb.GetMaxTopicDlqCount() > 0 {
 		s.MaxTopicDlqCount = pb.GetMaxTopicDlqCount()
 	}
+	if pb.GetMinLocalityHitRate() > 0 {
+		s.MinLocalityHitRate = pb.GetMinLocalityHitRate()
+	}
+	if pb.GetMaxCrossZoneRequestFraction() > 0 {
+		s.MaxCrossZoneRequestFraction = pb.GetMaxCrossZoneRequestFraction()
+	}
+	if pb.GetMaxTopologyLatencyPenaltyMeanMs() > 0 {
+		s.MaxTopologyLatencyPenaltyMeanMs = pb.GetMaxTopologyLatencyPenaltyMeanMs()
+	}
 	if b := pb.GetServiceCpuUtilizationBand(); b != nil {
 		if b.Low > 0 || b.High > 0 {
 			s.ServiceCPUBandLow, s.ServiceCPUBandHigh = b.Low, b.High
@@ -417,6 +432,15 @@ func validateBatchSpec(s *BatchSpec) error {
 	}
 	if s.MaxQueueDropCount < 0 || s.MaxTopicDropCount < 0 || s.MaxQueueDlqCount < 0 || s.MaxTopicDlqCount < 0 {
 		return fmt.Errorf("broker drop/dlq limits cannot be negative")
+	}
+	if s.MinLocalityHitRate < 0 || s.MinLocalityHitRate > 1 {
+		return fmt.Errorf("min_locality_hit_rate must be in [0,1]")
+	}
+	if s.MaxCrossZoneRequestFraction < 0 || s.MaxCrossZoneRequestFraction > 1 {
+		return fmt.Errorf("max_cross_zone_request_fraction must be in [0,1]")
+	}
+	if s.MaxTopologyLatencyPenaltyMeanMs < 0 {
+		return fmt.Errorf("max_topology_latency_penalty_mean_ms cannot be negative")
 	}
 	if s.ServiceCPUBandLow >= s.ServiceCPUBandHigh || s.ServiceMemBandLow >= s.ServiceMemBandHigh {
 		return fmt.Errorf("invalid service utilization bands")

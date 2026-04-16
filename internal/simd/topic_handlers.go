@@ -240,7 +240,7 @@ func handleTopicRetentionExpire(state *scenarioState, eng *engine.Engine) engine
 }
 
 // scheduleTopicPublishFromOverhead schedules delivery latency then topic_publish (caller CPU already finished).
-func scheduleTopicPublishFromOverhead(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, simTime time.Time, nextTD, nextAD int, fromRetry bool, retryAttempt int, logicalID string, fixedDeliveryMs float64) time.Time {
+func scheduleTopicPublishFromOverhead(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, simTime time.Time, nextTD, nextAD int, fromRetry bool, retryAttempt int, logicalID string, fixedDeliveryMs float64, callerTopology downstreamCallerTopology) time.Time {
 	brokerID := downstreamCall.ServiceID
 	topic := downstreamCall.Path
 	delivery := fixedDeliveryMs
@@ -248,6 +248,7 @@ func scheduleTopicPublishFromOverhead(state *scenarioState, eng *engine.Engine, 
 		delivery = sampleTopicDeliveryMs(state, brokerID)
 	}
 	ackTime := simTime.Add(time.Duration(delivery * float64(time.Millisecond)))
+	callerInstanceID, callerHostZone, callerHostID := resolveCallerTopologyForSpawn(state, parent, callerTopology)
 	data := map[string]interface{}{
 		"endpoint_path":         topic,
 		"trace_depth":           nextTD,
@@ -262,6 +263,9 @@ func scheduleTopicPublishFromOverhead(state *scenarioState, eng *engine.Engine, 
 		metaQueueEdge:           true,
 		"delivery_ms":           delivery,
 		"meta_topic_edge":       true,
+		"caller_instance_id":    callerInstanceID,
+		"caller_host_zone":      callerHostZone,
+		"caller_host_id":        callerHostID,
 	}
 	applyTopicPartitionKeyToPublishData(parent, downstreamCall.Call, data)
 	eng.ScheduleAt(engine.EventTypeTopicPublish, ackTime, parent, brokerID, data)
@@ -320,6 +324,28 @@ func handleTopicPublish(state *scenarioState, eng *engine.Engine) engine.EventHa
 				"workload_from":          parent.Metadata["workload_from"],
 				"workload_source_kind":   parent.Metadata["workload_source_kind"],
 				"workload_traffic_class": parent.Metadata["workload_traffic_class"],
+			}
+			callerInstanceID := metadataString(evt.Data, "caller_instance_id")
+			callerHostZone := metadataString(evt.Data, "caller_host_zone")
+			callerHostID := metadataString(evt.Data, "caller_host_id")
+			fallbackInstanceID, fallbackHostZone, fallbackHostID := callerTopologyFromRequest(state, parent)
+			if callerInstanceID == "" {
+				callerInstanceID = fallbackInstanceID
+			}
+			if callerHostZone == "" {
+				callerHostZone = fallbackHostZone
+			}
+			if callerHostID == "" {
+				callerHostID = fallbackHostID
+			}
+			if callerInstanceID != "" {
+				meta["instance_id"] = callerInstanceID
+			}
+			if callerHostZone != "" {
+				meta["caller_host_zone"] = callerHostZone
+			}
+			if callerHostID != "" {
+				meta["caller_host_id"] = callerHostID
 			}
 			msg := &resource.QueuedMessage{
 				ID:              msgID,
@@ -434,8 +460,17 @@ func handleTopicDequeue(state *scenarioState, eng *engine.Engine) engine.EventHa
 		if v, ok := msg.Metadata[metaRetryAttempt]; ok {
 			child.Metadata[metaRetryAttempt] = v
 		}
+		if v, ok := msg.Metadata["instance_id"].(string); ok && v != "" {
+			child.Metadata["caller_instance_id"] = v
+		}
+		if v, ok := msg.Metadata["caller_host_zone"].(string); ok && v != "" {
+			child.Metadata["caller_host_zone"] = v
+		}
+		if v, ok := msg.Metadata["caller_host_id"].(string); ok && v != "" {
+			child.Metadata["caller_host_id"] = v
+		}
 
-		inst, err := state.rm.SelectInstanceForService(cs)
+		inst, _, err := selectInstanceForRequest(state, child, simTime)
 		if err != nil {
 			shard.RequeueFront(msg)
 			scheduleTopicShardRetention(state, eng, brokerID, topic, partition, g, effectiveTopicForBroker(state, brokerID))

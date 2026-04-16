@@ -13,6 +13,13 @@ func maxFloat(a, b float64) float64 {
 	return b
 }
 
+func minFloat(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // AggregateRunMetrics combines metrics from multiple evaluation runs (same scenario, different seeds).
 // Counts and throughput are averaged across runs. Latency percentiles use the maximum across runs
 // (conservative across seeds; averaging percentiles is not statistically valid). Latency mean uses a
@@ -51,6 +58,11 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	var maxQueueDepth, maxTopicBacklog, maxTopicLag float64
 	var maxQueueOldestAge, maxTopicOldestAge float64
 	var maxQueueDropRate, maxTopicDropRate float64
+	var locHitMin, crossZoneFracMax float64
+	var crossZoneReqCount, sameZoneReqCount int64
+	var crossZonePenaltyTotal, sameZonePenaltyTotal, externalPenaltyTotal, topologyPenaltyTotal float64
+	var crossZonePenaltyMeanMax, sameZonePenaltyMeanMax, externalPenaltyMeanMax, topologyPenaltyMeanMax float64
+	firstTopo := true
 	firstPerc := true
 	for _, m := range runs {
 		if m == nil {
@@ -122,6 +134,28 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 		if v := m.GetTopicDropRate(); v > maxTopicDropRate {
 			maxTopicDropRate = v
 		}
+		if firstTopo {
+			locHitMin = m.GetLocalityHitRate()
+			crossZoneFracMax = m.GetCrossZoneRequestFraction()
+			crossZonePenaltyMeanMax = m.GetCrossZoneLatencyPenaltyMsMean()
+			sameZonePenaltyMeanMax = m.GetSameZoneLatencyPenaltyMsMean()
+			externalPenaltyMeanMax = m.GetExternalLatencyMsMean()
+			topologyPenaltyMeanMax = m.GetTopologyLatencyPenaltyMsMean()
+			firstTopo = false
+		} else {
+			locHitMin = minFloat(locHitMin, m.GetLocalityHitRate())
+			crossZoneFracMax = maxFloat(crossZoneFracMax, m.GetCrossZoneRequestFraction())
+			crossZonePenaltyMeanMax = maxFloat(crossZonePenaltyMeanMax, m.GetCrossZoneLatencyPenaltyMsMean())
+			sameZonePenaltyMeanMax = maxFloat(sameZonePenaltyMeanMax, m.GetSameZoneLatencyPenaltyMsMean())
+			externalPenaltyMeanMax = maxFloat(externalPenaltyMeanMax, m.GetExternalLatencyMsMean())
+			topologyPenaltyMeanMax = maxFloat(topologyPenaltyMeanMax, m.GetTopologyLatencyPenaltyMsMean())
+		}
+		crossZoneReqCount += m.GetCrossZoneRequestCountTotal()
+		sameZoneReqCount += m.GetSameZoneRequestCountTotal()
+		crossZonePenaltyTotal += m.GetCrossZoneLatencyPenaltyMsTotal()
+		sameZonePenaltyTotal += m.GetSameZoneLatencyPenaltyMsTotal()
+		externalPenaltyTotal += m.GetExternalLatencyMsTotal()
+		topologyPenaltyTotal += m.GetTopologyLatencyPenaltyMsTotal()
 	}
 	out.TotalRequests = int64(float64(tr) / n)
 	out.SuccessfulRequests = int64(float64(sr) / n)
@@ -170,6 +204,18 @@ func AggregateRunMetrics(runs []*simulationv1.RunMetrics) *simulationv1.RunMetri
 	out.TopicOldestMessageAgeMs = maxTopicOldestAge
 	out.QueueDropRate = maxQueueDropRate
 	out.TopicDropRate = maxTopicDropRate
+	out.LocalityHitRate = locHitMin
+	out.CrossZoneRequestFraction = crossZoneFracMax
+	out.CrossZoneRequestCountTotal = int64(float64(crossZoneReqCount) / n)
+	out.SameZoneRequestCountTotal = int64(float64(sameZoneReqCount) / n)
+	out.CrossZoneLatencyPenaltyMsTotal = crossZonePenaltyTotal / n
+	out.SameZoneLatencyPenaltyMsTotal = sameZonePenaltyTotal / n
+	out.ExternalLatencyMsTotal = externalPenaltyTotal / n
+	out.TopologyLatencyPenaltyMsTotal = topologyPenaltyTotal / n
+	out.CrossZoneLatencyPenaltyMsMean = crossZonePenaltyMeanMax
+	out.SameZoneLatencyPenaltyMsMean = sameZonePenaltyMeanMax
+	out.ExternalLatencyMsMean = externalPenaltyMeanMax
+	out.TopologyLatencyPenaltyMsMean = topologyPenaltyMeanMax
 
 	byName := make(map[string][]*simulationv1.ServiceMetrics)
 	for _, m := range runs {

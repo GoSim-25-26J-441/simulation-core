@@ -88,10 +88,37 @@ func sampleQueueDeliveryMs(state *scenarioState, brokerID string) float64 {
 	return delivery
 }
 
+// callerTopologyFromRequest returns the producer/caller instance id, zone, and host id.
+// When the caller instance no longer exists in the resource manager, zone/host may come from parent metadata if present.
+func callerTopologyFromRequest(state *scenarioState, parent *models.Request) (callerInstanceID, callerHostZone, callerHostID string) {
+	if parent == nil || parent.Metadata == nil {
+		return "", "", ""
+	}
+	callerInstanceID, _ = parent.Metadata["instance_id"].(string)
+	if callerInstanceID != "" && state != nil && state.rm != nil {
+		if inst, ok := state.rm.GetServiceInstance(callerInstanceID); ok && inst != nil {
+			callerHostID = strings.TrimSpace(inst.HostID())
+			if host, ok := state.rm.GetHost(callerHostID); ok && host != nil {
+				return callerInstanceID, strings.TrimSpace(host.Zone()), callerHostID
+			}
+			return callerInstanceID, "", callerHostID
+		}
+	}
+	if parent.Metadata != nil {
+		if v, ok := parent.Metadata["caller_host_zone"].(string); ok {
+			callerHostZone = strings.TrimSpace(v)
+		}
+		if v, ok := parent.Metadata["caller_host_id"].(string); ok {
+			callerHostID = strings.TrimSpace(v)
+		}
+	}
+	return callerInstanceID, callerHostZone, callerHostID
+}
+
 // scheduleQueuePublishFromOverhead schedules delivery latency then queue_enqueue (caller CPU already finished).
 // fixedDeliveryMs < 0 samples delivery; otherwise uses the precomputed value (paired with caller CPU overhead scheduling).
 // Returns simulation time when the enqueue event fires (publish ack).
-func scheduleQueuePublishFromOverhead(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, simTime time.Time, nextTD, nextAD int, fromRetry bool, retryAttempt int, logicalID string, fixedDeliveryMs float64) time.Time {
+func scheduleQueuePublishFromOverhead(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, simTime time.Time, nextTD, nextAD int, fromRetry bool, retryAttempt int, logicalID string, fixedDeliveryMs float64, callerTopology downstreamCallerTopology) time.Time {
 	brokerID := downstreamCall.ServiceID
 	topic := downstreamCall.Path
 	delivery := fixedDeliveryMs
@@ -99,6 +126,7 @@ func scheduleQueuePublishFromOverhead(state *scenarioState, eng *engine.Engine, 
 		delivery = sampleQueueDeliveryMs(state, brokerID)
 	}
 	ackTime := simTime.Add(time.Duration(delivery * float64(time.Millisecond)))
+	callerInstanceID, callerHostZone, callerHostID := resolveCallerTopologyForSpawn(state, parent, callerTopology)
 	data := map[string]interface{}{
 		"endpoint_path":         topic,
 		"trace_depth":           nextTD,
@@ -112,6 +140,9 @@ func scheduleQueuePublishFromOverhead(state *scenarioState, eng *engine.Engine, 
 		metaBrokerTopic:         topic,
 		metaQueueEdge:           true,
 		"delivery_ms":           delivery,
+		"caller_instance_id":    callerInstanceID,
+		"caller_host_zone":      callerHostZone,
+		"caller_host_id":        callerHostID,
 	}
 	eng.ScheduleAt(engine.EventTypeQueueEnqueue, ackTime, parent, brokerID, data)
 	return ackTime
@@ -144,6 +175,28 @@ func handleQueueEnqueue(state *scenarioState, eng *engine.Engine) engine.EventHa
 			"workload_from":          parent.Metadata["workload_from"],
 			"workload_source_kind":   parent.Metadata["workload_source_kind"],
 			"workload_traffic_class": parent.Metadata["workload_traffic_class"],
+		}
+		callerInstanceID := metadataString(evt.Data, "caller_instance_id")
+		callerHostZone := metadataString(evt.Data, "caller_host_zone")
+		callerHostID := metadataString(evt.Data, "caller_host_id")
+		fallbackInstanceID, fallbackHostZone, fallbackHostID := callerTopologyFromRequest(state, parent)
+		if callerInstanceID == "" {
+			callerInstanceID = fallbackInstanceID
+		}
+		if callerHostZone == "" {
+			callerHostZone = fallbackHostZone
+		}
+		if callerHostID == "" {
+			callerHostID = fallbackHostID
+		}
+		if callerInstanceID != "" {
+			meta["instance_id"] = callerInstanceID
+		}
+		if callerHostZone != "" {
+			meta["caller_host_zone"] = callerHostZone
+		}
+		if callerHostID != "" {
+			meta["caller_host_id"] = callerHostID
 		}
 		msg := &resource.QueuedMessage{
 			ID:              msgID,
@@ -248,8 +301,17 @@ func handleQueueDequeue(state *scenarioState, eng *engine.Engine) engine.EventHa
 		if v, ok := msg.Metadata[metaRetryAttempt]; ok {
 			child.Metadata[metaRetryAttempt] = v
 		}
+		if v, ok := msg.Metadata["instance_id"].(string); ok && v != "" {
+			child.Metadata["caller_instance_id"] = v
+		}
+		if v, ok := msg.Metadata["caller_host_zone"].(string); ok && v != "" {
+			child.Metadata["caller_host_zone"] = v
+		}
+		if v, ok := msg.Metadata["caller_host_id"].(string); ok && v != "" {
+			child.Metadata["caller_host_id"] = v
+		}
 
-		inst, err := state.rm.SelectInstanceForService(consumerSvc)
+		inst, _, err := selectInstanceForRequest(state, child, simTime)
 		if err != nil {
 			shard.RequeueFront(msg)
 			return nil

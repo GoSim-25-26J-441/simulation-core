@@ -181,13 +181,7 @@ func (ws *WorkloadState) generateAllEventsUpToEndTime() {
 				patternState.NextEventTime,
 				nil,
 				patternState.ServiceID,
-				map[string]interface{}{
-					"service_id":    patternState.ServiceID,
-					"endpoint_path": patternState.EndpointPath,
-					"from":          patternState.Pattern.From,
-					"source_kind":   patternState.Pattern.SourceKind,
-					"traffic_class": patternState.Pattern.TrafficClass,
-				},
+				workloadArrivalEventData(patternState),
 			)
 			nextTime := ws.advanceToNextArrival(patternState, patternState.NextEventTime)
 			patternState.LastEventTime = patternState.NextEventTime
@@ -195,6 +189,24 @@ func (ws *WorkloadState) generateAllEventsUpToEndTime() {
 		}
 		patternState.mu.Unlock()
 	}
+}
+
+func workloadArrivalEventData(patternState *WorkloadPatternState) map[string]interface{} {
+	data := map[string]interface{}{
+		"service_id":    patternState.ServiceID,
+		"endpoint_path": patternState.EndpointPath,
+		"from":          patternState.Pattern.From,
+		"source_kind":   patternState.Pattern.SourceKind,
+		"traffic_class": patternState.Pattern.TrafficClass,
+	}
+	if len(patternState.Pattern.Metadata) > 0 {
+		md := make(map[string]interface{}, len(patternState.Pattern.Metadata))
+		for k, v := range patternState.Pattern.Metadata {
+			md[k] = v
+		}
+		data["metadata"] = md
+	}
+	return data
 }
 
 // Engine returns the simulation engine for this run (e.g. current simulation time).
@@ -455,13 +467,7 @@ func (ws *WorkloadState) generateNextEvents() {
 				patternState.NextEventTime,
 				nil,
 				patternState.ServiceID,
-				map[string]interface{}{
-					"service_id":    patternState.ServiceID,
-					"endpoint_path": patternState.EndpointPath,
-					"from":          patternState.Pattern.From,
-					"source_kind":   patternState.Pattern.SourceKind,
-					"traffic_class": patternState.Pattern.TrafficClass,
-				},
+				workloadArrivalEventData(patternState),
 			)
 
 			nextTime := ws.advanceToNextArrival(patternState, patternState.NextEventTime)

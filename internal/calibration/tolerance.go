@@ -16,6 +16,12 @@ type ValidationTolerances struct {
 	IngressErrorRateRel float64
 	QueueDropRateAbs    float64
 	TopicDropRateAbs    float64
+	LocalityRateAbs     float64
+	CrossZoneRateAbs    float64
+	// CrossZonePenaltyMeanAbs is absolute tolerance (ms) when comparing mean cross-zone latency penalty.
+	CrossZonePenaltyMeanAbs float64
+	// TopologyPenaltyMeanAbs is absolute tolerance (ms) for optional mean topology network penalty rollups.
+	TopologyPenaltyMeanAbs float64
 
 	// QueueDepthAbsSmall: absolute tolerance when both values are small.
 	QueueDepthAbsSmall float64
@@ -23,6 +29,12 @@ type ValidationTolerances struct {
 
 	TopicLagAbsSmall float64
 	TopicLagRel      float64
+
+	// Routing skew tolerances (per-instance request share/count by endpoint).
+	RouteShareAbsSmall float64
+	RouteShareRel      float64
+	RouteCountAbsSmall float64
+	RouteCountRel      float64
 }
 
 // DefaultValidationTolerances returns pragmatic defaults (not cert-grade strict).
@@ -37,10 +49,18 @@ func DefaultValidationTolerances() *ValidationTolerances {
 		IngressErrorRateRel: 0.50,
 		QueueDropRateAbs:    0.03,
 		TopicDropRateAbs:    0.03,
+		LocalityRateAbs:     0.10,
+		CrossZoneRateAbs:    0.10,
+		CrossZonePenaltyMeanAbs: 10.0,
+		TopologyPenaltyMeanAbs: 10.0,
 		QueueDepthAbsSmall:  2.0,
 		QueueDepthRel:       0.25,
 		TopicLagAbsSmall:    2.0,
 		TopicLagRel:         0.30,
+		RouteShareAbsSmall:  0.08,
+		RouteShareRel:       0.25,
+		RouteCountAbsSmall:  10.0,
+		RouteCountRel:       0.30,
 	}
 }
 

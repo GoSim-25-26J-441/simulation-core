@@ -2,6 +2,52 @@ package improvement
 
 import "github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 
+func cloneRoutingPolicy(rp *config.RoutingPolicy) *config.RoutingPolicy {
+	if rp == nil {
+		return nil
+	}
+	out := &config.RoutingPolicy{
+		Strategy:      rp.Strategy,
+		StickyKeyFrom: rp.StickyKeyFrom,
+		LocalityZoneFrom: rp.LocalityZoneFrom,
+	}
+	if len(rp.Weights) > 0 {
+		out.Weights = make(map[string]float64, len(rp.Weights))
+		for k, v := range rp.Weights {
+			out.Weights[k] = v
+		}
+	}
+	return out
+}
+
+func clonePlacementPolicy(pp *config.PlacementPolicy) *config.PlacementPolicy {
+	if pp == nil {
+		return nil
+	}
+	out := &config.PlacementPolicy{
+		RequiredZones:       append([]string(nil), pp.RequiredZones...),
+		PreferredZones:      append([]string(nil), pp.PreferredZones...),
+		AffinityZones:       append([]string(nil), pp.AffinityZones...),
+		AntiAffinityZones:   append([]string(nil), pp.AntiAffinityZones...),
+		AntiAffinityServices: append([]string(nil), pp.AntiAffinityServices...),
+		SpreadAcrossZones:   pp.SpreadAcrossZones,
+		MaxReplicasPerHost:  pp.MaxReplicasPerHost,
+	}
+	if len(pp.RequiredHostLabels) > 0 {
+		out.RequiredHostLabels = make(map[string]string, len(pp.RequiredHostLabels))
+		for k, v := range pp.RequiredHostLabels {
+			out.RequiredHostLabels[k] = v
+		}
+	}
+	if len(pp.PreferredHostLabels) > 0 {
+		out.PreferredHostLabels = make(map[string]string, len(pp.PreferredHostLabels))
+		for k, v := range pp.PreferredHostLabels {
+			out.PreferredHostLabels[k] = v
+		}
+	}
+	return out
+}
+
 // cloneScenario returns a deep copy of the scenario so batch/optimizer neighbors
 // preserve v2 metadata, service kind/role/scaling, downstream call semantics, workload
 // source/traffic fields, limits, and policies.
@@ -23,7 +69,34 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 			MaxAsyncHops:  scenario.SimulationLimits.MaxAsyncHops,
 		}
 	}
-	copy(out.Hosts, scenario.Hosts)
+	if scenario.Network != nil {
+		n := scenario.Network
+		out.Network = &config.NetworkConfig{
+			SymmetricCrossZoneLatency: n.SymmetricCrossZoneLatency,
+			SameHostLatencyMs:         n.SameHostLatencyMs,
+			SameZoneLatencyMs:         n.SameZoneLatencyMs,
+			DefaultCrossZoneLatencyMs: n.DefaultCrossZoneLatencyMs,
+			ExternalLatencyMs:         n.ExternalLatencyMs,
+		}
+		if len(n.CrossZoneLatencyMs) > 0 {
+			out.Network.CrossZoneLatencyMs = make(map[string]map[string]config.LatencySpec, len(n.CrossZoneLatencyMs))
+			for fk, inner := range n.CrossZoneLatencyMs {
+				out.Network.CrossZoneLatencyMs[fk] = make(map[string]config.LatencySpec, len(inner))
+				for tk, ls := range inner {
+					out.Network.CrossZoneLatencyMs[fk][tk] = ls
+				}
+			}
+		}
+	}
+	for i := range scenario.Hosts {
+		out.Hosts[i] = scenario.Hosts[i]
+		if len(scenario.Hosts[i].Labels) > 0 {
+			out.Hosts[i].Labels = make(map[string]string, len(scenario.Hosts[i].Labels))
+			for k, v := range scenario.Hosts[i].Labels {
+				out.Hosts[i].Labels[k] = v
+			}
+		}
+	}
 
 	for i, svc := range scenario.Services {
 		ns := config.Service{
@@ -34,7 +107,13 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 			Model:     svc.Model,
 			CPUCores:  svc.CPUCores,
 			MemoryMB:  svc.MemoryMB,
+			Placement: clonePlacementPolicy(svc.Placement),
+			Routing:   cloneRoutingPolicy(svc.Routing),
 			Endpoints: make([]config.Endpoint, len(svc.Endpoints)),
+		}
+		if svc.ExternalNetworkLatencyMs != nil {
+			ls := *svc.ExternalNetworkLatencyMs
+			ns.ExternalNetworkLatencyMs = &ls
 		}
 		if svc.Scaling != nil {
 			ns.Scaling = &config.ScalingPolicy{
@@ -98,6 +177,7 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 				TimeoutMs:       ep.TimeoutMs,
 				IOMs:            ep.IOMs,
 				ConnectionPool:  ep.ConnectionPool,
+				Routing:         cloneRoutingPolicy(ep.Routing),
 				NetLatencyMs:    ep.NetLatencyMs,
 				Downstream:      make([]config.DownstreamCall, len(ep.Downstream)),
 			}
@@ -127,10 +207,18 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 	}
 
 	for i, wl := range scenario.Workload {
+		var wlMetadata map[string]string
+		if len(wl.Metadata) > 0 {
+			wlMetadata = make(map[string]string, len(wl.Metadata))
+			for k, v := range wl.Metadata {
+				wlMetadata[k] = v
+			}
+		}
 		out.Workload[i] = config.WorkloadPattern{
 			From:         wl.From,
 			SourceKind:   wl.SourceKind,
 			TrafficClass: wl.TrafficClass,
+			Metadata:     wlMetadata,
 			To:           wl.To,
 			Arrival:      wl.Arrival,
 		}

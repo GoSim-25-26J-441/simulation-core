@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -223,6 +224,10 @@ func validateScenario(s *Scenario) error {
 		}
 	}
 
+	if err := validateNetworkConfig(s); err != nil {
+		return fmt.Errorf("network: %w", err)
+	}
+
 	// Validate hosts
 	if len(s.Hosts) == 0 {
 		return fmt.Errorf("at least one host must be defined")
@@ -271,6 +276,14 @@ func validateScenario(s *Scenario) error {
 		if !validKinds[kindNorm] {
 			return fmt.Errorf("service %s: unknown or unsupported kind %q", svc.ID, svc.Kind)
 		}
+		if svc.ExternalNetworkLatencyMs != nil {
+			if kindNorm != "external" {
+				return fmt.Errorf("service %s: external_network_latency_ms is only valid when kind is external", svc.ID)
+			}
+			if err := validateLatencySpecFields(fmt.Sprintf("service %s external_network_latency_ms", svc.ID), *svc.ExternalNetworkLatencyMs); err != nil {
+				return err
+			}
+		}
 
 		validModels := map[string]bool{
 			"cpu":        true,
@@ -309,6 +322,45 @@ func validateScenario(s *Scenario) error {
 				}
 			}
 		}
+		if err := validateRoutingPolicy("service "+svc.ID, svc.Routing); err != nil {
+			return err
+		}
+		if svc.Placement != nil {
+			p := svc.Placement
+			if p.MaxReplicasPerHost < 0 {
+				return fmt.Errorf("service %s: placement.max_replicas_per_host cannot be negative", svc.ID)
+			}
+			for i, z := range p.RequiredZones {
+				if strings.TrimSpace(z) == "" {
+					return fmt.Errorf("service %s: placement.required_zones[%d] cannot be empty", svc.ID, i)
+				}
+			}
+			for i, z := range p.PreferredZones {
+				if strings.TrimSpace(z) == "" {
+					return fmt.Errorf("service %s: placement.preferred_zones[%d] cannot be empty", svc.ID, i)
+				}
+			}
+			for i, z := range p.AffinityZones {
+				if strings.TrimSpace(z) == "" {
+					return fmt.Errorf("service %s: placement.affinity_zones[%d] cannot be empty", svc.ID, i)
+				}
+			}
+			for i, z := range p.AntiAffinityZones {
+				if strings.TrimSpace(z) == "" {
+					return fmt.Errorf("service %s: placement.anti_affinity_zones[%d] cannot be empty", svc.ID, i)
+				}
+			}
+			for k := range p.RequiredHostLabels {
+				if strings.TrimSpace(k) == "" {
+					return fmt.Errorf("service %s: placement.required_host_labels has empty key", svc.ID)
+				}
+			}
+			for k := range p.PreferredHostLabels {
+				if strings.TrimSpace(k) == "" {
+					return fmt.Errorf("service %s: placement.preferred_host_labels has empty key", svc.ID)
+				}
+			}
+		}
 
 		for _, ep := range svc.Endpoints {
 			if ep.Path == "" {
@@ -337,6 +389,9 @@ func validateScenario(s *Scenario) error {
 			}
 			if ep.ConnectionPool < 0 {
 				return fmt.Errorf("service %s, endpoint %s: connection_pool cannot be negative", svc.ID, ep.Path)
+			}
+			if err := validateRoutingPolicy("service "+svc.ID+", endpoint "+ep.Path, ep.Routing); err != nil {
+				return err
 			}
 		}
 	}
@@ -460,6 +515,11 @@ func validateScenario(s *Scenario) error {
 		if wl.Arrival.RateRPS <= 0 {
 			return fmt.Errorf("workload %d: arrival rate_rps must be positive", i)
 		}
+		for mk := range wl.Metadata {
+			if strings.TrimSpace(mk) == "" {
+				return fmt.Errorf("workload %d: metadata keys must be non-empty", i)
+			}
+		}
 		wlSvc, wlPath, err := parseDownstreamTargetForValidation(wl.To)
 		if err != nil {
 			return fmt.Errorf("workload %d: invalid to %q: %w", i, wl.To, err)
@@ -472,6 +532,84 @@ func validateScenario(s *Scenario) error {
 		}
 	}
 
+	return nil
+}
+
+func validateRoutingPolicy(owner string, rp *RoutingPolicy) error {
+	if rp == nil {
+		return nil
+	}
+	strategy := strings.ToLower(strings.TrimSpace(rp.Strategy))
+	valid := map[string]bool{
+		"":                       true,
+		"round_robin":            true,
+		"random":                 true,
+		"least_connections":      true,
+		"least_queue":            true,
+		"least_cpu":              true,
+		"weighted_round_robin":   true,
+		"sticky":                 true,
+	}
+	if !valid[strategy] {
+		return fmt.Errorf("%s: routing.strategy %q is invalid (allowed: round_robin, random, least_connections, least_queue, least_cpu, weighted_round_robin, sticky)", owner, rp.Strategy)
+	}
+	if strategy == "sticky" && strings.TrimSpace(rp.StickyKeyFrom) == "" {
+		return fmt.Errorf("%s: routing.sticky_key_from is required when strategy=sticky", owner)
+	}
+	for instanceID, w := range rp.Weights {
+		if math.IsNaN(w) || math.IsInf(w, 0) {
+			return fmt.Errorf("%s: routing.weights[%q] must be finite", owner, instanceID)
+		}
+		if w < 0 {
+			return fmt.Errorf("%s: routing.weights[%q] cannot be negative", owner, instanceID)
+		}
+	}
+	return nil
+}
+
+func validateLatencySpecFields(ctx string, spec LatencySpec) error {
+	if spec.Mean < 0 || spec.Sigma < 0 {
+		return fmt.Errorf("%s: mean and sigma must be non-negative", ctx)
+	}
+	if math.IsNaN(spec.Mean) || math.IsInf(spec.Mean, 0) || math.IsNaN(spec.Sigma) || math.IsInf(spec.Sigma, 0) {
+		return fmt.Errorf("%s: mean and sigma must be finite", ctx)
+	}
+	return nil
+}
+
+func validateNetworkConfig(s *Scenario) error {
+	if s == nil || s.Network == nil {
+		return nil
+	}
+	n := s.Network
+	if err := validateLatencySpecFields("network.same_host_latency_ms", n.SameHostLatencyMs); err != nil {
+		return err
+	}
+	if err := validateLatencySpecFields("network.same_zone_latency_ms", n.SameZoneLatencyMs); err != nil {
+		return err
+	}
+	if err := validateLatencySpecFields("network.external_latency_ms", n.ExternalLatencyMs); err != nil {
+		return err
+	}
+	if err := validateLatencySpecFields("network.default_cross_zone_latency_ms", n.DefaultCrossZoneLatencyMs); err != nil {
+		return err
+	}
+	for from, inner := range n.CrossZoneLatencyMs {
+		if strings.TrimSpace(from) == "" {
+			return fmt.Errorf("network.cross_zone_latency_ms has an empty caller zone key")
+		}
+		if inner == nil {
+			continue
+		}
+		for to, spec := range inner {
+			if strings.TrimSpace(to) == "" {
+				return fmt.Errorf("network.cross_zone_latency_ms[%q] has an empty callee zone key", from)
+			}
+			if err := validateLatencySpecFields(fmt.Sprintf("network.cross_zone_latency_ms[%q][%q]", from, to), spec); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

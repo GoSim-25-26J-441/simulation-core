@@ -110,9 +110,9 @@ The implementation uses a background goroutine that:
 
 ### Limitations
 
-1. **Configuration Changes**: Full scenario configuration changes (e.g., service replicas, policies) are not yet supported - only workload rates/patterns
-2. **Bursty Workloads**: Bursty arrival windows are implemented in `WorkloadState` (burst vs quiet phases); see scenario validation and `IMPLEMENTATION_NOTE.md` for behavior
-3. **Event Cancellation**: Pre-scheduled events are not cancelled when rates change - only future events use the new rate
+1. **Routing policy updates**: runtime routing strategy changes are not yet a dedicated API operation; strategy is currently scenario-driven at run start.
+2. **Bursty Workloads**: Bursty arrival windows are implemented in `WorkloadState` (burst vs quiet phases); see scenario validation and `IMPLEMENTATION_NOTE.md` for behavior.
+3. **Event Cancellation**: Pre-scheduled events are not cancelled when rates change - only future events use the new rate.
 
 ---
 
@@ -161,12 +161,12 @@ const RateSlider = ({ runId, initialRate }) => {
 
 ## Configuration Changes
 
-For broader configuration changes (e.g., service replicas, policies), similar approach:
+The simulator supports dynamic configuration updates during a run:
 
-1. **Store Configuration State** in `RunExecutor`
-2. **Add Update Endpoint**: `PATCH /v1/runs/{run_id}/configuration`
-3. **Apply Changes**: Update resource manager, policy manager, etc.
-4. **Thread Safety**: Ensure changes are applied safely during simulation
+1. **Workload**: update pattern rate/shape (`PATCH /v1/runs/{run_id}/workload`).
+2. **Service resources/replicas**: update replicas/cpu/memory with draining-aware behavior (`PATCH /v1/runs/{run_id}/configuration`).
+3. **Policies**: update autoscaling/retry policy fields at runtime (`PATCH /v1/runs/{run_id}/configuration`).
+4. **Thread Safety**: updates are applied through synchronized run-state paths.
 
 **Example:**
 ```go
@@ -342,7 +342,7 @@ PATCH /v1/runs/{run_id}/configuration
 | Dynamic Request Rates | ✅ Supported | Via HTTP and gRPC APIs |
 | Real-Time Rate Updates | ✅ Supported | Immediate effect on future events |
 | Workload Pattern Updates | ✅ Supported | Can update entire pattern or just rate |
-| Configuration Changes | ❌ Not Supported | Future enhancement |
+| Service / Policy Configuration Updates | ✅ Supported | Replicas/resources/policies via runtime configuration API |
 | Multiple Runs Comparison | ✅ Supported | Can compare runs with different rates |
 
 **Current Status**: Dynamic request rate changes are fully supported and ready for use in interactive dashboards and real-time exploration scenarios.

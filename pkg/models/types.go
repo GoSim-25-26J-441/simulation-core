@@ -81,6 +81,25 @@ type RunMetrics struct {
 	HostMetrics        map[string]*HostMetrics    `json:"host_metrics,omitempty"`
 	// EndpointRequestStats is optional per-endpoint request/error totals when collector labels include service+endpoint.
 	EndpointRequestStats []EndpointRequestStats `json:"endpoint_request_stats,omitempty"`
+	// InstanceRouteStats is optional per-instance routing selection totals.
+	InstanceRouteStats []InstanceRouteStats `json:"instance_route_stats,omitempty"`
+	// Topology routing rollups.
+	LocalityHitRate               float64 `json:"locality_hit_rate,omitempty"`
+	CrossZoneRequestCountTotal    int64   `json:"cross_zone_request_count_total,omitempty"`
+	SameZoneRequestCountTotal     int64   `json:"same_zone_request_count_total,omitempty"`
+	CrossZoneRequestFraction      float64 `json:"cross_zone_request_fraction,omitempty"`
+	// Cross-zone network penalty rollups (from cross_zone_latency_penalty_ms samples on downstream hops).
+	CrossZoneLatencyPenaltyMsTotal float64 `json:"cross_zone_latency_penalty_ms_total,omitempty"`
+	CrossZoneLatencyPenaltyMsMean  float64 `json:"cross_zone_latency_penalty_ms_mean,omitempty"`
+	// Same-zone different-host penalty (from same_zone_latency_penalty_ms).
+	SameZoneLatencyPenaltyMsTotal float64 `json:"same_zone_latency_penalty_ms_total,omitempty"`
+	SameZoneLatencyPenaltyMsMean  float64 `json:"same_zone_latency_penalty_ms_mean,omitempty"`
+	// External-service network overlay (from external_latency_penalty_ms).
+	ExternalLatencyMsTotal float64 `json:"external_latency_ms_total,omitempty"`
+	ExternalLatencyMsMean  float64 `json:"external_latency_ms_mean,omitempty"`
+	// Aggregate topology penalty across all network classes (from topology_latency_penalty_ms).
+	TopologyLatencyPenaltyMsTotal float64 `json:"topology_latency_penalty_ms_total,omitempty"`
+	TopologyLatencyPenaltyMsMean  float64 `json:"topology_latency_penalty_ms_mean,omitempty"`
 }
 
 // EndpointRequestStats aggregates ingress/hop request and error counts for one endpoint (from collector labels).
@@ -108,6 +127,15 @@ type EndpointRequestStats struct {
 	ProcessingLatencyP95Ms  *float64 `json:"processing_latency_p95_ms,omitempty"`
 	ProcessingLatencyP99Ms  *float64 `json:"processing_latency_p99_ms,omitempty"`
 	ProcessingLatencyMeanMs *float64 `json:"processing_latency_mean_ms,omitempty"`
+}
+
+// InstanceRouteStats aggregates routing selections for one service+endpoint+instance tuple.
+type InstanceRouteStats struct {
+	ServiceName    string `json:"service_name"`
+	EndpointPath   string `json:"endpoint_path"`
+	InstanceID     string `json:"instance_id"`
+	Strategy       string `json:"strategy,omitempty"`
+	SelectionCount int64  `json:"selection_count"`
 }
 
 // HostMetrics holds utilization observed on a host (when the simulator records host-level gauges).

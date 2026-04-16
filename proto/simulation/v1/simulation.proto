@@ -370,6 +370,10 @@ message OptimizationConfig {
   // When set and online=false, batch beam-search optimization is used instead of the legacy
   // hill-climbing loop. Legacy objective/step_size/max_iterations still accepted for compatibility.
   BatchOptimizationConfig batch = 30;
+  // Online topology guardrails (optional). When > 0, scale-down actions are blocked while these are violated.
+  double min_locality_hit_rate = 31;
+  double max_cross_zone_request_fraction = 32;
+  double max_topology_latency_penalty_mean_ms = 33;
 }
 
 // ---- Batch optimization (offline multi-eval recommendation engine)
@@ -441,6 +445,9 @@ message BatchPenaltyWeights {
   double topic_drop = 15;
   double queue_dlq = 16;
   double topic_dlq = 17;
+  double locality = 18;
+  double cross_zone = 19;
+  double topology_latency = 20;
 }
 
 message BatchOptimizationConfig {
@@ -488,6 +495,9 @@ message BatchOptimizationConfig {
   double max_topic_drop_count = 41;
   double max_queue_dlq_count = 42;
   double max_topic_dlq_count = 43;
+  double min_locality_hit_rate = 44;
+  double max_cross_zone_request_fraction = 45;
+  double max_topology_latency_penalty_mean_ms = 46;
 }
 
 message Run {
@@ -592,6 +602,22 @@ message RunMetrics {
 
   // Per-endpoint rollups when collector labels include service + endpoint (matches JSON RunMetrics).
   repeated EndpointRequestStats endpoint_request_stats = 40;
+  // Per-instance routing selection totals (from route_selection_count labels).
+  repeated InstanceRouteStats instance_route_stats = 41;
+  // Topology-aware routing and placement flow rollups.
+  double locality_hit_rate = 42;
+  int64 cross_zone_request_count_total = 43;
+  int64 same_zone_request_count_total = 44;
+  double cross_zone_request_fraction = 45;
+  double cross_zone_latency_penalty_ms_total = 46;
+  double cross_zone_latency_penalty_ms_mean = 47;
+
+  double same_zone_latency_penalty_ms_total = 48;
+  double same_zone_latency_penalty_ms_mean = 49;
+  double external_latency_ms_total = 50;
+  double external_latency_ms_mean = 51;
+  double topology_latency_penalty_ms_total = 52;
+  double topology_latency_penalty_ms_mean = 53;
 }
 
 // EndpointRequestStats mirrors pkg/models.EndpointRequestStats (optional latencies use proto3 optional).
@@ -620,6 +646,14 @@ message EndpointRequestStats {
   optional double processing_latency_p95_ms = 18;
   optional double processing_latency_p99_ms = 19;
   optional double processing_latency_mean_ms = 20;
+}
+
+message InstanceRouteStats {
+  string service_name = 1;
+  string endpoint_path = 2;
+  string instance_id = 3;
+  string strategy = 4;
+  int64 selection_count = 5;
 }
 
 message HostMetrics {

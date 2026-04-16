@@ -68,6 +68,9 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 		pendingSync:          make(map[string]int),
 		topicPartitionCursor: make(map[string]int),
 	}
+	if rm != nil {
+		rm.SetRoutingSeed(rngSeed + 11)
+	}
 
 	// Build service and endpoint maps (kept for backward compatibility and quick lookups)
 	for i := range scenario.Services {
@@ -101,6 +104,97 @@ func parseWorkloadTarget(target string) (serviceID, path string, err error) {
 	}
 
 	return serviceID, path, nil
+}
+
+func selectInstanceForRequest(state *scenarioState, request *models.Request, simTime time.Time) (*resource.ServiceInstance, string, error) {
+	serviceID := request.ServiceName
+	instance, strategy, err := state.rm.SelectInstanceForRequest(serviceID, request, simTime)
+	if err != nil {
+		metrics.RecordRouteRejectionCount(state.collector, 1.0, simTime, metrics.CreateRouteSelectionLabels(serviceID, request.Endpoint, "", strategy))
+		return nil, strategy, err
+	}
+	metrics.RecordRouteSelectionCount(state.collector, 1.0, simTime, metrics.CreateRouteSelectionLabels(serviceID, request.Endpoint, instance.ID(), strategy))
+	recordTopologyRoutingMetrics(state, request, instance, simTime)
+	return instance, strategy, nil
+}
+
+func effectiveLocalityZoneFrom(state *scenarioState, serviceID, endpointPath string) string {
+	if state == nil {
+		return ""
+	}
+	if ep, ok := state.endpoints[serviceID+":"+endpointPath]; ok && ep != nil && ep.Routing != nil && strings.TrimSpace(ep.Routing.LocalityZoneFrom) != "" {
+		return strings.TrimSpace(ep.Routing.LocalityZoneFrom)
+	}
+	if svc, ok := state.services[serviceID]; ok && svc != nil && svc.Routing != nil {
+		return strings.TrimSpace(svc.Routing.LocalityZoneFrom)
+	}
+	return ""
+}
+
+func topologyMetricLabelsForRequest(req *models.Request, instance *resource.ServiceInstance, hostZone, requestedZone string) map[string]string {
+	lbl := map[string]string{
+		"service":      req.ServiceName,
+		"endpoint":     req.Endpoint,
+		"instance":     instance.ID(),
+		"host":         instance.HostID(),
+		"host_zone":    hostZone,
+		"requested_zone": requestedZone,
+	}
+	if req.ParentID == "" {
+		lbl[metrics.LabelOrigin] = metrics.OriginIngress
+	} else {
+		lbl[metrics.LabelOrigin] = metrics.OriginDownstream
+	}
+	if req.Metadata != nil {
+		if tc, ok := req.Metadata["workload_traffic_class"].(string); ok && tc != "" {
+			lbl[metrics.LabelTrafficClass] = tc
+		}
+		if sk, ok := req.Metadata["workload_source_kind"].(string); ok && sk != "" {
+			lbl[metrics.LabelSourceKind] = sk
+		}
+	}
+	return lbl
+}
+
+func recordTopologyRoutingMetrics(state *scenarioState, req *models.Request, instance *resource.ServiceInstance, simTime time.Time) {
+	if state == nil || req == nil || instance == nil || state.collector == nil || state.rm == nil {
+		return
+	}
+	host, ok := state.rm.GetHost(instance.HostID())
+	if !ok || host == nil {
+		return
+	}
+	hostZone := strings.TrimSpace(host.Zone())
+	localityKey := effectiveLocalityZoneFrom(state, req.ServiceName, req.Endpoint)
+	requestedZone := ""
+	if localityKey != "" && req.Metadata != nil {
+		if s, ok := req.Metadata[localityKey].(string); ok {
+			requestedZone = strings.TrimSpace(s)
+		}
+	}
+	lbl := topologyMetricLabelsForRequest(req, instance, hostZone, requestedZone)
+	// For downstream requests, compare caller host zone vs selected callee host zone when available.
+	if req.ParentID != "" && req.Metadata != nil {
+		callerZone := downstreamCallerHostZone(state, req)
+		lbl["requested_zone"] = callerZone
+		if callerZone != "" && hostZone != "" {
+			if strings.EqualFold(callerZone, hostZone) {
+				metrics.RecordSameZoneRequestCount(state.collector, 1.0, simTime, lbl)
+			} else {
+				metrics.RecordCrossZoneRequestCount(state.collector, 1.0, simTime, lbl)
+			}
+		}
+		return
+	}
+
+	// Ingress or root requests use locality key preference hit/miss when configured.
+	if requestedZone != "" && strings.EqualFold(requestedZone, hostZone) {
+		metrics.RecordLocalityRouteHitCount(state.collector, 1.0, simTime, lbl)
+		metrics.RecordSameZoneRequestCount(state.collector, 1.0, simTime, lbl)
+	} else if requestedZone != "" {
+		metrics.RecordLocalityRouteMissCount(state.collector, 1.0, simTime, lbl)
+		metrics.RecordCrossZoneRequestCount(state.collector, 1.0, simTime, lbl)
+	}
 }
 
 // RegisterHandlers registers all event handlers for the engine
@@ -333,6 +427,7 @@ func scheduleDownstreamCallEvent(state *scenarioState, eng *engine.Engine, paren
 		}
 	}
 	scheduleTime := simTime.Add(time.Duration(callLatencyMs * float64(time.Millisecond)))
+	callerInstanceID, callerHostZone, callerHostID := callerTopologyFromRequest(state, parentRequest)
 	eng.ScheduleAt(engine.EventTypeDownstreamCall, scheduleTime, parentRequest, downstreamCall.ServiceID, map[string]interface{}{
 		"endpoint_path":         downstreamCall.Path,
 		"parent_request_id":     parentRequest.ID,
@@ -340,6 +435,9 @@ func scheduleDownstreamCallEvent(state *scenarioState, eng *engine.Engine, paren
 		"async_depth":           nextAD,
 		"is_async_downstream":   isAsync,
 		"downstream_timeout_ms": downstreamCall.Call.TimeoutMs,
+		"caller_instance_id":    callerInstanceID,
+		"caller_host_zone":      callerHostZone,
+		"caller_host_id":        callerHostID,
 	})
 }
 
@@ -431,6 +529,21 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		if v, ok := evt.Data["traffic_class"]; ok {
 			request.Metadata["workload_traffic_class"] = v
 		}
+		if md, ok := evt.Data["metadata"].(map[string]interface{}); ok {
+			for k, v := range md {
+				if strings.TrimSpace(k) == "" {
+					continue
+				}
+				request.Metadata[k] = v
+			}
+		} else if md, ok := evt.Data["metadata"].(map[string]string); ok {
+			for k, v := range md {
+				if strings.TrimSpace(k) == "" {
+					continue
+				}
+				request.Metadata[k] = v
+			}
+		}
 
 		rm := eng.GetRunManager()
 		rm.AddRequest(request)
@@ -460,7 +573,7 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		}
 
 		// Select an instance for this service
-		instance, err := state.rm.SelectInstanceForService(serviceID)
+		instance, _, err := selectInstanceForRequest(state, request, simTime)
 		if err != nil {
 			request.Status = models.RequestStatusFailed
 			el := metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonNoInstance)
@@ -518,7 +631,7 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 				instanceID = id
 			} else {
 				// Select instance if not already assigned
-				instance, err := state.rm.SelectInstanceForService(serviceID)
+				instance, _, err := selectInstanceForRequest(state, request, simTime)
 				if err != nil {
 					return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 				}
@@ -564,6 +677,13 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 				}
 				cpuTimeMs += miss * 0.5
 				netLatencyMs += miss * 0.5
+			}
+		}
+
+		if request.ParentID != "" {
+			pen := applyTopologyNetworkPenaltyMs(state, serviceID, endpointPath, request, instanceID, simTime)
+			if pen > 0 {
+				netLatencyMs += pen
 			}
 		}
 
@@ -904,7 +1024,7 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		for _, downstreamCall := range asyncCalls {
 			nextTD := td + 1
 			nextAD := ad + 1
-			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "")
+			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "", downstreamCallerTopology{})
 			if ackT.After(maxAck) {
 				maxAck = ackT
 			}
@@ -953,7 +1073,7 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		for _, downstreamCall := range syncCalls {
 			nextTD := td + 1
 			nextAD := ad
-			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "")
+			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "", downstreamCallerTopology{})
 		}
 		if hasInstance {
 			dequeueAt := tAfter

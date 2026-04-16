@@ -31,6 +31,14 @@ func StrictValidationTolerances() *ValidationTolerances {
 		QueueDepthRel:       0.15,
 		TopicLagAbsSmall:    1.0,
 		TopicLagRel:         0.20,
+		RouteShareAbsSmall:  0.05,
+		RouteShareRel:       0.15,
+		RouteCountAbsSmall:  5.0,
+		RouteCountRel:       0.20,
+		LocalityRateAbs:     0.06,
+		CrossZoneRateAbs:    0.06,
+		CrossZonePenaltyMeanAbs: 6.0,
+		TopologyPenaltyMeanAbs:  6.0,
 	}
 }
 
@@ -50,6 +58,10 @@ func LooseValidationTolerances() *ValidationTolerances {
 		QueueDepthRel:       0.40,
 		TopicLagAbsSmall:    4.0,
 		TopicLagRel:         0.45,
+		RouteShareAbsSmall:  0.12,
+		RouteShareRel:       0.35,
+		RouteCountAbsSmall:  20.0,
+		RouteCountRel:       0.45,
 	}
 }
 
@@ -111,6 +123,22 @@ func ApplyToleranceJSON(base *ValidationTolerances, raw json.RawMessage) (*Valid
 			out.TopicLagAbsSmall = v
 		case "topic_lag_rel":
 			out.TopicLagRel = v
+		case "route_share_abs_small":
+			out.RouteShareAbsSmall = v
+		case "route_share_rel":
+			out.RouteShareRel = v
+		case "route_count_abs_small":
+			out.RouteCountAbsSmall = v
+		case "route_count_rel":
+			out.RouteCountRel = v
+		case "locality_rate_abs":
+			out.LocalityRateAbs = v
+		case "cross_zone_rate_abs":
+			out.CrossZoneRateAbs = v
+		case "cross_zone_penalty_mean_abs":
+			out.CrossZonePenaltyMeanAbs = v
+		case "topology_penalty_mean_abs":
+			out.TopologyPenaltyMeanAbs = v
 		default:
 			return nil, fmt.Errorf("tolerances: unknown key %q", k)
 		}

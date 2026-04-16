@@ -22,6 +22,20 @@ const (
 	MetricQueueLength              = "queue_length"
 	MetricThroughputRPS            = "throughput_rps"
 	MetricConcurrentRequests       = "concurrent_requests"
+	MetricRouteSelectionCount      = "route_selection_count"
+	MetricRouteRejectionCount      = "route_rejection_count"
+	MetricLocalityRouteHitCount    = "locality_route_hit_count"
+	MetricLocalityRouteMissCount   = "locality_route_miss_count"
+	MetricCrossZoneRequestCount    = "cross_zone_request_count"
+	MetricSameZoneRequestCount     = "same_zone_request_count"
+	// MetricCrossZoneLatencyPenalty records applied inter-zone network penalty (ms) per downstream hop.
+	MetricCrossZoneLatencyPenalty = "cross_zone_latency_penalty_ms"
+	// MetricSameZoneLatencyPenalty records same-zone, different-host network penalty (ms).
+	MetricSameZoneLatencyPenalty = "same_zone_latency_penalty_ms"
+	// MetricExternalLatencyPenalty records extra latency (ms) for hops to kind: external services from network overlays.
+	MetricExternalLatencyPenalty = "external_latency_penalty_ms"
+	// MetricTopologyLatencyPenalty records total topology-class network penalty (ms) per downstream hop (all classes).
+	MetricTopologyLatencyPenalty = "topology_latency_penalty_ms"
 	// MetricIngressLogicalFailure counts user-visible ingress/root trace failures (SLO error rate numerator).
 	MetricIngressLogicalFailure = "ingress_logical_failure_count"
 	MetricDbWaitMs              = "db_wait_ms"
@@ -114,6 +128,49 @@ func RecordThroughput(collector *Collector, rps float64, timestamp time.Time, la
 // RecordConcurrentRequests records the current in-flight request count (gauge) per instance.
 func RecordConcurrentRequests(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricConcurrentRequests, count, timestamp, labels)
+}
+
+// RecordRouteSelectionCount records instance routing decisions by strategy.
+func RecordRouteSelectionCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricRouteSelectionCount, count, timestamp, labels)
+}
+
+// RecordRouteRejectionCount records failed routing attempts (no eligible instance).
+func RecordRouteRejectionCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricRouteRejectionCount, count, timestamp, labels)
+}
+
+func RecordLocalityRouteHitCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricLocalityRouteHitCount, count, timestamp, labels)
+}
+
+func RecordLocalityRouteMissCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricLocalityRouteMissCount, count, timestamp, labels)
+}
+
+func RecordCrossZoneRequestCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricCrossZoneRequestCount, count, timestamp, labels)
+}
+
+func RecordSameZoneRequestCount(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricSameZoneRequestCount, count, timestamp, labels)
+}
+
+// RecordCrossZoneLatencyPenalty records extra one-way latency (ms) for a downstream hop when caller_zone != callee_zone.
+func RecordCrossZoneLatencyPenalty(collector *Collector, penaltyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricCrossZoneLatencyPenalty, penaltyMs, timestamp, labels)
+}
+
+func RecordSameZoneLatencyPenalty(collector *Collector, penaltyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricSameZoneLatencyPenalty, penaltyMs, timestamp, labels)
+}
+
+func RecordExternalLatencyPenalty(collector *Collector, penaltyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricExternalLatencyPenalty, penaltyMs, timestamp, labels)
+}
+
+func RecordTopologyLatencyPenalty(collector *Collector, penaltyMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricTopologyLatencyPenalty, penaltyMs, timestamp, labels)
 }
 
 // RecordDbWait records time spent waiting for a datastore connection slot after CPU work.
@@ -257,6 +314,19 @@ func CreateHostLabels(hostID string) map[string]string {
 	}
 }
 
+// CreateRouteSelectionLabels creates low-cardinality labels for routing metrics.
+func CreateRouteSelectionLabels(serviceName, endpoint, instanceID, strategy string) map[string]string {
+	lbl := map[string]string{
+		"service":  serviceName,
+		"endpoint": endpoint,
+		"strategy": strategy,
+	}
+	if instanceID != "" {
+		lbl["instance"] = instanceID
+	}
+	return lbl
+}
+
 // RunMetricsOptions configures ConvertToRunMetrics when optional resource-manager inventory is available.
 type RunMetricsOptions struct {
 	// InstanceIDsByService lists each service's instance IDs (from the resource manager).
@@ -288,6 +358,15 @@ func sumSampleValuesForMetric(collector *Collector, metricName string) float64 {
 		sum += p.Value
 	}
 	return sum
+}
+
+func countSamplesForMetric(collector *Collector, metricName string) int64 {
+	var n int64
+	for _, labels := range collector.GetLabelsForMetric(metricName) {
+		n += int64(len(collector.GetTimeSeries(metricName, labels)))
+	}
+	n += int64(len(collector.GetTimeSeries(metricName, nil)))
+	return n
 }
 
 // sumLatestGaugeAcrossLabels sums the latest sample per label combination (for broker queue_depth gauges).
@@ -692,8 +771,43 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 		QueueDropRate:             queueDropRate,
 		TopicDropRate:             topicDropRate,
 		ServiceMetrics:            serviceMetrics,
+		CrossZoneRequestCountTotal: int64(sumSampleValuesForMetric(collector, MetricCrossZoneRequestCount)),
+		SameZoneRequestCountTotal:  int64(sumSampleValuesForMetric(collector, MetricSameZoneRequestCount)),
+	}
+	penSum := sumSampleValuesForMetric(collector, MetricCrossZoneLatencyPenalty)
+	penN := countSamplesForMetric(collector, MetricCrossZoneLatencyPenalty)
+	rm.CrossZoneLatencyPenaltyMsTotal = penSum
+	if penN > 0 {
+		rm.CrossZoneLatencyPenaltyMsMean = penSum / float64(penN)
+	}
+	szSum := sumSampleValuesForMetric(collector, MetricSameZoneLatencyPenalty)
+	szN := countSamplesForMetric(collector, MetricSameZoneLatencyPenalty)
+	rm.SameZoneLatencyPenaltyMsTotal = szSum
+	if szN > 0 {
+		rm.SameZoneLatencyPenaltyMsMean = szSum / float64(szN)
+	}
+	extSum := sumSampleValuesForMetric(collector, MetricExternalLatencyPenalty)
+	extN := countSamplesForMetric(collector, MetricExternalLatencyPenalty)
+	rm.ExternalLatencyMsTotal = extSum
+	if extN > 0 {
+		rm.ExternalLatencyMsMean = extSum / float64(extN)
+	}
+	topoSum := sumSampleValuesForMetric(collector, MetricTopologyLatencyPenalty)
+	topoN := countSamplesForMetric(collector, MetricTopologyLatencyPenalty)
+	rm.TopologyLatencyPenaltyMsTotal = topoSum
+	if topoN > 0 {
+		rm.TopologyLatencyPenaltyMsMean = topoSum / float64(topoN)
+	}
+	locHit := sumSampleValuesForMetric(collector, MetricLocalityRouteHitCount)
+	locMiss := sumSampleValuesForMetric(collector, MetricLocalityRouteMissCount)
+	if locHit+locMiss > 0 {
+		rm.LocalityHitRate = locHit / (locHit + locMiss)
+	}
+	if rm.CrossZoneRequestCountTotal+rm.SameZoneRequestCountTotal > 0 {
+		rm.CrossZoneRequestFraction = float64(rm.CrossZoneRequestCountTotal) / float64(rm.CrossZoneRequestCountTotal+rm.SameZoneRequestCountTotal)
 	}
 	AttachEndpointRequestStats(collector, rm)
+	AttachInstanceRouteStats(collector, rm)
 	return rm
 }
 
@@ -811,6 +925,65 @@ func AttachEndpointRequestStats(collector *Collector, rm *models.RunMetrics) {
 		return stats[i].EndpointPath < stats[j].EndpointPath
 	})
 	rm.EndpointRequestStats = stats
+}
+
+// AttachInstanceRouteStats fills rm.InstanceRouteStats from route_selection_count labels.
+func AttachInstanceRouteStats(collector *Collector, rm *models.RunMetrics) {
+	if collector == nil || rm == nil {
+		return
+	}
+	type key struct {
+		service  string
+		endpoint string
+		instance string
+		strategy string
+	}
+	rows := map[key]int64{}
+	for _, labels := range collector.GetLabelsForMetric(MetricRouteSelectionCount) {
+		service := labels["service"]
+		endpoint := labels["endpoint"]
+		instance := labels["instance"]
+		if service == "" || endpoint == "" || instance == "" {
+			continue
+		}
+		k := key{
+			service:  service,
+			endpoint: endpoint,
+			instance: instance,
+			strategy: labels["strategy"],
+		}
+		agg := collector.GetOrComputeAggregation(MetricRouteSelectionCount, labels)
+		if agg == nil {
+			continue
+		}
+		rows[k] += int64(agg.Sum)
+	}
+	if len(rows) == 0 {
+		return
+	}
+	out := make([]models.InstanceRouteStats, 0, len(rows))
+	for k, n := range rows {
+		out = append(out, models.InstanceRouteStats{
+			ServiceName:    k.service,
+			EndpointPath:   k.endpoint,
+			InstanceID:     k.instance,
+			Strategy:       k.strategy,
+			SelectionCount: n,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ServiceName != out[j].ServiceName {
+			return out[i].ServiceName < out[j].ServiceName
+		}
+		if out[i].EndpointPath != out[j].EndpointPath {
+			return out[i].EndpointPath < out[j].EndpointPath
+		}
+		if out[i].InstanceID != out[j].InstanceID {
+			return out[i].InstanceID < out[j].InstanceID
+		}
+		return out[i].Strategy < out[j].Strategy
+	})
+	rm.InstanceRouteStats = out
 }
 
 // AttachHostUtilization fills per-host CPU/memory utilization from the latest gauge sample per host

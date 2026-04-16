@@ -107,6 +107,20 @@ func ValidateScenario(scenario *config.Scenario, obs *ObservedMetrics, simDurati
 		checks = append(checks, compareOne("ingress_error_rate", obs.Global.IngressErrorRate.Value, agg.IngressErrMax,
 			tol.IngressErrorRateRel, tol.IngressErrorRateAbs, compareErrRate))
 	}
+	if obs.Global.LocalityHitRate.Present {
+		checks = append(checks, compareOne("locality_hit_rate", obs.Global.LocalityHitRate.Value, agg.LocalityHitRateMean, tol.IngressErrorRateRel, tol.LocalityRateAbs, compareErrRate))
+	}
+	if obs.Global.CrossZoneFraction.Present {
+		checks = append(checks, compareOne("cross_zone_fraction", obs.Global.CrossZoneFraction.Value, agg.CrossZoneFractionMean, tol.IngressErrorRateRel, tol.CrossZoneRateAbs, compareErrRate))
+	}
+	if obs.Global.CrossZoneLatencyPenaltyMeanMs.Present {
+		checks = append(checks, compareOne("cross_zone_latency_penalty_mean_ms", obs.Global.CrossZoneLatencyPenaltyMeanMs.Value, agg.CrossZoneLatencyPenaltyMeanMean,
+			tol.LatencyP50Rel, tol.CrossZonePenaltyMeanAbs, compareHybrid))
+	}
+	if obs.Global.TopologyLatencyPenaltyMeanMs.Present {
+		checks = append(checks, compareOne("topology_latency_penalty_mean_ms", obs.Global.TopologyLatencyPenaltyMeanMs.Value, agg.TopologyLatencyPenaltyMeanMean,
+			tol.LatencyP50Rel, tol.TopologyPenaltyMeanAbs, compareHybrid))
+	}
 
 	if v, ok := maxPresentServiceUtil(obs.Services, utilCPU); ok {
 		checks = append(checks, compareOne("max_service_cpu_util", v, agg.MaxServiceCPU, 0, tol.UtilizationAbsPP, compareAbsPP))
@@ -177,6 +191,10 @@ func ValidateScenario(scenario *config.Scenario, obs *ObservedMetrics, simDurati
 	checks = append(checks, lchecks...)
 	valWarnings = append(valWarnings, lwarn...)
 
+	rchecks, rwarn := validateInstanceRoutingSkew(obs, runs, tol)
+	checks = append(checks, rchecks...)
+	valWarnings = append(valWarnings, rwarn...)
+
 	passAll := true
 	for _, ch := range checks {
 		if !ch.Pass {
@@ -224,6 +242,10 @@ type aggRuns struct {
 	TopicOldestAgeMax  float64
 	RetryMax           int64
 	TimeoutMax         int64
+	LocalityHitRateMean   float64
+	CrossZoneFractionMean float64
+	CrossZoneLatencyPenaltyMeanMean float64
+	TopologyLatencyPenaltyMeanMean  float64
 }
 
 func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
@@ -238,6 +260,7 @@ func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
 	var maxQDlq, maxTDlq int64
 	var maxQAge, maxTAge float64
 	var maxRetry, maxTimeout int64
+	var sumLocalityHit, sumCrossZoneFrac, sumCrossZonePenMean, sumTopoPenMean float64
 	for _, rm := range runs {
 		if rm == nil {
 			continue
@@ -287,6 +310,10 @@ func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
 		if rm.TimeoutErrors > maxTimeout {
 			maxTimeout = rm.TimeoutErrors
 		}
+		sumLocalityHit += rm.LocalityHitRate
+		sumCrossZoneFrac += rm.CrossZoneRequestFraction
+		sumCrossZonePenMean += rm.CrossZoneLatencyPenaltyMsMean
+		sumTopoPenMean += rm.TopologyLatencyPenaltyMsMean
 		for _, sm := range rm.ServiceMetrics {
 			if sm == nil {
 				continue
@@ -324,6 +351,10 @@ func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
 		TopicOldestAgeMax:  maxTAge,
 		RetryMax:           maxRetry,
 		TimeoutMax:         maxTimeout,
+		LocalityHitRateMean:   sumLocalityHit / n,
+		CrossZoneFractionMean: sumCrossZoneFrac / n,
+		CrossZoneLatencyPenaltyMeanMean: sumCrossZonePenMean / n,
+		TopologyLatencyPenaltyMeanMean:  sumTopoPenMean / n,
 	}
 }
 
@@ -666,6 +697,98 @@ func maxPresentFloatTopicOldest(rows []TopicBrokerObservation) (float64, bool) {
 		any = true
 	}
 	return m, any
+}
+
+type routeSkewAgg struct {
+	countByInstance map[string]float64
+	total           float64
+}
+
+func validateInstanceRoutingSkew(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) ([]MetricCheckResult, []string) {
+	if obs == nil || len(obs.InstanceRouting) == 0 {
+		return nil, nil
+	}
+	var checks []MetricCheckResult
+	var warnings []string
+	byRoute := aggregatePredictedRouteDistributions(runs)
+	for _, r := range obs.InstanceRouting {
+		if strings.TrimSpace(r.ServiceID) == "" || strings.TrimSpace(r.EndpointPath) == "" || strings.TrimSpace(r.InstanceID) == "" {
+			warnings = append(warnings, "instance_routing row skipped: service_id, endpoint_path, and instance_id must be non-empty")
+			continue
+		}
+		k := r.ServiceID + "|" + r.EndpointPath
+		agg, ok := byRoute[k]
+		if !ok || agg.total <= 0 {
+			warnings = append(warnings, "instance_routing skipped for "+r.ServiceID+":"+r.EndpointPath+": no predicted route_selection_count samples available")
+			continue
+		}
+		predCount := agg.countByInstance[r.InstanceID]
+		if r.RequestShare.Present {
+			predShare := predCount / agg.total
+			checks = append(checks, compareOne(
+				"instance_routing_share:"+r.ServiceID+":"+r.EndpointPath+":"+r.InstanceID,
+				r.RequestShare.Value,
+				predShare,
+				tol.RouteShareRel,
+				tol.RouteShareAbsSmall,
+				compareHybrid,
+			))
+		}
+		if r.RequestCount.Present {
+			checks = append(checks, compareOne(
+				"instance_routing_count:"+r.ServiceID+":"+r.EndpointPath+":"+r.InstanceID,
+				float64(r.RequestCount.Value),
+				predCount,
+				tol.RouteCountRel,
+				tol.RouteCountAbsSmall,
+				compareHybrid,
+			))
+		}
+		if !r.RequestShare.Present && !r.RequestCount.Present {
+			warnings = append(warnings, "instance_routing row ignored for "+r.ServiceID+":"+r.EndpointPath+":"+r.InstanceID+": neither request_share nor request_count was present")
+		}
+	}
+	return checks, warnings
+}
+
+func aggregatePredictedRouteDistributions(runs []*models.RunMetrics) map[string]routeSkewAgg {
+	// key: "service|endpoint"
+	byRoute := map[string]routeSkewAgg{}
+	if len(runs) == 0 {
+		return byRoute
+	}
+	for _, rm := range runs {
+		if rm == nil || len(rm.InstanceRouteStats) == 0 {
+			continue
+		}
+		for _, st := range rm.InstanceRouteStats {
+			if strings.TrimSpace(st.ServiceName) == "" || strings.TrimSpace(st.EndpointPath) == "" || strings.TrimSpace(st.InstanceID) == "" {
+				continue
+			}
+			k := st.ServiceName + "|" + st.EndpointPath
+			agg, ok := byRoute[k]
+			if !ok {
+				agg = routeSkewAgg{countByInstance: map[string]float64{}}
+			}
+			n := float64(st.SelectionCount)
+			agg.countByInstance[st.InstanceID] += n
+			agg.total += n
+			byRoute[k] = agg
+		}
+	}
+	// Mean across seeds for skew prediction.
+	nRuns := float64(len(runs))
+	if nRuns <= 1 {
+		return byRoute
+	}
+	for k, agg := range byRoute {
+		for inst, c := range agg.countByInstance {
+			agg.countByInstance[inst] = c / nRuns
+		}
+		agg.total = agg.total / nRuns
+		byRoute[k] = agg
+	}
+	return byRoute
 }
 
 type compareMode int

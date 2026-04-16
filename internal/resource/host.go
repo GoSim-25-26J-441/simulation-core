@@ -12,6 +12,8 @@ type Host struct {
 	id       string
 	cpuCores int
 	memoryGB int
+	zone     string
+	labels   map[string]string
 
 	// Current utilization (aggregated from all service instances)
 	cpuUtilization    float64 // 0.0 to 1.0
@@ -27,6 +29,7 @@ func NewHost(id string, cpuCores, memoryGB int) *Host {
 		id:               id,
 		cpuCores:         cpuCores,
 		memoryGB:         memoryGB,
+		labels:           make(map[string]string),
 		serviceInstances: make([]string, 0),
 	}
 }
@@ -50,6 +53,46 @@ func (h *Host) MemoryGB() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.memoryGB
+}
+
+// Zone returns the host zone (optional).
+func (h *Host) Zone() string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.zone
+}
+
+// SetZone updates the host zone.
+func (h *Host) SetZone(zone string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.zone = zone
+}
+
+// Labels returns a copy of host labels.
+func (h *Host) Labels() map[string]string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make(map[string]string, len(h.labels))
+	for k, v := range h.labels {
+		out[k] = v
+	}
+	return out
+}
+
+// SetLabels replaces host labels with a deep copy.
+func (h *Host) SetLabels(labels map[string]string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(labels) == 0 {
+		h.labels = make(map[string]string)
+		return
+	}
+	next := make(map[string]string, len(labels))
+	for k, v := range labels {
+		next[k] = v
+	}
+	h.labels = next
 }
 
 // SetCPUCores updates the host's CPU core capacity. Values less than 1 are clamped to 1.

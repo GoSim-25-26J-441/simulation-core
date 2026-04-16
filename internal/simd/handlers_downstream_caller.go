@@ -66,19 +66,20 @@ func labelsDownstreamCallerCPU(state *scenarioState, parent *models.Request, cal
 
 // scheduleDownstreamWithCallerOverhead reserves caller CPU for downstream_fraction_cpu, then schedules spawn (or retry spawn).
 // Returns the simulation time cursor after this edge (cpuEnd when overhead > 0, else tCursor).
-func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, tCursor time.Time, nextTD, nextAD int, isAsync bool, fromRetry bool, retryAttempt int, logicalID string) time.Time {
+func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, tCursor time.Time, nextTD, nextAD int, isAsync bool, fromRetry bool, retryAttempt int, logicalID string, callerTopology downstreamCallerTopology) time.Time {
+	callerInstanceID, callerHostZone, callerHostID := resolveCallerTopologyForSpawn(state, parent, callerTopology)
 	if usesTopicBroker(state, downstreamCall) {
 		overhead := computeDownstreamCallerCPU(state, downstreamCall)
 		if overhead <= 0 {
-			return scheduleTopicPublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1)
+			return scheduleTopicPublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1, callerTopology)
 		}
 		instanceID, ok := parent.Metadata["instance_id"].(string)
 		if !ok || instanceID == "" {
-			return scheduleTopicPublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1)
+			return scheduleTopicPublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1, callerTopology)
 		}
 		cpuStart, cpuEnd, err := state.rm.ReserveCPUWork(instanceID, tCursor, overhead)
 		if err != nil {
-			return scheduleTopicPublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1)
+			return scheduleTopicPublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1, callerTopology)
 		}
 		deliveryMs := sampleTopicDeliveryMs(state, downstreamCall.ServiceID)
 		callerSvc := parent.ServiceName
@@ -100,6 +101,9 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 			"reserved_cpu_end":      cpuEnd,
 			metaQueueEdge:           true,
 			"topic_delivery_ms":     deliveryMs,
+			"caller_instance_id":    callerInstanceID,
+			"caller_host_zone":      callerHostZone,
+			"caller_host_id":        callerHostID,
 		}
 		eng.ScheduleAt(engine.EventTypeDownstreamCallerOverheadStart, cpuStart, parent, downstreamCall.ServiceID, dataCommon)
 		eng.ScheduleAt(engine.EventTypeDownstreamCallerOverheadEnd, cpuEnd, parent, downstreamCall.ServiceID, dataCommon)
@@ -109,15 +113,15 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 	if usesQueueBroker(state, downstreamCall) {
 		overhead := computeDownstreamCallerCPU(state, downstreamCall)
 		if overhead <= 0 {
-			return scheduleQueuePublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1)
+			return scheduleQueuePublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1, callerTopology)
 		}
 		instanceID, ok := parent.Metadata["instance_id"].(string)
 		if !ok || instanceID == "" {
-			return scheduleQueuePublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1)
+			return scheduleQueuePublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1, callerTopology)
 		}
 		cpuStart, cpuEnd, err := state.rm.ReserveCPUWork(instanceID, tCursor, overhead)
 		if err != nil {
-			return scheduleQueuePublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1)
+			return scheduleQueuePublishFromOverhead(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, fromRetry, retryAttempt, logicalID, -1, callerTopology)
 		}
 		deliveryMs := sampleQueueDeliveryMs(state, downstreamCall.ServiceID)
 		callerSvc := parent.ServiceName
@@ -139,6 +143,9 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 			"reserved_cpu_end":      cpuEnd,
 			metaQueueEdge:           true,
 			"queue_delivery_ms":     deliveryMs,
+			"caller_instance_id":    callerInstanceID,
+			"caller_host_zone":      callerHostZone,
+			"caller_host_id":        callerHostID,
 		}
 		eng.ScheduleAt(engine.EventTypeDownstreamCallerOverheadStart, cpuStart, parent, downstreamCall.ServiceID, dataCommon)
 		eng.ScheduleAt(engine.EventTypeDownstreamCallerOverheadEnd, cpuEnd, parent, downstreamCall.ServiceID, dataCommon)
@@ -149,7 +156,7 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 	overhead := computeDownstreamCallerCPU(state, downstreamCall)
 	if overhead <= 0 {
 		if fromRetry {
-			execRetrySpawnImmediate(state, eng, parent, downstreamCall, nextTD, nextAD, isAsync, retryAttempt, logicalID)
+			execRetrySpawnImmediate(state, eng, parent, downstreamCall, nextTD, nextAD, isAsync, retryAttempt, logicalID, callerTopology)
 			return tCursor
 		}
 		scheduleDownstreamCallEvent(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, isAsync)
@@ -158,7 +165,7 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 	instanceID, ok := parent.Metadata["instance_id"].(string)
 	if !ok || instanceID == "" {
 		if fromRetry {
-			execRetrySpawnImmediate(state, eng, parent, downstreamCall, nextTD, nextAD, isAsync, retryAttempt, logicalID)
+			execRetrySpawnImmediate(state, eng, parent, downstreamCall, nextTD, nextAD, isAsync, retryAttempt, logicalID, callerTopology)
 			return tCursor
 		}
 		scheduleDownstreamCallEvent(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, isAsync)
@@ -167,7 +174,7 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 	cpuStart, cpuEnd, err := state.rm.ReserveCPUWork(instanceID, tCursor, overhead)
 	if err != nil {
 		if fromRetry {
-			execRetrySpawnImmediate(state, eng, parent, downstreamCall, nextTD, nextAD, isAsync, retryAttempt, logicalID)
+			execRetrySpawnImmediate(state, eng, parent, downstreamCall, nextTD, nextAD, isAsync, retryAttempt, logicalID, callerTopology)
 			return tCursor
 		}
 		scheduleDownstreamCallEvent(state, eng, parent, downstreamCall, tCursor, nextTD, nextAD, isAsync)
@@ -190,13 +197,17 @@ func scheduleDownstreamWithCallerOverhead(state *scenarioState, eng *engine.Engi
 		metaLogicalCallID:     logicalID,
 		"reserved_cpu_start":  cpuStart,
 		"reserved_cpu_end":    cpuEnd,
+		"caller_instance_id":  callerInstanceID,
+		"caller_host_zone":    callerHostZone,
+		"caller_host_id":      callerHostID,
 	}
 	eng.ScheduleAt(engine.EventTypeDownstreamCallerOverheadStart, cpuStart, parent, downstreamCall.ServiceID, dataCommon)
 	eng.ScheduleAt(engine.EventTypeDownstreamCallerOverheadEnd, cpuEnd, parent, downstreamCall.ServiceID, dataCommon)
 	return cpuEnd
 }
 
-func execRetrySpawnImmediate(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, nextTD, nextAD int, isAsync bool, retryAttempt int, logicalID string) {
+func execRetrySpawnImmediate(state *scenarioState, eng *engine.Engine, parent *models.Request, downstreamCall interaction.ResolvedCall, nextTD, nextAD int, isAsync bool, retryAttempt int, logicalID string, callerTopology downstreamCallerTopology) {
+	ci, cz, ch := resolveCallerTopologyForSpawn(state, parent, callerTopology)
 	data := map[string]interface{}{
 		"endpoint_path":         downstreamCall.Path,
 		"trace_depth":           nextTD,
@@ -205,6 +216,15 @@ func execRetrySpawnImmediate(state *scenarioState, eng *engine.Engine, parent *m
 		"downstream_timeout_ms": downstreamCall.Call.TimeoutMs,
 		metaRetryAttempt:        retryAttempt,
 		metaLogicalCallID:       logicalID,
+	}
+	if ci != "" {
+		data["caller_instance_id"] = ci
+	}
+	if cz != "" {
+		data["caller_host_zone"] = cz
+	}
+	if ch != "" {
+		data["caller_host_id"] = ch
 	}
 	evt := &engine.Event{Request: parent, ServiceID: downstreamCall.ServiceID, Data: data}
 	_ = execDownstreamSpawnFromEvent(state, eng, parent, evt)
@@ -279,7 +299,12 @@ func handleDownstreamCallerOverheadEnd(state *scenarioState, eng *engine.Engine)
 			if v, ok := evt.Data["topic_delivery_ms"].(float64); ok {
 				fixed = v
 			}
-			scheduleTopicPublishFromOverhead(state, eng, parent, resolved, simTime, nextTD, nextAD, fromRetry, retryAttempt, logicalID, fixed)
+			ct := downstreamCallerTopology{
+				CallerInstanceID: metadataString(evt.Data, "caller_instance_id"),
+				CallerHostZone:   metadataString(evt.Data, "caller_host_zone"),
+				CallerHostID:     metadataString(evt.Data, "caller_host_id"),
+			}
+			scheduleTopicPublishFromOverhead(state, eng, parent, resolved, simTime, nextTD, nextAD, fromRetry, retryAttempt, logicalID, fixed, ct)
 			return nil
 		}
 		if usesQueueBroker(state, resolved) {
@@ -287,11 +312,21 @@ func handleDownstreamCallerOverheadEnd(state *scenarioState, eng *engine.Engine)
 			if v, ok := evt.Data["queue_delivery_ms"].(float64); ok {
 				fixed = v
 			}
-			scheduleQueuePublishFromOverhead(state, eng, parent, resolved, simTime, nextTD, nextAD, fromRetry, retryAttempt, logicalID, fixed)
+			ct := downstreamCallerTopology{
+				CallerInstanceID: metadataString(evt.Data, "caller_instance_id"),
+				CallerHostZone:   metadataString(evt.Data, "caller_host_zone"),
+				CallerHostID:     metadataString(evt.Data, "caller_host_id"),
+			}
+			scheduleQueuePublishFromOverhead(state, eng, parent, resolved, simTime, nextTD, nextAD, fromRetry, retryAttempt, logicalID, fixed, ct)
 			return nil
 		}
 		if fromRetry {
-			execRetrySpawnImmediate(state, eng, parent, resolved, nextTD, nextAD, isAsync, retryAttempt, logicalID)
+			ct := downstreamCallerTopology{
+				CallerInstanceID: metadataString(evt.Data, "caller_instance_id"),
+				CallerHostZone:   metadataString(evt.Data, "caller_host_zone"),
+				CallerHostID:     metadataString(evt.Data, "caller_host_id"),
+			}
+			execRetrySpawnImmediate(state, eng, parent, resolved, nextTD, nextAD, isAsync, retryAttempt, logicalID, ct)
 			return nil
 		}
 		scheduleDownstreamCallEvent(state, eng, parent, resolved, simTime, nextTD, nextAD, isAsync)

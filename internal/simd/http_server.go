@@ -974,7 +974,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 		resources := map[string]any{
 			"services":   serviceResources,
 			"hosts":      hostResources,
-			"placements": instancePlacementsToJSON(cfg.Placements),
+			"placements": instancePlacementsToJSON(cfg.Placements, scen),
 		}
 		if queues, topics, ok := s.brokerShardResourcesJSON(runID); ok {
 			resources["queues"] = queues
@@ -1523,6 +1523,29 @@ func enrichServiceConfigEntryJSON(m map[string]any, scenario *config.Scenario, s
 	}
 }
 
+func hostTopologyFromScenario(scenario *config.Scenario) map[string]map[string]any {
+	if scenario == nil {
+		return nil
+	}
+	out := make(map[string]map[string]any, len(scenario.Hosts))
+	for i := range scenario.Hosts {
+		h := scenario.Hosts[i]
+		row := map[string]any{}
+		if h.Zone != "" {
+			row["zone"] = h.Zone
+		}
+		if len(h.Labels) > 0 {
+			labels := make(map[string]any, len(h.Labels))
+			for k, v := range h.Labels {
+				labels[k] = v
+			}
+			row["labels"] = labels
+		}
+		out[h.ID] = row
+	}
+	return out
+}
+
 func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario *config.Scenario) map[string]any {
 	if cfg == nil {
 		return nil
@@ -1546,14 +1569,21 @@ func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario 
 		})
 	}
 	hosts := make([]map[string]any, 0, len(cfg.Hosts))
+	hostTopology := hostTopologyFromScenario(scenario)
 	for _, h := range cfg.Hosts {
-		hosts = append(hosts, map[string]any{
+		row := map[string]any{
 			"host_id":   h.HostId,
 			"cpu_cores": h.CpuCores,
 			"memory_gb": h.MemoryGb,
-		})
+		}
+		if topo, ok := hostTopology[h.HostId]; ok {
+			for k, v := range topo {
+				row[k] = v
+			}
+		}
+		hosts = append(hosts, row)
 	}
-	placements := instancePlacementsToJSON(cfg.Placements)
+	placements := instancePlacementsToJSON(cfg.Placements, scenario)
 	return map[string]any{
 		"services":   services,
 		"workload":   workload,
@@ -1562,16 +1592,17 @@ func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario 
 	}
 }
 
-func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry) []map[string]any {
+func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry, scenario *config.Scenario) []map[string]any {
 	if len(entries) == 0 {
 		return nil
 	}
+	hostTopology := hostTopologyFromScenario(scenario)
 	out := make([]map[string]any, 0, len(entries))
 	for _, p := range entries {
 		if p == nil {
 			continue
 		}
-		out = append(out, map[string]any{
+		row := map[string]any{
 			"instance_id":        p.InstanceId,
 			"service_id":         p.ServiceId,
 			"host_id":            p.HostId,
@@ -1582,7 +1613,16 @@ func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry) []
 			"memory_utilization": p.MemoryUtilization,
 			"active_requests":    p.ActiveRequests,
 			"queue_length":       p.QueueLength,
-		})
+		}
+		if topo, ok := hostTopology[p.HostId]; ok {
+			if zone, zok := topo["zone"]; zok {
+				row["host_zone"] = zone
+			}
+			if labels, lok := topo["labels"]; lok {
+				row["host_labels"] = labels
+			}
+		}
+		out = append(out, row)
 	}
 	return out
 }
@@ -1597,6 +1637,9 @@ func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[stri
 		"score_p95_ms":    step.ScoreP95Ms,
 		"reason":          step.Reason,
 	}
+	if details := parseOptimizationReasonDetails(step.Reason); len(details) > 0 {
+		result["reason_details"] = details
+	}
 	if step.PreviousConfig != nil {
 		result["previous_config"] = convertRunConfigurationToJSON(step.PreviousConfig, nil)
 	}
@@ -1604,6 +1647,49 @@ func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[stri
 		result["current_config"] = convertRunConfigurationToJSON(step.CurrentConfig, nil)
 	}
 	return result
+}
+
+func parseOptimizationReasonDetails(reason string) map[string]any {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil
+	}
+	parts := strings.Fields(reason)
+	if len(parts) == 0 {
+		return nil
+	}
+	// Backward-compatible enrichment: only parse structured topology guard traces.
+	if parts[0] != "topology_guard_blocked" {
+		return nil
+	}
+	out := map[string]any{
+		"type": parts[0],
+	}
+	for _, token := range parts[1:] {
+		k, v, ok := strings.Cut(token, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || v == "" {
+			continue
+		}
+		switch k {
+		case "action", "service_id", "decision_reason":
+			out[k] = v
+		case "locality_hit_rate", "cross_zone_request_fraction", "topology_latency_penalty_ms_mean",
+			"min_locality_hit_rate", "max_cross_zone_request_fraction", "max_topology_latency_penalty_mean_ms",
+			"previous_locality_hit_rate":
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				out[k] = f
+			}
+		}
+	}
+	if len(out) == 1 {
+		return nil
+	}
+	return out
 }
 
 func convertOptimizationHistoryToJSON(history []*simulationv1.OptimizationStep) []map[string]any {
@@ -1731,6 +1817,18 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		"max_topic_consumer_lag":       metrics.MaxTopicConsumerLag,
 		"queue_drop_rate":              metrics.QueueDropRate,
 		"topic_drop_rate":              metrics.TopicDropRate,
+		"locality_hit_rate":            metrics.LocalityHitRate,
+		"cross_zone_request_count_total": metrics.CrossZoneRequestCountTotal,
+		"same_zone_request_count_total":  metrics.SameZoneRequestCountTotal,
+		"cross_zone_request_fraction":    metrics.CrossZoneRequestFraction,
+		"cross_zone_latency_penalty_ms_total": metrics.CrossZoneLatencyPenaltyMsTotal,
+		"cross_zone_latency_penalty_ms_mean":  metrics.CrossZoneLatencyPenaltyMsMean,
+		"same_zone_latency_penalty_ms_total":  metrics.SameZoneLatencyPenaltyMsTotal,
+		"same_zone_latency_penalty_ms_mean":   metrics.SameZoneLatencyPenaltyMsMean,
+		"external_latency_ms_total":          metrics.ExternalLatencyMsTotal,
+		"external_latency_ms_mean":           metrics.ExternalLatencyMsMean,
+		"topology_latency_penalty_ms_total":  metrics.TopologyLatencyPenaltyMsTotal,
+		"topology_latency_penalty_ms_mean":   metrics.TopologyLatencyPenaltyMsMean,
 	}
 
 	if len(metrics.ServiceMetrics) > 0 {
@@ -1815,6 +1913,24 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 			eps = append(eps, row)
 		}
 		result["endpoint_request_stats"] = eps
+	}
+	if len(metrics.InstanceRouteStats) > 0 {
+		rs := make([]map[string]any, 0, len(metrics.InstanceRouteStats))
+		for _, r := range metrics.InstanceRouteStats {
+			if r == nil {
+				continue
+			}
+			rs = append(rs, map[string]any{
+				"service_name":    r.ServiceName,
+				"endpoint_path":   r.EndpointPath,
+				"instance_id":     r.InstanceId,
+				"strategy":        r.Strategy,
+				"selection_count": r.SelectionCount,
+			})
+		}
+		if len(rs) > 0 {
+			result["instance_route_stats"] = rs
+		}
 	}
 
 	return result

@@ -5,10 +5,29 @@ package config
 type Scenario struct {
 	Metadata         *ScenarioMetadata `yaml:"metadata,omitempty"`
 	SimulationLimits *SimulationLimits `yaml:"simulation_limits,omitempty"`
+	// Network holds optional multi-zone latency overlays for downstream service calls.
+	Network *NetworkConfig `yaml:"network,omitempty"`
 	Hosts            []Host            `yaml:"hosts"`
 	Services         []Service         `yaml:"services"`
 	Workload         []WorkloadPattern `yaml:"workload"`
 	Policies         *Policies         `yaml:"policies,omitempty"`
+}
+
+// NetworkConfig models optional topology-aware overlays on downstream hop network latency.
+// Omitted or all-zero fields preserve legacy behavior.
+type NetworkConfig struct {
+	// SymmetricCrossZoneLatency: when true, a missing directed edge zone-a -> zone-b uses zone-b -> zone-a if listed.
+	// Default false: cross_zone_latency_ms is directed only; define reverse edges explicitly unless symmetric is enabled.
+	SymmetricCrossZoneLatency bool `yaml:"symmetric_cross_zone_latency,omitempty"`
+
+	SameHostLatencyMs LatencySpec `yaml:"same_host_latency_ms,omitempty"`
+	SameZoneLatencyMs LatencySpec `yaml:"same_zone_latency_ms,omitempty"`
+
+	DefaultCrossZoneLatencyMs LatencySpec `yaml:"default_cross_zone_latency_ms,omitempty"`
+	CrossZoneLatencyMs        map[string]map[string]LatencySpec `yaml:"cross_zone_latency_ms,omitempty"`
+
+	// ExternalLatencyMs default for downstream hops to services with kind: external (override per service via external_network_latency_ms).
+	ExternalLatencyMs LatencySpec `yaml:"external_latency_ms,omitempty"`
 }
 
 // SimulationLimits caps downstream trace expansion (async cycles, deep call chains).
@@ -28,6 +47,8 @@ type Host struct {
 	ID       string `yaml:"id"`
 	Cores    int    `yaml:"cores"`
 	MemoryGB int    `yaml:"memory_gb,omitempty"` // Optional; 0 means use simulator default (16 GB)
+	Zone     string `yaml:"zone,omitempty"`
+	Labels   map[string]string `yaml:"labels,omitempty"`
 }
 
 // Service represents a microservice
@@ -39,9 +60,36 @@ type Service struct {
 	Model     string           `yaml:"model"` // cpu, mixed, db_latency
 	CPUCores  float64          `yaml:"cpu_cores,omitempty"`
 	MemoryMB  float64          `yaml:"memory_mb,omitempty"`
+	// ExternalNetworkLatencyMs (optional) overrides scenario.network.external_latency_ms for this service when kind is external.
+	ExternalNetworkLatencyMs *LatencySpec `yaml:"external_network_latency_ms,omitempty"`
 	Scaling   *ScalingPolicy   `yaml:"scaling,omitempty"`
 	Behavior  *ServiceBehavior `yaml:"behavior,omitempty"`
+	Placement *PlacementPolicy `yaml:"placement,omitempty"`
+	Routing   *RoutingPolicy   `yaml:"routing,omitempty"`
 	Endpoints []Endpoint       `yaml:"endpoints"`
+}
+
+// PlacementPolicy defines optional topology-aware placement preferences/constraints.
+// Empty fields preserve legacy behavior.
+type PlacementPolicy struct {
+	// RequiredZones constrains placement to these zones when set.
+	RequiredZones []string `yaml:"required_zones,omitempty"`
+	// PreferredZones biases placement toward these zones when feasible.
+	PreferredZones []string `yaml:"preferred_zones,omitempty"`
+	// AffinityZones constrains placement to these zones when set.
+	AffinityZones []string `yaml:"affinity_zones,omitempty"`
+	// AntiAffinityZones excludes placement from these zones when set.
+	AntiAffinityZones []string `yaml:"anti_affinity_zones,omitempty"`
+	// RequiredHostLabels constrains placement to hosts matching all key/value labels.
+	RequiredHostLabels map[string]string `yaml:"required_host_labels,omitempty"`
+	// PreferredHostLabels biases placement toward hosts matching these labels.
+	PreferredHostLabels map[string]string `yaml:"preferred_host_labels,omitempty"`
+	// AntiAffinityServices avoids co-locating this service on hosts already running these services.
+	AntiAffinityServices []string `yaml:"anti_affinity_services,omitempty"`
+	// SpreadAcrossZones prefers balancing replicas across zones where possible.
+	SpreadAcrossZones bool `yaml:"spread_across_zones,omitempty"`
+	// MaxReplicasPerHost caps same-service replicas per host when > 0.
+	MaxReplicasPerHost int `yaml:"max_replicas_per_host,omitempty"`
 }
 
 // ServiceBehavior holds optional failure, saturation, pool, cache, and queue/broker semantics (all backward compatible).
@@ -121,8 +169,24 @@ type Endpoint struct {
 	TimeoutMs       float64          `yaml:"timeout_ms,omitempty"` // Local processing deadline from StartTime (optional)
 	IOMs            LatencySpec      `yaml:"io_ms,omitempty"`
 	ConnectionPool  int              `yaml:"connection_pool,omitempty"`
+	Routing         *RoutingPolicy   `yaml:"routing,omitempty"`
 	Downstream      []DownstreamCall `yaml:"downstream"`
 	NetLatencyMs    LatencySpec      `yaml:"net_latency_ms"`
+}
+
+// RoutingPolicy configures request-to-instance routing/load-balancing behavior.
+// Defaults preserve legacy behavior: strategy=round_robin.
+type RoutingPolicy struct {
+	// Strategy selects the balancing method:
+	// round_robin (default), random, least_connections, least_queue, least_cpu, weighted_round_robin, sticky.
+	Strategy string `yaml:"strategy,omitempty"`
+	// StickyKeyFrom uses request.Metadata[sticky_key_from] as hash input for sticky routing.
+	StickyKeyFrom string `yaml:"sticky_key_from,omitempty"`
+	// LocalityZoneFrom uses request.Metadata[locality_zone_from] as preferred host zone for routing.
+	// When present, routing first considers same-zone instances; if none exist, it falls back to all instances.
+	LocalityZoneFrom string `yaml:"locality_zone_from,omitempty"`
+	// Weights applies to weighted_round_robin; map key is instance ID (e.g. "api-instance-0"), value >= 0.
+	Weights map[string]float64 `yaml:"weights,omitempty"`
 }
 
 // DownstreamCall represents a call to a downstream service
@@ -154,6 +218,8 @@ type WorkloadPattern struct {
 	From         string      `yaml:"from"`
 	SourceKind   string      `yaml:"source_kind,omitempty"`   // e.g. client
 	TrafficClass string      `yaml:"traffic_class,omitempty"` // ingress, background, replay
+	// Metadata is copied into request metadata for arrivals generated from this workload pattern.
+	Metadata map[string]string `yaml:"metadata,omitempty"`
 	To           string      `yaml:"to"`
 	Arrival      ArrivalSpec `yaml:"arrival"`
 }

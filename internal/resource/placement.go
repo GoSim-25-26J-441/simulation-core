@@ -11,6 +11,8 @@ type InstancePlacement struct {
 	InstanceID        string
 	ServiceID         string
 	HostID            string
+	HostZone          string
+	HostLabels        map[string]string
 	Lifecycle         string // ACTIVE or DRAINING
 	CPUCores          float64
 	MemoryMB          float64
@@ -53,6 +55,8 @@ func (m *Manager) GetInstancePlacements(simTime time.Time) []InstancePlacement {
 			InstanceID:        r.id,
 			ServiceID:         inst.ServiceName(),
 			HostID:            inst.HostID(),
+			HostZone:          func() string { if h, ok := m.hosts[inst.HostID()]; ok && h != nil { return h.Zone() }; return "" }(),
+			HostLabels:        func() map[string]string { if h, ok := m.hosts[inst.HostID()]; ok && h != nil { return h.Labels() }; return nil }(),
 			Lifecycle:         lc,
 			CPUCores:          inst.CPUCores(),
 			MemoryMB:          inst.MemoryMB(),

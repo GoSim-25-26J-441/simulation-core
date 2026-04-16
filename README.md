@@ -282,6 +282,52 @@ policies:
     base_ms: 10
 ```
 
+#### Topology-aware placement and routing
+
+Scenario hosts can include topology metadata, and services can optionally constrain placement:
+
+```yaml
+hosts:
+  - id: host-a1
+    cores: 8
+    zone: zone-a
+    labels:
+      rack: r1
+  - id: host-b1
+    cores: 8
+    zone: zone-b
+    labels:
+      rack: r2
+
+services:
+  - id: checkout
+    replicas: 2
+    model: cpu
+    placement:
+      required_zones: [zone-a, zone-b]
+      preferred_zones: [zone-a]
+      spread_across_zones: true
+      max_replicas_per_host: 1
+      anti_affinity_services: [checkout]
+      required_host_labels:
+        rack: r1
+      preferred_host_labels:
+        tier: app
+    routing:
+      strategy: weighted_round_robin
+      locality_zone_from: client_zone
+      weights:
+        checkout-1: 0.9
+        checkout-2: 0.1
+```
+
+Notes:
+- `routing.locality_zone_from` is a preference: if no active instance matches the requested zone, selection falls back to the full active instance set.
+- Endpoint-level `routing` overrides service-level `routing` for all routing fields, including `locality_zone_from`.
+- `sticky` uses `sticky_key_from`; when the metadata key is missing, routing explicitly falls back to `round_robin`.
+- `weighted_round_robin` supports fractional weights; `0` excludes an instance from weighted traffic, and all-zero weights fall back to round-robin.
+- Placement supports required/preferred zones and host labels, optional anti-affinity, optional zone spreading, and optional per-host replica caps.
+
 ### Policy Configuration
 
 The simulation engine supports several policies for controlling request behavior and resource management:
@@ -376,6 +422,10 @@ The optimization loop enables automatic tuning of service configurations (replic
 
 - **Hill-climbing optimizer**: Iterative algorithm that explores neighboring configurations to find optimal settings
 - **Multiple objective functions**: Optimize for P95/P99/Mean latency, throughput, error rate, or cost
+- **Topology-aware batch optimization**:
+  - Hard guardrails for `locality_hit_rate`, `cross_zone_request_fraction`, and `topology_latency_penalty_ms_mean`
+  - Soft penalties for locality/cross-zone/topology latency in efficiency ranking after feasibility is satisfied
+  - Feasible-first ordering remains unchanged (SLO and hard constraints always win first)
 - **Convergence detection**: Automatic stopping when optimization converges (no improvement, plateau, low variance)
 - **Parameter exploration**: Adjusts service replicas, CPU/memory resources, workload rates, and policy parameters
 - **Parallel execution**: Evaluate multiple configurations concurrently for faster optimization
@@ -555,6 +605,61 @@ paretoStrategy := &improvement.ParetoOptimalStrategy{}
 best, err := paretoStrategy.SelectBest(candidates, objective)
 ```
 
+### Batch topology guardrails and penalties
+
+Batch search supports explicit topology controls in `BatchOptimizationConfig`:
+
+- Guardrails:
+  - `min_locality_hit_rate`
+  - `max_cross_zone_request_fraction`
+  - `max_topology_latency_penalty_mean_ms`
+- Penalty weights (`penalty_weights`):
+  - `locality`
+  - `cross_zone`
+  - `topology_latency`
+
+Example:
+
+```yaml
+batch:
+  max_p95_latency_ms: 250
+  max_error_rate: 0.02
+  min_locality_hit_rate: 0.80
+  max_cross_zone_request_fraction: 0.20
+  max_topology_latency_penalty_mean_ms: 15
+  penalty_weights:
+    p95: 1
+    error_rate: 1
+    throughput: 1
+    locality: 2
+    cross_zone: 2
+    topology_latency: 1.5
+```
+
+Interpretation:
+
+- Guardrails contribute to `violation_score` (feasibility gate).
+- Topology soft penalties contribute to `efficiency_score` only after feasibility comparison.
+- This prevents low-cost but topology-regressive candidates from winning when better feasible locality options exist.
+
+### Online topology guardrails and traces
+
+Online optimization uses the same topology health signals for safe scale-down decisions. Add these fields to the online `OptimizationConfig` when topology should constrain live controller actions:
+
+- `min_locality_hit_rate`
+- `max_cross_zone_request_fraction`
+- `max_topology_latency_penalty_mean_ms`
+
+The controller blocks host scale-in, replica scale-down, and per-service vertical downscale when a configured topology guardrail is unhealthy. If the scenario has locality routing configured and `locality_hit_rate` is `0`, that is treated as an all-miss locality violation rather than missing data.
+
+Blocked topology decisions are emitted as no-op optimization history entries. `previous_config` and `current_config` are identical, and `reason` contains structured `key=value` data such as:
+
+```text
+topology_guard_blocked action=replica_scale_down decision_reason=locality_hit_rate_below_min locality_hit_rate=0.25 min_locality_hit_rate=0.8 cross_zone_request_fraction=0 max_cross_zone_request_fraction=0.2 topology_latency_penalty_ms_mean=0 max_topology_latency_penalty_mean_ms=15 service_id=checkout
+```
+
+Because this uses the existing `OptimizationStep` surface, the trace is available through run JSON, export, SSE `optimization_step`, gRPC run events, and callback payloads wherever optimization history is already consumed.
+
 ### Metrics Comparison
 
 Compare metrics across optimization runs:
@@ -597,6 +702,12 @@ Intended minimal endpoints (to be implemented in `simd`):
 - `GET /v1/runs/{id}`
 - `POST /v1/runs/{id}:stop`
 - `GET /v1/runs/{id}/metrics`
+
+Callback/resource notes:
+- When callback notifications are enabled, payload `resources` may include configuration snapshots derived from `FinalConfig`.
+- Callback `resources` can include `services`, `hosts`, and `placements`.
+- Host entries can include `zone` and `labels`.
+- Placement entries can include `host_zone` and `host_labels`.
 
 ### Proto generation
 

@@ -100,6 +100,12 @@ type GlobalObservation struct {
 
 	IngressThroughputRPS ObservedValue[float64]
 	IngressErrorRate       ObservedValue[float64]
+	LocalityHitRate        ObservedValue[float64]
+	CrossZoneFraction      ObservedValue[float64]
+	// Mean cross-zone network penalty per hop (ms); optional topology validation.
+	CrossZoneLatencyPenaltyMeanMs ObservedValue[float64]
+	// Mean aggregate topology network penalty per hop (ms); optional when comparing full topology overlays.
+	TopologyLatencyPenaltyMeanMs ObservedValue[float64]
 
 	TotalRequests         ObservedValue[int64]
 	IngressRequests       ObservedValue[int64]
@@ -125,6 +131,17 @@ type ServiceObservation struct {
 	MemoryUtilization ObservedValue[float64]
 }
 
+// InstanceRoutingObservation optionally captures per-instance request distribution for a service/endpoint.
+// This is intentionally optional and forward-compatible for skew-aware routing validation.
+type InstanceRoutingObservation struct {
+	ServiceID    string
+	EndpointPath string
+	InstanceID   string
+
+	RequestShare ObservedValue[float64]
+	RequestCount ObservedValue[int64]
+}
+
 // ObservedMetrics is vendor-neutral input for calibration and validation.
 // Optional fields use ObservedValue so explicit zeros are not confused with "not observed".
 type ObservedMetrics struct {
@@ -138,6 +155,7 @@ type ObservedMetrics struct {
 	QueueBrokers    []QueueBrokerObservation
 	TopicBrokers    []TopicBrokerObservation
 	Caches          []CacheObservation
+	InstanceRouting []InstanceRoutingObservation
 
 	// WorkloadTargets optionally supply throughput per workload pattern (To / traffic_class / source_kind).
 	WorkloadTargets []WorkloadTargetObservation

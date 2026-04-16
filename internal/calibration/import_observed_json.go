@@ -19,6 +19,10 @@ type partialObservedFile struct {
 		RootLatencyMeanMs     *float64 `json:"root_latency_mean_ms,omitempty"`
 		IngressThroughputRPS  *float64 `json:"ingress_throughput_rps,omitempty"`
 		IngressErrorRate      *float64 `json:"ingress_error_rate,omitempty"`
+		LocalityHitRate       *float64 `json:"locality_hit_rate,omitempty"`
+		CrossZoneFraction     *float64 `json:"cross_zone_fraction,omitempty"`
+		CrossZoneLatencyPenaltyMeanMs *float64 `json:"cross_zone_latency_penalty_mean_ms,omitempty"`
+		TopologyLatencyPenaltyMeanMs  *float64 `json:"topology_latency_penalty_mean_ms,omitempty"`
 		TotalRequests         *int64   `json:"total_requests,omitempty"`
 		IngressRequests       *int64   `json:"ingress_requests,omitempty"`
 		FailedRequests        *int64   `json:"failed_requests,omitempty"`
@@ -58,6 +62,13 @@ type partialObservedFile struct {
 		Topic         string   `json:"topic"`
 		DepthMean     *float64 `json:"depth_mean,omitempty"`
 	} `json:"queue_brokers,omitempty"`
+	InstanceRouting []struct {
+		ServiceID    string   `json:"service_id"`
+		EndpointPath string   `json:"endpoint_path"`
+		InstanceID   string   `json:"instance_id"`
+		RequestShare *float64 `json:"request_share,omitempty"`
+		RequestCount *int64   `json:"request_count,omitempty"`
+	} `json:"instance_routing,omitempty"`
 }
 
 // ObservedFromPartialJSON parses documented observed_metrics JSON with pointer leaves (omit = missing, present+0 = explicit zero).
@@ -91,6 +102,10 @@ func ObservedFromPartialJSON(data []byte) (*ObservedMetrics, error) {
 			RootLatencyMeanMs:     optF64(g.RootLatencyMeanMs),
 			IngressThroughputRPS:  optF64(g.IngressThroughputRPS),
 			IngressErrorRate:      optF64(g.IngressErrorRate),
+			LocalityHitRate:       optF64(g.LocalityHitRate),
+			CrossZoneFraction:     optF64(g.CrossZoneFraction),
+			CrossZoneLatencyPenaltyMeanMs: optF64(g.CrossZoneLatencyPenaltyMeanMs),
+			TopologyLatencyPenaltyMeanMs:  optF64(g.TopologyLatencyPenaltyMeanMs),
 			TotalRequests:         optI64(g.TotalRequests),
 			IngressRequests:       optI64(g.IngressRequests),
 			FailedRequests:        optI64(g.FailedRequests),
@@ -134,6 +149,15 @@ func ObservedFromPartialJSON(data []byte) (*ObservedMetrics, error) {
 			BrokerService: q.BrokerService,
 			Topic:         q.Topic,
 			DepthMean:     optF64(q.DepthMean),
+		})
+	}
+	for _, r := range f.InstanceRouting {
+		out.InstanceRouting = append(out.InstanceRouting, InstanceRoutingObservation{
+			ServiceID:    r.ServiceID,
+			EndpointPath: r.EndpointPath,
+			InstanceID:   r.InstanceID,
+			RequestShare: optF64(r.RequestShare),
+			RequestCount: optI64(r.RequestCount),
 		})
 	}
 	return out, nil

@@ -68,6 +68,48 @@ func labelsForRequestMetricsWithRetry(req *models.Request, serviceID, endpointPa
 	return labelsForRequestMetrics(req, serviceID, endpointPath)
 }
 
+type downstreamCallerTopology struct {
+	CallerInstanceID string
+	CallerHostZone   string
+	CallerHostID     string
+}
+
+// resolveCallerTopologyForSpawn merges caller routing metadata for downstream spawns.
+// Order: live lookup of caller_instance_id in RM (zone + host from instance), then explicit event snapshot fields,
+// then parent metadata (caller_host_id / caller_host_zone).
+func resolveCallerTopologyForSpawn(state *scenarioState, parentRequest *models.Request, explicit downstreamCallerTopology) (callerInstanceID, callerHostZone, callerHostID string) {
+	callerInstanceID = strings.TrimSpace(explicit.CallerInstanceID)
+	callerHostZone = strings.TrimSpace(explicit.CallerHostZone)
+	callerHostID = strings.TrimSpace(explicit.CallerHostID)
+	if parentRequest != nil && parentRequest.Metadata != nil {
+		if callerInstanceID == "" {
+			if v, ok := parentRequest.Metadata["instance_id"].(string); ok && v != "" {
+				callerInstanceID = strings.TrimSpace(v)
+			}
+		}
+	}
+	if state != nil && state.rm != nil && callerInstanceID != "" {
+		if inst, ok := state.rm.GetServiceInstance(callerInstanceID); ok && inst != nil {
+			hid := strings.TrimSpace(inst.HostID())
+			if h, ok := state.rm.GetHost(hid); ok && h != nil {
+				return callerInstanceID, strings.TrimSpace(h.Zone()), hid
+			}
+			return callerInstanceID, callerHostZone, hid
+		}
+	}
+	if callerHostID == "" && parentRequest != nil && parentRequest.Metadata != nil {
+		if v, ok := parentRequest.Metadata["caller_host_id"].(string); ok {
+			callerHostID = strings.TrimSpace(v)
+		}
+	}
+	if callerHostZone == "" && parentRequest != nil && parentRequest.Metadata != nil {
+		if v, ok := parentRequest.Metadata["caller_host_zone"].(string); ok {
+			callerHostZone = strings.TrimSpace(v)
+		}
+	}
+	return callerInstanceID, callerHostZone, callerHostID
+}
+
 func resolveDownstreamCallSpec(state *scenarioState, parent *models.Request, childSvc, childPath string) (config.DownstreamCall, bool) {
 	if parent == nil || state == nil {
 		return config.DownstreamCall{}, false
@@ -90,7 +132,7 @@ func maybeRetrySyncDependencyFailure(state *scenarioState, eng *engine.Engine, r
 }
 
 // execDownstreamSpawn creates a downstream request, records request_count, schedules start and optional timeout.
-func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, retryAttempt int, logicalCallID string) error {
+func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, retryAttempt int, logicalCallID string, callerTopology downstreamCallerTopology) error {
 	simTime := eng.GetSimTime()
 	resolvedCall := interaction.ResolvedCall{ServiceID: downstreamServiceID, Path: endpointPath}
 	downstreamRequest, err := state.interact.CreateDownstreamRequest(parentRequest, resolvedCall)
@@ -118,6 +160,16 @@ func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest
 			if v, ok := parentRequest.Metadata[k]; ok {
 				downstreamRequest.Metadata[k] = v
 			}
+		}
+		cid, cz, chid := resolveCallerTopologyForSpawn(state, parentRequest, callerTopology)
+		if cid != "" {
+			downstreamRequest.Metadata["caller_instance_id"] = cid
+		}
+		if cz != "" {
+			downstreamRequest.Metadata["caller_host_zone"] = cz
+		}
+		if chid != "" {
+			downstreamRequest.Metadata["caller_host_id"] = chid
 		}
 		downstreamRequest.ArrivalTime = simTime
 		downstreamRequest.Status = models.RequestStatusFailed
@@ -157,6 +209,16 @@ func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest
 		if v, ok := parentRequest.Metadata[k]; ok {
 			downstreamRequest.Metadata[k] = v
 		}
+	}
+	cid, cz, chid := resolveCallerTopologyForSpawn(state, parentRequest, callerTopology)
+	if cid != "" {
+		downstreamRequest.Metadata["caller_instance_id"] = cid
+	}
+	if cz != "" {
+		downstreamRequest.Metadata["caller_host_zone"] = cz
+	}
+	if chid != "" {
+		downstreamRequest.Metadata["caller_host_id"] = chid
 	}
 	downstreamRequest.ArrivalTime = simTime
 	if timeoutMs > 0 {
@@ -199,10 +261,15 @@ func execDownstreamSpawnFromEvent(state *scenarioState, eng *engine.Engine, pare
 	timeoutMs := metadataFloat64(evt.Data, "downstream_timeout_ms")
 	retryAttempt := metadataInt(evt.Data, metaRetryAttempt)
 	logicalID, _ := evt.Data[metaLogicalCallID].(string)
-	return execDownstreamSpawn(state, eng, parentRequest, downstreamServiceID, endpointPath, traceDepth, asyncDepth, isAsync, timeoutMs, retryAttempt, logicalID)
+	ct := downstreamCallerTopology{
+		CallerInstanceID: metadataString(evt.Data, "caller_instance_id"),
+		CallerHostZone:   metadataString(evt.Data, "caller_host_zone"),
+		CallerHostID:     metadataString(evt.Data, "caller_host_id"),
+	}
+	return execDownstreamSpawn(state, eng, parentRequest, downstreamServiceID, endpointPath, traceDepth, asyncDepth, isAsync, timeoutMs, retryAttempt, logicalID, ct)
 }
 
-func scheduleDownstreamRetryEvent(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, nextRetryAttempt int, logicalCallID string, delay time.Duration) {
+func scheduleDownstreamRetryEvent(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, nextRetryAttempt int, logicalCallID, callerInstanceID, callerHostZone, callerHostID string, delay time.Duration) {
 	t := eng.GetSimTime().Add(delay)
 	data := map[string]interface{}{
 		"endpoint_path":           endpointPath,
@@ -213,6 +280,9 @@ func scheduleDownstreamRetryEvent(state *scenarioState, eng *engine.Engine, pare
 		"downstream_timeout_ms":   timeoutMs,
 		metaRetryAttempt:          nextRetryAttempt,
 		metaLogicalCallID:         logicalCallID,
+		"caller_instance_id":      callerInstanceID,
+		"caller_host_zone":        callerHostZone,
+		"caller_host_id":          callerHostID,
 	}
 	eng.ScheduleAt(engine.EventTypeDownstreamRetry, t, parentRequest, downstreamServiceID, data)
 }
@@ -234,7 +304,12 @@ func handleDownstreamRetry(state *scenarioState, eng *engine.Engine) engine.Even
 		isAsync := metadataBool(evt.Data, "is_async_downstream")
 		retryAttempt := metadataInt(evt.Data, metaRetryAttempt)
 		logicalID := metadataString(evt.Data, metaLogicalCallID)
-		scheduleDownstreamWithCallerOverhead(state, eng, parentRequest, resolved, simTime, traceDepth, asyncDepth, isAsync, true, retryAttempt, logicalID)
+		callerTopology := downstreamCallerTopology{
+			CallerInstanceID: metadataString(evt.Data, "caller_instance_id"),
+			CallerHostZone:   metadataString(evt.Data, "caller_host_zone"),
+			CallerHostID:     metadataString(evt.Data, "caller_host_id"),
+		}
+		scheduleDownstreamWithCallerOverhead(state, eng, parentRequest, resolved, simTime, traceDepth, asyncDepth, isAsync, true, retryAttempt, logicalID, callerTopology)
 		return nil
 	}
 }
@@ -260,6 +335,9 @@ func maybeRetrySyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.
 	nextAttempt := attempt + 1
 	delay := rp.GetBackoffDuration(nextAttempt)
 	isolateFailedSyncAttempt(child)
+	callerInstanceID := metadataString(child.Metadata, "caller_instance_id")
+	callerHostZone := metadataString(child.Metadata, "caller_host_zone")
+	callerHostID := metadataString(child.Metadata, "caller_host_id")
 	scheduleDownstreamRetryEvent(state, eng, parent, child.ServiceName, child.Endpoint,
 		metadataInt(child.Metadata, "trace_depth"),
 		metadataInt(child.Metadata, "async_depth"),
@@ -267,6 +345,9 @@ func maybeRetrySyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.
 		metadataFloat64(child.Metadata, "downstream_timeout_ms"),
 		nextAttempt,
 		logical,
+		callerInstanceID,
+		callerHostZone,
+		callerHostID,
 		delay,
 	)
 	return true
@@ -296,6 +377,9 @@ func maybeRetryAsyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine
 	}
 	nextAttempt := attempt + 1
 	delay := rp.GetBackoffDuration(nextAttempt)
+	callerInstanceID := metadataString(child.Metadata, "caller_instance_id")
+	callerHostZone := metadataString(child.Metadata, "caller_host_zone")
+	callerHostID := metadataString(child.Metadata, "caller_host_id")
 	scheduleDownstreamRetryEvent(state, eng, parent, child.ServiceName, child.Endpoint,
 		metadataInt(child.Metadata, "trace_depth"),
 		metadataInt(child.Metadata, "async_depth"),
@@ -303,6 +387,9 @@ func maybeRetryAsyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine
 		metadataFloat64(child.Metadata, "downstream_timeout_ms"),
 		nextAttempt,
 		logical,
+		callerInstanceID,
+		callerHostZone,
+		callerHostID,
 		delay,
 	)
 	return true
@@ -329,6 +416,21 @@ func maybeRetrySyncCallerOverheadFailure(state *scenarioState, eng *engine.Engin
 	if logical == "" {
 		logical = parent.ID + ":" + childSvc + ":" + childPath
 	}
+	callerInstanceID := metadataString(evt.Data, "caller_instance_id")
+	callerHostZone := metadataString(evt.Data, "caller_host_zone")
+	callerHostID := metadataString(evt.Data, "caller_host_id")
+	if callerInstanceID == "" || callerHostZone == "" || callerHostID == "" {
+		fallbackInstanceID, fallbackHostZone, fallbackHostID := callerTopologyFromRequest(state, parent)
+		if callerInstanceID == "" {
+			callerInstanceID = fallbackInstanceID
+		}
+		if callerHostZone == "" {
+			callerHostZone = fallbackHostZone
+		}
+		if callerHostID == "" {
+			callerHostID = fallbackHostID
+		}
+	}
 	nextAttempt := attempt + 1
 	delay := rp.GetBackoffDuration(nextAttempt)
 	scheduleDownstreamRetryEvent(state, eng, parent, childSvc, childPath,
@@ -338,6 +440,9 @@ func maybeRetrySyncCallerOverheadFailure(state *scenarioState, eng *engine.Engin
 		metadataFloat64(evt.Data, "downstream_timeout_ms"),
 		nextAttempt,
 		logical,
+		callerInstanceID,
+		callerHostZone,
+		callerHostID,
 		delay,
 	)
 	return true
@@ -366,6 +471,9 @@ func maybeRetrySyncStartFailure(state *scenarioState, eng *engine.Engine, rm *en
 	nextAttempt := attempt + 1
 	delay := rp.GetBackoffDuration(nextAttempt)
 	isolateFailedSyncAttempt(child)
+	callerInstanceID := metadataString(child.Metadata, "caller_instance_id")
+	callerHostZone := metadataString(child.Metadata, "caller_host_zone")
+	callerHostID := metadataString(child.Metadata, "caller_host_id")
 	scheduleDownstreamRetryEvent(state, eng, parent, child.ServiceName, child.Endpoint,
 		metadataInt(child.Metadata, "trace_depth"),
 		metadataInt(child.Metadata, "async_depth"),
@@ -373,6 +481,9 @@ func maybeRetrySyncStartFailure(state *scenarioState, eng *engine.Engine, rm *en
 		metadataFloat64(child.Metadata, "downstream_timeout_ms"),
 		nextAttempt,
 		logical,
+		callerInstanceID,
+		callerHostZone,
+		callerHostID,
 		delay,
 	)
 	return true

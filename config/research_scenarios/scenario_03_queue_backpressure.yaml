@@ -1,0 +1,161 @@
+# Research purpose: Async order queue with consumer bottleneck and broker backpressure.
+# Expected behavior: Accepted ingress continues while queue depth, queue age, and redelivery/DLQ pressure become visible.
+metadata:
+  schema_version: "0.2.0"
+
+simulation_limits:
+  max_trace_depth: 24
+  max_async_hops: 8
+
+hosts:
+  - id: edge-a
+    cores: 8
+    memory_gb: 16
+    zone: zone-a
+  - id: app-a
+    cores: 12
+    memory_gb: 32
+    zone: zone-a
+  - id: app-b
+    cores: 12
+    memory_gb: 32
+    zone: zone-b
+  - id: broker-a
+    cores: 8
+    memory_gb: 24
+    zone: zone-a
+
+services:
+  - id: api-gateway
+    kind: api_gateway
+    role: ingress
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 768
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /orders
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 8
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream:
+          - to: order-service:/create
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 500
+            call_latency_ms:
+              mean: 3
+              sigma: 1
+
+  - id: order-service
+    kind: service
+    role: internal
+    replicas: 3
+    model: mixed
+    cpu_cores: 1.25
+    memory_mb: 1024
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /create
+        mean_cpu_ms: 13
+        cpu_sigma_ms: 4
+        default_memory_mb: 20
+        net_latency_ms:
+          mean: 3
+          sigma: 1
+        downstream:
+          - to: order-queue:/orders
+            mode: async
+            kind: queue
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 300
+            downstream_fraction_cpu: 0.1
+            call_latency_ms:
+              mean: 3
+              sigma: 1
+          - to: inventory-service:/reserve
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 350
+            call_latency_ms:
+              mean: 4
+              sigma: 1
+
+  - id: inventory-service
+    kind: service
+    role: internal
+    replicas: 2
+    model: mixed
+    cpu_cores: 1.0
+    memory_mb: 768
+    endpoints:
+      - path: /reserve
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 3
+        default_memory_mb: 18
+        net_latency_ms:
+          mean: 3
+          sigma: 1
+
+  - id: order-queue
+    kind: queue
+    role: internal
+    replicas: 1
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 1024
+    behavior:
+      queue:
+        capacity: 100
+        consumer_concurrency: 2
+        consumer_target: order-worker:/process
+        delivery_latency_ms:
+          mean: 5
+          sigma: 1.5
+        ack_timeout_ms: 180
+        max_redeliveries: 1
+        drop_policy: reject
+    endpoints:
+      - path: /orders
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0.25
+        default_memory_mb: 4
+        net_latency_ms:
+          mean: 1
+          sigma: 0.2
+
+  - id: order-worker
+    kind: service
+    role: internal
+    replicas: 1
+    model: mixed
+    cpu_cores: 0.75
+    memory_mb: 512
+    endpoints:
+      - path: /process
+        mean_cpu_ms: 18
+        cpu_sigma_ms: 5
+        default_memory_mb: 24
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+
+workload:
+  - from: synthetic-client
+    source_kind: client
+    traffic_class: orders
+    to: api-gateway:/orders
+    arrival:
+      type: constant
+      rate_rps: 120
