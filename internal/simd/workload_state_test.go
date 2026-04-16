@@ -437,6 +437,46 @@ func TestPatternKey(t *testing.T) {
 	}
 }
 
+func TestWorkloadStateArrivalEventCarriesMetadataMap(t *testing.T) {
+	eng := engine.NewEngine("workload-metadata")
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(2 * time.Second)
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{
+				From: "client",
+				To:   "svc1:/test",
+				Metadata: map[string]string{
+					"client_zone": "zone-a",
+					"tenant":      "gold",
+				},
+				Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 1},
+			},
+		},
+	}
+	ws := NewWorkloadState("workload-metadata", eng, endTime, 0)
+	if err := ws.Start(scenario, startTime, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	q := eng.GetEventQueue()
+	if q.Size() == 0 {
+		t.Fatal("expected request arrival events")
+	}
+	evt := q.Next()
+	if evt.Type != engine.EventTypeRequestArrival {
+		t.Fatalf("expected request arrival event, got %v", evt.Type)
+	}
+	md, ok := evt.Data["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata map on event, got %T", evt.Data["metadata"])
+	}
+	if md["client_zone"] != "zone-a" || md["tenant"] != "gold" {
+		t.Fatalf("unexpected metadata map: %+v", md)
+	}
+}
+
 // TestWorkloadStateUniformNotFixedInterval checks that "uniform" uses random offsets in [start,end)
 // (sorted), not the fixed spacing of "constant".
 func TestWorkloadStateUniformNotFixedInterval(t *testing.T) {

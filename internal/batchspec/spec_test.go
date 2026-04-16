@@ -89,3 +89,24 @@ func TestParseBatchSpecBrokerGuardrails(t *testing.T) {
 		t.Fatalf("unexpected drop/dlq guardrails: %+v", spec)
 	}
 }
+
+func TestParseBatchSpecTopologyGuardrails(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4, MemoryGB: 16}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{
+		MinLocalityHitRate:             0.85,
+		MaxCrossZoneRequestFraction:    0.2,
+		MaxTopologyLatencyPenaltyMeanMs: 25,
+	}
+	spec, err := ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatalf("ParseBatchSpec: %v", err)
+	}
+	if spec.MinLocalityHitRate != 0.85 || spec.MaxCrossZoneRequestFraction != 0.2 || spec.MaxTopologyLatencyPenaltyMeanMs != 25 {
+		t.Fatalf("unexpected topology guardrails: %+v", spec)
+	}
+}

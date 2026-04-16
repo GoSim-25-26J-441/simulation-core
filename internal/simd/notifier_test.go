@@ -223,6 +223,50 @@ func TestNotifierNotify_Success(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 }
 
+func TestNotifierNotify_IncludesInstanceRouteStatsInMetricsPayload(t *testing.T) {
+	payloadCh := make(chan NotificationPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload NotificationPayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("failed to decode payload: %v", err)
+		}
+		payloadCh <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "test-run-routing-stats",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+		Metrics: &simulationv1.RunMetrics{
+			TotalRequests: 1,
+			InstanceRouteStats: []*simulationv1.InstanceRouteStats{
+				{ServiceName: "api", EndpointPath: "/x", InstanceId: "api-instance-0", Strategy: "sticky", SelectionCount: 42},
+			},
+		},
+	}
+	NewNotifier().Notify(callbackURL, "", rec)
+	select {
+	case payload := <-payloadCh:
+		if payload.Metrics == nil || len(payload.Metrics.InstanceRouteStats) != 1 {
+			t.Fatalf("expected callback metrics.instance_route_stats, got %+v", payload.Metrics)
+		}
+		rs := payload.Metrics.InstanceRouteStats[0]
+		if rs.GetServiceName() != "api" || rs.GetSelectionCount() != 42 {
+			t.Fatalf("unexpected callback instance_route_stats row: %+v", rs)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for callback payload")
+	}
+}
+
 func TestNotifierNotify_WithSecret(t *testing.T) {
 	receivedSecretCh := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

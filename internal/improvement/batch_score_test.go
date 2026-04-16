@@ -166,3 +166,43 @@ func TestComputeBatchScoreTopicLagViolation(t *testing.T) {
 		t.Fatalf("expected infeasible topic lag violation, got %+v", sc)
 	}
 }
+
+func TestComputeBatchScoreTopologyGuardrailViolation(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 32}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{
+		MinLocalityHitRate:              0.9,
+		MaxCrossZoneRequestFraction:     0.1,
+		MaxTopologyLatencyPenaltyMeanMs: 10,
+	}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &simulationv1.RunMetrics{
+		LatencyP95Ms:               1,
+		LatencyP99Ms:               1,
+		LocalityHitRate:            0.5,
+		CrossZoneRequestFraction:   0.4,
+		TopologyLatencyPenaltyMsMean: 40,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc1", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	sc := ComputeBatchScore(spec, base, base, m)
+	if sc.Feasible || sc.LocalityViolation <= 0 || sc.CrossZoneViolation <= 0 || sc.TopologyLatencyViolation <= 0 {
+		t.Fatalf("expected topology guardrail violations, got %+v", sc)
+	}
+}
+
+func TestCompareBatchScoresPrefersLowerTopologyPenaltyWhenFeasible(t *testing.T) {
+	a := BatchScore{Feasible: true, ViolationScore: 0, EfficiencyScore: 10}
+	b := BatchScore{Feasible: true, ViolationScore: 0, EfficiencyScore: 12}
+	if !CompareBatchScores(a, b, 1, 2) {
+		t.Fatal("expected lower efficiency score candidate to win when both feasible")
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
 func TestAggregateRunMetricsMerge(t *testing.T) {
@@ -117,5 +119,127 @@ func TestAggregateRunMetricsBrokerRiskSemantics(t *testing.T) {
 	}
 	if out.GetQueueDepthSum() != 20 || out.GetTopicBacklogDepthSum() != 40 || out.GetTopicConsumerLagSum() != 60 {
 		t.Fatalf("average sum-gauge aggregation incorrect: %+v", out)
+	}
+}
+
+func TestAggregateRunMetricsTopologySemantics(t *testing.T) {
+	a := &simulationv1.RunMetrics{
+		LocalityHitRate:               0.90,
+		CrossZoneRequestFraction:      0.10,
+		CrossZoneRequestCountTotal:    100,
+		SameZoneRequestCountTotal:     300,
+		CrossZoneLatencyPenaltyMsTotal: 1000,
+		CrossZoneLatencyPenaltyMsMean:  8,
+		SameZoneLatencyPenaltyMsTotal:  400,
+		SameZoneLatencyPenaltyMsMean:   3,
+		ExternalLatencyMsTotal:         200,
+		ExternalLatencyMsMean:          4,
+		TopologyLatencyPenaltyMsTotal:  1600,
+		TopologyLatencyPenaltyMsMean:   12,
+	}
+	b := &simulationv1.RunMetrics{
+		LocalityHitRate:               0.55,
+		CrossZoneRequestFraction:      0.40,
+		CrossZoneRequestCountTotal:    300,
+		SameZoneRequestCountTotal:     100,
+		CrossZoneLatencyPenaltyMsTotal: 2500,
+		CrossZoneLatencyPenaltyMsMean:  15,
+		SameZoneLatencyPenaltyMsTotal:  900,
+		SameZoneLatencyPenaltyMsMean:   7,
+		ExternalLatencyMsTotal:         600,
+		ExternalLatencyMsMean:          10,
+		TopologyLatencyPenaltyMsTotal:  4000,
+		TopologyLatencyPenaltyMsMean:   20,
+	}
+	out := AggregateRunMetrics([]*simulationv1.RunMetrics{a, b})
+	if out.GetLocalityHitRate() != 0.55 {
+		t.Fatalf("expected min locality hit rate, got %v", out.GetLocalityHitRate())
+	}
+	if out.GetCrossZoneRequestFraction() != 0.40 {
+		t.Fatalf("expected max cross-zone fraction, got %v", out.GetCrossZoneRequestFraction())
+	}
+	if out.GetTopologyLatencyPenaltyMsMean() != 20 {
+		t.Fatalf("expected max topology latency mean, got %v", out.GetTopologyLatencyPenaltyMsMean())
+	}
+	if out.GetCrossZoneRequestCountTotal() != 200 || out.GetSameZoneRequestCountTotal() != 200 {
+		t.Fatalf("expected averaged topology request totals, got cross=%v same=%v", out.GetCrossZoneRequestCountTotal(), out.GetSameZoneRequestCountTotal())
+	}
+	if out.GetCrossZoneLatencyPenaltyMsTotal() != 1750 || out.GetSameZoneLatencyPenaltyMsTotal() != 650 || out.GetExternalLatencyMsTotal() != 400 || out.GetTopologyLatencyPenaltyMsTotal() != 2800 {
+		t.Fatalf("expected averaged topology penalty totals, got cross=%v same=%v external=%v topology=%v",
+			out.GetCrossZoneLatencyPenaltyMsTotal(), out.GetSameZoneLatencyPenaltyMsTotal(), out.GetExternalLatencyMsTotal(), out.GetTopologyLatencyPenaltyMsTotal())
+	}
+}
+
+func TestAggregateRunMetricsPreservesCrossZoneViolationForBatchScoring(t *testing.T) {
+	base := &config.Scenario{
+		Hosts:    []config.Host{{ID: "h1", Cores: 8, MemoryGB: 16}},
+		Services: []config.Service{{ID: "svc", Replicas: 1, CPUCores: 1, MemoryMB: 256, Model: "cpu"}},
+	}
+	spec, err := batchspec.ParseBatchSpec(&simulationv1.BatchOptimizationConfig{
+		MaxCrossZoneRequestFraction: 0.2,
+	}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed1 := &simulationv1.RunMetrics{
+		LatencyP95Ms:             10,
+		LatencyP99Ms:             20,
+		IngressThroughputRps:     100,
+		CrossZoneRequestFraction: 0.05,
+		LocalityHitRate:          0.95,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	seed2 := &simulationv1.RunMetrics{
+		LatencyP95Ms:             10,
+		LatencyP99Ms:             20,
+		IngressThroughputRps:     100,
+		CrossZoneRequestFraction: 0.35,
+		LocalityHitRate:          0.60,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	agg := AggregateRunMetrics([]*simulationv1.RunMetrics{seed1, seed2})
+	sc := ComputeBatchScore(spec, base, base, agg)
+	if sc.CrossZoneViolation <= 0 {
+		t.Fatalf("expected cross-zone guardrail violation to survive multi-seed aggregation, got %+v", sc)
+	}
+}
+
+func TestAggregateRunMetricsPreservesTopologyMeanViolationForBatchScoring(t *testing.T) {
+	base := &config.Scenario{
+		Hosts:    []config.Host{{ID: "h1", Cores: 8, MemoryGB: 16}},
+		Services: []config.Service{{ID: "svc", Replicas: 1, CPUCores: 1, MemoryMB: 256, Model: "cpu"}},
+	}
+	spec, err := batchspec.ParseBatchSpec(&simulationv1.BatchOptimizationConfig{
+		MaxTopologyLatencyPenaltyMeanMs: 20,
+	}, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed1 := &simulationv1.RunMetrics{
+		LatencyP95Ms:                 10,
+		LatencyP99Ms:                 20,
+		IngressThroughputRps:         100,
+		TopologyLatencyPenaltyMsMean: 8,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	seed2 := &simulationv1.RunMetrics{
+		LatencyP95Ms:                 10,
+		LatencyP99Ms:                 20,
+		IngressThroughputRps:         100,
+		TopologyLatencyPenaltyMsMean: 45,
+		ServiceMetrics: []*simulationv1.ServiceMetrics{
+			{ServiceName: "svc", CpuUtilization: 0.5, MemoryUtilization: 0.5},
+		},
+	}
+	agg := AggregateRunMetrics([]*simulationv1.RunMetrics{seed1, seed2})
+	sc := ComputeBatchScore(spec, base, base, agg)
+	if sc.TopologyLatencyViolation <= 0 {
+		t.Fatalf("expected topology-latency guardrail violation to survive multi-seed aggregation, got %+v", sc)
 	}
 }

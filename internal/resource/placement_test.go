@@ -11,8 +11,8 @@ func TestGetInstancePlacementsInitialStableOrder(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{
 		Hosts: []config.Host{
-			{ID: "host-b", Cores: 4},
-			{ID: "host-a", Cores: 8},
+			{ID: "host-b", Cores: 4, Zone: "zone-b", Labels: map[string]string{"rack": "r2"}},
+			{ID: "host-a", Cores: 8, Zone: "zone-a", Labels: map[string]string{"rack": "r1"}},
 		},
 		Services: []config.Service{
 			{
@@ -36,6 +36,9 @@ func TestGetInstancePlacementsInitialStableOrder(t *testing.T) {
 	}
 	if pl[0].HostID != "host-a" || pl[1].HostID != "host-b" {
 		t.Fatalf("expected host-a then host-b (round-robin among feasible hosts), got %q %q", pl[0].HostID, pl[1].HostID)
+	}
+	if pl[0].HostZone != "zone-a" || pl[0].HostLabels["rack"] != "r1" {
+		t.Fatalf("expected host topology on placement, got %+v", pl[0])
 	}
 	if pl[0].Lifecycle != "ACTIVE" || pl[1].Lifecycle != "ACTIVE" {
 		t.Fatalf("expected ACTIVE lifecycle, got %+v %+v", pl[0].Lifecycle, pl[1].Lifecycle)

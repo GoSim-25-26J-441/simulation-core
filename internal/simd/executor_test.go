@@ -2,7 +2,11 @@ package simd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -351,6 +355,70 @@ func TestRunExecutorOnlineControllerScalesUp(t *testing.T) {
 	replicas := rm.ActiveReplicas("svc1")
 	if replicas <= 1 {
 		t.Fatalf("expected replicas to scale up above 1, got %d", replicas)
+	}
+}
+
+func manualTickerFactory(ch <-chan time.Time) func(time.Duration) (<-chan time.Time, func()) {
+	return func(time.Duration) (<-chan time.Time, func()) {
+		return ch, func() {}
+	}
+}
+
+func TestRunExecutorOnlineControllerScalesUpDeterministicTicks(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-scale-up-deterministic-ticks"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		metrics.RecordLatency(collector, 300.0, now.Add(time.Duration(i)*time.Millisecond), metrics.CreateServiceLabels("svc1"))
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	ticks := make(chan time.Time, 8)
+	exec.setControllerTickerFactory(manualTickerFactory(ticks))
+	defer exec.setControllerTickerFactory(nil)
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50,
+		ControlIntervalMs:  10,
+		StepSize:           1,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	done := make(chan struct{})
+	go func() {
+		exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+		close(done)
+	}()
+	ticks <- time.Now()
+	ticks <- time.Now().Add(10 * time.Millisecond)
+	waitForTestCondition(t, 500*time.Millisecond, func() bool { return rm.ActiveReplicas("svc1") > 1 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("controller did not stop after cancellation")
 	}
 }
 
@@ -1373,6 +1441,458 @@ func TestRunExecutorOnlineControllerIncreasesHostCapacityAtMaxHosts(t *testing.T
 	}
 }
 
+func TestOnlineTopologyGuardBlocksZeroLocalityWhenLocalityRoutingConfigured(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{
+				ID:      "svc1",
+				Routing: &config.RoutingPolicy{LocalityZoneFrom: "client_zone"},
+			},
+		},
+	}
+	opt := &simulationv1.OptimizationConfig{MinLocalityHitRate: 0.5}
+	blocked, reason := onlineTopologyGuard(&models.RunMetrics{LocalityHitRate: 0}, scenario, "", nil, opt, -1)
+	if !blocked {
+		t.Fatalf("expected zero locality hit rate to be blocked when locality routing is configured")
+	}
+	if reason != "locality_hit_rate_below_min" {
+		t.Fatalf("expected locality_hit_rate_below_min, got %q", reason)
+	}
+}
+
+func TestOnlineTopologyGuardDoesNotTreatZeroLocalityAsViolationWithoutLocalityRouting(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{{ID: "svc1"}},
+	}
+	opt := &simulationv1.OptimizationConfig{MinLocalityHitRate: 0.5}
+	blocked, reason := onlineTopologyGuard(&models.RunMetrics{LocalityHitRate: 0}, scenario, "", nil, opt, -1)
+	if blocked {
+		t.Fatalf("expected zero locality hit rate not to block when no locality routing is configured, reason=%q", reason)
+	}
+}
+
+func TestTopologyGuardDecisionReasonIncludesObservedAndConfiguredFields(t *testing.T) {
+	reason := topologyGuardDecisionReason(
+		"replica_scale_down",
+		"svc1",
+		"locality_hit_rate_below_min",
+		&models.RunMetrics{
+			LocalityHitRate:              0.25,
+			CrossZoneRequestFraction:     0.75,
+			TopologyLatencyPenaltyMsMean: 12.5,
+		},
+		&simulationv1.OptimizationConfig{
+			MinLocalityHitRate:              0.8,
+			MaxCrossZoneRequestFraction:     0.2,
+			MaxTopologyLatencyPenaltyMeanMs: 10,
+		},
+		0.9,
+	)
+	for _, want := range []string{
+		"topology_guard_blocked",
+		"action=replica_scale_down",
+		"service_id=svc1",
+		"decision_reason=locality_hit_rate_below_min",
+		"locality_hit_rate=0.25",
+		"min_locality_hit_rate=0.8",
+		"cross_zone_request_fraction=0.75",
+		"max_cross_zone_request_fraction=0.2",
+		"topology_latency_penalty_ms_mean=12.5",
+		"max_topology_latency_penalty_mean_ms=10",
+		"previous_locality_hit_rate=0.9",
+	} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("expected reason to contain %q, got %q", want, reason)
+		}
+	}
+}
+
+func runOnlineControllerForTest(t *testing.T, exec *RunExecutor, runID string, scenario *config.Scenario, collector *metrics.Collector, opt *simulationv1.OptimizationConfig, rm *resource.Manager, state *scenarioState, d time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(d)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+}
+
+func waitForTestCondition(t *testing.T, timeout time.Duration, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %s", timeout)
+}
+
+func optimizationHistoryContains(t *testing.T, store *RunStore, runID string, substrings ...string) bool {
+	t.Helper()
+	rec, ok := store.Get(runID)
+	if !ok {
+		t.Fatalf("expected run %q in store", runID)
+	}
+	for _, step := range rec.OptimizationHistory {
+		if step == nil {
+			continue
+		}
+		matched := true
+		for _, sub := range substrings {
+			if !strings.Contains(step.Reason, sub) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRunExecutorOnlineControllerRecordsReplicaTopologyTraceAfterLocalityShift(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "online-topology-replica-trace"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 8, MemoryGB: 16, Zone: "zone-a"}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 2,
+				Model:    "cpu",
+				Routing:  &config.RoutingPolicy{LocalityZoneFrom: "client_zone"},
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+		},
+	}
+	opt := &simulationv1.OptimizationConfig{
+		Online:                    true,
+		TargetP95LatencyMs:        100,
+		ControlIntervalMs:         10,
+		OptimizationTargetPrimary: "p95_latency",
+		MinReplicasPerService:     1,
+		MinLocalityHitRate:        0.5,
+	}
+	if _, err := store.Create(runID, &simulationv1.RunInput{Optimization: opt, DurationMs: 1000}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, now)
+	metrics.RecordLatency(collector, 5, now, metrics.CreateServiceLabels("svc1"))
+	metrics.RecordLocalityRouteHitCount(collector, 20, now, metrics.CreateServiceLabels("svc1"))
+	state := mustScenarioState(t, scenario, rm, collector)
+
+	runOnlineControllerForTest(t, exec, runID, scenario, collector, opt, rm, state, 80*time.Millisecond)
+	waitForTestCondition(t, 300*time.Millisecond, func() bool { return rm.ActiveReplicas("svc1") == 1 })
+
+	if err := rm.ScaleServiceWithOptions("svc1", 2, resource.ScaleServiceOptions{SimTime: time.Now()}); err != nil {
+		t.Fatalf("reset replicas: %v", err)
+	}
+	shiftTime := now.Add(time.Second)
+	recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, shiftTime)
+	metrics.RecordLatency(collector, 5, shiftTime, metrics.CreateServiceLabels("svc1"))
+	metrics.RecordLocalityRouteMissCount(collector, 100, shiftTime, metrics.CreateServiceLabels("svc1"))
+
+	runOnlineControllerForTest(t, exec, runID, scenario, collector, opt, rm, state, 100*time.Millisecond)
+	if got := rm.ActiveReplicas("svc1"); got != 2 {
+		t.Fatalf("expected replica scale-down blocked after locality shift, got replicas=%d", got)
+	}
+	if !optimizationHistoryContains(t, store, runID, "topology_guard_blocked", "action=replica_scale_down", "decision_reason=locality_hit_rate_below_min", "service_id=svc1") {
+		t.Fatalf("expected optimization history to contain replica topology block decision")
+	}
+}
+
+func TestRunExecutorOnlineControllerRecordsHostTopologyTraceAfterCrossZoneShift(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "online-topology-host-trace"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-a", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "host-b", Cores: 8, MemoryGB: 16, Zone: "zone-b"},
+			{ID: "host-c", Cores: 8, MemoryGB: 16, Zone: "zone-c"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0}},
+				},
+			},
+		},
+	}
+	opt := &simulationv1.OptimizationConfig{
+		Online:                      true,
+		TargetP95LatencyMs:          100,
+		ControlIntervalMs:           10,
+		ScaleDownHostCpuUtilMax:     0.5,
+		MinHosts:                    2,
+		MaxHosts:                    3,
+		MaxCrossZoneRequestFraction: 0.4,
+	}
+	if _, err := store.Create(runID, &simulationv1.RunInput{Optimization: opt, DurationMs: 1000}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	for _, hostID := range rm.HostIDs() {
+		if host, ok := rm.GetHost(hostID); ok {
+			host.SetCPUUtilization(0.1)
+		}
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, now)
+	metrics.RecordLatency(collector, 5, now, metrics.CreateServiceLabels("svc1"))
+	metrics.RecordSameZoneRequestCount(collector, 10, now, metrics.CreateServiceLabels("svc1"))
+	state := mustScenarioState(t, scenario, rm, collector)
+
+	runOnlineControllerForTest(t, exec, runID, scenario, collector, opt, rm, state, 80*time.Millisecond)
+	waitForTestCondition(t, 300*time.Millisecond, func() bool { return rm.HostCount() == 2 })
+
+	opt.MinHosts = 1
+	shiftTime := now.Add(time.Second)
+	recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, shiftTime)
+	metrics.RecordLatency(collector, 5, shiftTime, metrics.CreateServiceLabels("svc1"))
+	metrics.RecordCrossZoneRequestCount(collector, 100, shiftTime, metrics.CreateServiceLabels("svc1"))
+
+	runOnlineControllerForTest(t, exec, runID, scenario, collector, opt, rm, state, 100*time.Millisecond)
+	if got := rm.HostCount(); got != 2 {
+		t.Fatalf("expected host scale-in blocked after cross-zone shift, got hosts=%d", got)
+	}
+	if !optimizationHistoryContains(t, store, runID, "topology_guard_blocked", "action=host_scale_in", "decision_reason=cross_zone_fraction_above_max") {
+		t.Fatalf("expected optimization history to contain host topology block decision")
+	}
+}
+
+func TestRunExecutorOnlineControllerBlocksReplicaScaleDownWhenLocalityCoverageWouldDrop(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-topology-replica-guard"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-a", Cores: 8, Zone: "zone-a"},
+			{ID: "host-b", Cores: 8, Zone: "zone-b"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 2,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones: []string{"zone-a", "zone-b"},
+				},
+				Routing: &config.RoutingPolicy{LocalityZoneFrom: "client_zone"},
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, ts)
+		metrics.RecordLatency(collector, 5.0, ts, metrics.CreateServiceLabels("svc1"))
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	opt := &simulationv1.OptimizationConfig{
+		Online:                          true,
+		TargetP95LatencyMs:              100,
+		ControlIntervalMs:               10,
+		OptimizationTargetPrimary:       "cpu_utilization",
+		TargetUtilHigh:                  0.7,
+		TargetUtilLow:                   0.4,
+		MinLocalityHitRate:              0.5,
+		MaxCrossZoneRequestFraction:     0.6,
+		MaxTopologyLatencyPenaltyMeanMs: 100,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(90 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	if got := rm.ActiveReplicas("svc1"); got < 2 {
+		t.Fatalf("expected replica scale-down blocked to preserve locality zone coverage, got replicas=%d", got)
+	}
+}
+
+func TestRunExecutorOnlineControllerBlocksHostScaleInUnderCrossZonePressure(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-topology-host-guard"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-a", Cores: 8, Zone: "zone-a"},
+			{ID: "host-b", Cores: 8, Zone: "zone-b"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones: []string{"zone-b"},
+				},
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, ts)
+		metrics.RecordLatency(collector, 5.0, ts, metrics.CreateServiceLabels("svc1"))
+		metrics.RecordCrossZoneRequestCount(collector, 1, ts, metrics.CreateServiceLabels("svc1"))
+	}
+	for _, hid := range rm.HostIDs() {
+		if h, ok := rm.GetHost(hid); ok {
+			h.SetCPUUtilization(0.2)
+		}
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	opt := &simulationv1.OptimizationConfig{
+		Online:                      true,
+		TargetP95LatencyMs:          100,
+		ControlIntervalMs:           10,
+		ScaleDownHostCpuUtilMax:     0.5,
+		MinHosts:                    1,
+		MaxHosts:                    3,
+		MaxCrossZoneRequestFraction: 0.2,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	if got := rm.HostCount(); got < 2 {
+		t.Fatalf("expected host scale-in blocked under cross-zone pressure with scarce required zone, got hosts=%d", got)
+	}
+}
+
+func TestRunExecutorOnlineControllerAllowsScaleDownWhenTopologyHealthy(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-topology-healthy-allows-down"
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 8}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 2,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2, NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5}},
+				},
+			},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.2, ts)
+		metrics.RecordLatency(collector, 5.0, ts, metrics.CreateServiceLabels("svc1"))
+		metrics.RecordLocalityRouteHitCount(collector, 5, ts, metrics.CreateServiceLabels("svc1"))
+		metrics.RecordSameZoneRequestCount(collector, 5, ts, metrics.CreateServiceLabels("svc1"))
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	opt := &simulationv1.OptimizationConfig{
+		Online:                          true,
+		TargetP95LatencyMs:              100,
+		ControlIntervalMs:               10,
+		OptimizationTargetPrimary:       "cpu_utilization",
+		TargetUtilHigh:                  0.7,
+		TargetUtilLow:                   0.4,
+		MinLocalityHitRate:              0.5,
+		MaxCrossZoneRequestFraction:     0.5,
+		MaxTopologyLatencyPenaltyMeanMs: 50,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(90 * time.Millisecond)
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+	if got := rm.ActiveReplicas("svc1"); got >= 2 {
+		t.Fatalf("expected healthy-topology scale-down to remain allowed, got replicas=%d", got)
+	}
+}
+
+func TestPreferredScaleOutServiceForTopologyUnderPressure(t *testing.T) {
+	scenario := &config.Scenario{
+		Services: []config.Service{
+			{ID: "svc-topology", Placement: &config.PlacementPolicy{RequiredZones: []string{"zone-b"}}},
+			{ID: "svc-other"},
+		},
+	}
+	runMetrics := &models.RunMetrics{
+		CrossZoneRequestFraction: 0.5,
+		LocalityHitRate:          0.4,
+		ServiceMetrics: map[string]*models.ServiceMetrics{
+			"svc-topology": {CPUUtilization: 0.6},
+			"svc-other":    {CPUUtilization: 0.9},
+		},
+	}
+	pressure := map[string]brokerPressureSignal{
+		"svc-topology": {HasBacklog: true, Reason: "queue_pressure"},
+	}
+	if got := preferredScaleOutServiceForTopology(scenario, runMetrics, pressure); got != "svc-topology" {
+		t.Fatalf("expected topology-aware preferred service, got %q", got)
+	}
+}
+
 func TestRunExecutorCallbackWithInvalidURL(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store, nil)
@@ -1416,6 +1936,102 @@ workload:
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("expected run to complete")
+}
+
+func TestRunExecutorSendNotificationIncludesTopologyResources(t *testing.T) {
+	store := NewRunStore()
+	serverPayload := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		serverPayload <- payload
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + u.Port() + "/callback"
+
+	scenarioYAML := `
+hosts:
+  - id: host-1
+    cores: 4
+    zone: zone-a
+    labels:
+      rack: r1
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 1
+        cpu_sigma_ms: 0
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0}
+workload:
+  - from: c
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 1}
+`
+	rec, err := store.Create("run-topology-callback", &simulationv1.RunInput{
+		ScenarioYaml: scenarioYAML,
+		DurationMs:   1,
+		CallbackUrl:  callbackURL,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	finalCfg := &simulationv1.RunConfiguration{
+		Services: []*simulationv1.ServiceConfigEntry{
+			{ServiceId: "svc1", Replicas: 1, CpuCores: 1, MemoryMb: 512},
+		},
+		Hosts: []*simulationv1.HostConfigEntry{
+			{HostId: "host-1", CpuCores: 4, MemoryGb: 16},
+		},
+		Placements: []*simulationv1.InstancePlacementEntry{
+			{InstanceId: "svc1-instance-0", ServiceId: "svc1", HostId: "host-1", Lifecycle: "ACTIVE"},
+		},
+	}
+	if err := store.SetFinalConfiguration(rec.Run.Id, finalCfg); err != nil {
+		t.Fatalf("SetFinalConfiguration: %v", err)
+	}
+	updated, ok := store.Get(rec.Run.Id)
+	if !ok {
+		t.Fatalf("expected run in store")
+	}
+	exec := NewRunExecutor(store, nil)
+	exec.sendNotificationIfConfigured(updated)
+
+	select {
+	case payload := <-serverPayload:
+		rsRaw, ok := payload["resources"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected resources map, got %T", payload["resources"])
+		}
+		hostsRaw, ok := rsRaw["hosts"].([]any)
+		if !ok || len(hostsRaw) != 1 {
+			t.Fatalf("expected resources.hosts with 1 entry, got %v", rsRaw["hosts"])
+		}
+		h0, ok := hostsRaw[0].(map[string]any)
+		if !ok || h0["zone"] != "zone-a" {
+			t.Fatalf("expected host topology zone in callback resources, got %v", hostsRaw[0])
+		}
+		placementsRaw, ok := rsRaw["placements"].([]any)
+		if !ok || len(placementsRaw) != 1 {
+			t.Fatalf("expected resources.placements with 1 entry, got %v", rsRaw["placements"])
+		}
+		p0, ok := placementsRaw[0].(map[string]any)
+		if !ok || p0["host_zone"] != "zone-a" {
+			t.Fatalf("expected placement host_zone in callback resources, got %v", placementsRaw[0])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for callback payload")
+	}
 }
 
 func TestRunExecutorStartOnMissingRun(t *testing.T) {

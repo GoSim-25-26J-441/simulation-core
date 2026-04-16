@@ -230,3 +230,86 @@ func TestConvertToRunMetricsEndpointRequestStatsLatencyPointers(t *testing.T) {
 		t.Fatalf("expected hop latency rollup for endpoint, got %+v", got)
 	}
 }
+
+func TestConvertToRunMetricsInstanceRouteStats(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	RecordRouteSelectionCount(collector, 3, ts, CreateRouteSelectionLabels("api", "/x", "api-instance-0", "round_robin"))
+	RecordRouteSelectionCount(collector, 2, ts, CreateRouteSelectionLabels("api", "/x", "api-instance-1", "round_robin"))
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if len(rm.InstanceRouteStats) != 2 {
+		t.Fatalf("instance route stats len=%d %+v", len(rm.InstanceRouteStats), rm.InstanceRouteStats)
+	}
+	by := map[string]int64{}
+	for _, st := range rm.InstanceRouteStats {
+		by[st.InstanceID] = st.SelectionCount
+	}
+	if by["api-instance-0"] != 3 || by["api-instance-1"] != 2 {
+		t.Fatalf("unexpected route counts %+v", by)
+	}
+}
+
+func TestConvertToRunMetricsTopologyRoutingRollups(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	lbl := map[string]string{"service": "api", "endpoint": "/x", "instance": "api-0", "host": "h1", "host_zone": "zone-a", "requested_zone": "zone-a", LabelOrigin: OriginIngress}
+	RecordLocalityRouteHitCount(collector, 8, ts, lbl)
+	RecordLocalityRouteMissCount(collector, 2, ts, lbl)
+	RecordSameZoneRequestCount(collector, 7, ts, lbl)
+	RecordCrossZoneRequestCount(collector, 3, ts, lbl)
+
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if rm.LocalityHitRate != 0.8 {
+		t.Fatalf("locality hit rate want 0.8 got %v", rm.LocalityHitRate)
+	}
+	if rm.SameZoneRequestCountTotal != 7 || rm.CrossZoneRequestCountTotal != 3 {
+		t.Fatalf("same/cross totals got same=%d cross=%d", rm.SameZoneRequestCountTotal, rm.CrossZoneRequestCountTotal)
+	}
+	if rm.CrossZoneRequestFraction != 0.3 {
+		t.Fatalf("cross zone fraction want 0.3 got %v", rm.CrossZoneRequestFraction)
+	}
+}
+
+func TestConvertToRunMetricsCrossZonePenaltyRollups(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	lbl := map[string]string{"service": "api", "endpoint": "/x", LabelOrigin: OriginDownstream}
+	RecordCrossZoneLatencyPenalty(collector, 100, ts, lbl)
+	RecordCrossZoneLatencyPenalty(collector, 50, ts, lbl)
+	RecordCrossZoneLatencyPenalty(collector, 50, ts, lbl)
+
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if rm.CrossZoneLatencyPenaltyMsTotal != 200 {
+		t.Fatalf("penalty total got %v", rm.CrossZoneLatencyPenaltyMsTotal)
+	}
+	if rm.CrossZoneLatencyPenaltyMsMean != 200.0/3.0 {
+		t.Fatalf("penalty mean got %v", rm.CrossZoneLatencyPenaltyMsMean)
+	}
+}
+
+func TestConvertToRunMetricsTopologyPenaltyRollups(t *testing.T) {
+	collector := NewCollector()
+	collector.Start()
+	ts := time.Now()
+	lbl := map[string]string{"service": "api", "endpoint": "/x", LabelOrigin: OriginDownstream}
+	RecordSameZoneLatencyPenalty(collector, 10, ts, lbl)
+	RecordExternalLatencyPenalty(collector, 40, ts, lbl)
+	RecordCrossZoneLatencyPenalty(collector, 50, ts, lbl)
+	RecordTopologyLatencyPenalty(collector, 10, ts, lbl)
+	RecordTopologyLatencyPenalty(collector, 40, ts, lbl)
+	RecordTopologyLatencyPenalty(collector, 50, ts, lbl)
+
+	rm := ConvertToRunMetrics(collector, nil, nil)
+	if rm.SameZoneLatencyPenaltyMsTotal != 10 || rm.ExternalLatencyMsTotal != 40 || rm.CrossZoneLatencyPenaltyMsTotal != 50 {
+		t.Fatalf("class totals sz=%v ext=%v cz=%v", rm.SameZoneLatencyPenaltyMsTotal, rm.ExternalLatencyMsTotal, rm.CrossZoneLatencyPenaltyMsTotal)
+	}
+	if rm.TopologyLatencyPenaltyMsTotal != 100 {
+		t.Fatalf("topology total want 100 got %v", rm.TopologyLatencyPenaltyMsTotal)
+	}
+	if rm.TopologyLatencyPenaltyMsMean != 100.0/3.0 {
+		t.Fatalf("topology mean got %v", rm.TopologyLatencyPenaltyMsMean)
+	}
+}

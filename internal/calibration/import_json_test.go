@@ -28,7 +28,8 @@ func TestObservedFromPartialJSONPresence(t *testing.T) {
 	raw := `{
 	  "window": {"duration": "2m", "source": "test"},
 	  "global": {"ingress_error_rate": 0},
-	  "topic_brokers": [{"broker_service": "q", "topic": "t", "partition": 0, "consumer_group": "g", "consumer_lag": 0}]
+	  "topic_brokers": [{"broker_service": "q", "topic": "t", "partition": 0, "consumer_group": "g", "consumer_lag": 0}],
+	  "instance_routing": [{"service_id":"api","endpoint_path":"/x","instance_id":"api-instance-0","request_share":0.6,"request_count":120}]
 	}`
 	obs, err := ObservedFromPartialJSON([]byte(raw))
 	if err != nil {
@@ -39,6 +40,19 @@ func TestObservedFromPartialJSONPresence(t *testing.T) {
 	}
 	if len(obs.TopicBrokers) != 1 || !obs.TopicBrokers[0].ConsumerLag.Present || obs.TopicBrokers[0].ConsumerLag.Value != 0 {
 		t.Fatalf("topic lag explicit zero: %+v", obs.TopicBrokers)
+	}
+	if len(obs.InstanceRouting) != 1 {
+		t.Fatalf("expected instance routing observation, got %+v", obs.InstanceRouting)
+	}
+	ir := obs.InstanceRouting[0]
+	if ir.ServiceID != "api" || ir.EndpointPath != "/x" || ir.InstanceID != "api-instance-0" {
+		t.Fatalf("unexpected instance routing identity: %+v", ir)
+	}
+	if !ir.RequestShare.Present || ir.RequestShare.Value != 0.6 {
+		t.Fatalf("expected request_share present, got %+v", ir.RequestShare)
+	}
+	if !ir.RequestCount.Present || ir.RequestCount.Value != 120 {
+		t.Fatalf("expected request_count present, got %+v", ir.RequestCount)
 	}
 }
 
@@ -90,6 +104,80 @@ func TestObservedFromSimulatorExportJSON_MatrixFixture(t *testing.T) {
 	exp.hasTopic = false
 	assertAdapterMatrix(t, obs, exp)
 	assertPresentFloatEqual(t, "global.ingress_error_rate", obs.Global.IngressErrorRate, F64(0.025), 1e-9)
+}
+
+func TestObservedFromSimulatorExportJSON_InstanceRouting(t *testing.T) {
+	raw := `{
+	  "window_seconds": 60,
+	  "run_metrics": {
+	    "total_requests": 100,
+	    "successful_requests": 100,
+	    "failed_requests": 0,
+	    "latency_p50_ms": 10,
+	    "latency_p95_ms": 20,
+	    "latency_p99_ms": 30,
+	    "latency_mean_ms": 12,
+	    "throughput_rps": 1.6667,
+	    "instance_route_stats": [
+	      {"service_name":"api","endpoint_path":"/x","instance_id":"api-instance-0","strategy":"weighted_round_robin","selection_count":90},
+	      {"service_name":"api","endpoint_path":"/x","instance_id":"api-instance-1","strategy":"weighted_round_robin","selection_count":10}
+	    ]
+	  }
+	}`
+	obs, err := ObservedFromSimulatorExportJSON([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obs.InstanceRouting) != 2 {
+		t.Fatalf("expected instance routing observations, got %+v", obs.InstanceRouting)
+	}
+	var hi, lo *InstanceRoutingObservation
+	for i := range obs.InstanceRouting {
+		r := &obs.InstanceRouting[i]
+		if r.InstanceID == "api-instance-0" {
+			hi = r
+		}
+		if r.InstanceID == "api-instance-1" {
+			lo = r
+		}
+	}
+	if hi == nil || lo == nil {
+		t.Fatalf("missing instance routing rows: %+v", obs.InstanceRouting)
+	}
+	if !hi.RequestCount.Present || hi.RequestCount.Value != 90 || !hi.RequestShare.Present || hi.RequestShare.Value < 0.89 {
+		t.Fatalf("unexpected high-share row %+v", *hi)
+	}
+	if !lo.RequestCount.Present || lo.RequestCount.Value != 10 || !lo.RequestShare.Present || lo.RequestShare.Value > 0.11 {
+		t.Fatalf("unexpected low-share row %+v", *lo)
+	}
+}
+
+func TestObservedFromSimulatorExportJSON_TopologyFields(t *testing.T) {
+	raw := `{
+	  "window_seconds": 60,
+	  "run_metrics": {
+	    "total_requests": 100,
+	    "successful_requests": 100,
+	    "failed_requests": 0,
+	    "latency_p50_ms": 10,
+	    "latency_p95_ms": 20,
+	    "latency_p99_ms": 30,
+	    "latency_mean_ms": 12,
+	    "throughput_rps": 1.6667,
+	    "locality_hit_rate": 0.88,
+	    "cross_zone_request_fraction": 0.12
+	  }
+	}`
+	obs, err := ObservedFromSimulatorExportJSON([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !obs.Global.LocalityHitRate.Present || obs.Global.LocalityHitRate.Value != 0.88 {
+		t.Fatalf("expected locality_hit_rate present from simulator export, got %+v", obs.Global.LocalityHitRate)
+	}
+	if !obs.Global.CrossZoneFraction.Present || obs.Global.CrossZoneFraction.Value != 0.12 {
+		t.Fatalf("expected cross_zone_fraction present from simulator export, got %+v", obs.Global.CrossZoneFraction)
+	}
 }
 
 func TestDecodeObservedMetricsRoundTripJSON(t *testing.T) {

@@ -72,6 +72,20 @@ func TestConfigHashIncludesHosts(t *testing.T) {
 	}
 }
 
+func TestConfigHashHostZoneChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Hosts[0].Zone = "zone-a"
+	b.Hosts[0].Zone = "zone-b"
+	assertHashDiffers(t, a, b, "host.zone")
+}
+
+func TestConfigHashHostLabelsChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Hosts[0].Labels = map[string]string{"rack": "r1"}
+	b.Hosts[0].Labels = map[string]string{"rack": "r2"}
+	assertHashDiffers(t, a, b, "host.labels")
+}
+
 func TestConfigHashServiceKindChange(t *testing.T) {
 	a, b := scenarioV2(), scenarioV2()
 	b.Services[0].Kind = "database"
@@ -106,6 +120,62 @@ func TestConfigHashScalingVerticalMemoryChange(t *testing.T) {
 	a, b := scenarioV2(), scenarioV2()
 	b.Services[0].Scaling.VerticalMemory = false
 	assertHashDiffers(t, a, b, "scaling.vertical_memory")
+}
+
+func TestConfigHashServiceRoutingStrategyChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services[0].Routing = &config.RoutingPolicy{Strategy: "round_robin"}
+	b.Services[0].Routing = &config.RoutingPolicy{Strategy: "weighted_round_robin", Weights: map[string]float64{"api-instance-0": 0.9, "api-instance-1": 0.1}}
+	assertHashDiffers(t, a, b, "service.routing.strategy")
+}
+
+func TestConfigHashServicePlacementChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services[0].Placement = &config.PlacementPolicy{
+		AffinityZones: []string{"zone-a"},
+	}
+	b.Services[0].Placement = &config.PlacementPolicy{
+		AffinityZones: []string{"zone-b"},
+	}
+	assertHashDiffers(t, a, b, "service.placement.affinity_zones")
+}
+
+func TestConfigHashServicePlacementRequiredPreferredChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services[0].Placement = &config.PlacementPolicy{
+		RequiredZones:       []string{"zone-a"},
+		PreferredZones:      []string{"zone-b"},
+		PreferredHostLabels: map[string]string{"rack": "r1"},
+		MaxReplicasPerHost:  1,
+	}
+	b.Services[0].Placement = &config.PlacementPolicy{
+		RequiredZones:       []string{"zone-c"},
+		PreferredZones:      []string{"zone-d"},
+		PreferredHostLabels: map[string]string{"rack": "r2"},
+		MaxReplicasPerHost:  2,
+	}
+	assertHashDiffers(t, a, b, "service.placement required/preferred fields")
+}
+
+func TestConfigHashEndpointRoutingOverrideChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services[0].Endpoints[0].Routing = &config.RoutingPolicy{Strategy: "least_queue"}
+	b.Services[0].Endpoints[0].Routing = &config.RoutingPolicy{Strategy: "sticky", StickyKeyFrom: "tenant"}
+	assertHashDiffers(t, a, b, "endpoint.routing.strategy")
+}
+
+func TestConfigHashRoutingWeightChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services[0].Routing = &config.RoutingPolicy{Strategy: "weighted_round_robin", Weights: map[string]float64{"api-instance-0": 0.9, "api-instance-1": 0.1}}
+	b.Services[0].Routing = &config.RoutingPolicy{Strategy: "weighted_round_robin", Weights: map[string]float64{"api-instance-0": 0.7, "api-instance-1": 0.3}}
+	assertHashDiffers(t, a, b, "service.routing.weights")
+}
+
+func TestConfigHashRoutingLocalityZoneFromChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Services[0].Routing = &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"}
+	b.Services[0].Routing = &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "origin_zone"}
+	assertHashDiffers(t, a, b, "service.routing.locality_zone_from")
 }
 
 func TestConfigHashEndpointMeanCPUMsChange(t *testing.T) {
@@ -166,6 +236,13 @@ func TestConfigHashWorkloadBurstFieldsChange(t *testing.T) {
 	d := scenarioV2()
 	d.Workload[0].Arrival.QuietDurationSeconds = 99
 	assertHashDiffers(t, a, d, "quiet_duration_seconds")
+}
+
+func TestConfigHashWorkloadMetadataChange(t *testing.T) {
+	a, b := scenarioV2(), scenarioV2()
+	a.Workload[0].Metadata = map[string]string{"client_zone": "zone-a"}
+	b.Workload[0].Metadata = map[string]string{"client_zone": "zone-b"}
+	assertHashDiffers(t, a, b, "workload metadata")
 }
 
 func TestConfigHashTopicBehaviorSubscriberConcurrencyChange(t *testing.T) {

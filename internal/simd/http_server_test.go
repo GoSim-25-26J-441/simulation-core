@@ -1746,6 +1746,62 @@ func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
 	}
 }
 
+func TestHTTPServerExportRunIncludesTopologyGuardReasonDetails(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	_, err := store.Create("opt-run-topology", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 100})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetMetrics("opt-run-topology", &simulationv1.RunMetrics{TotalRequests: 10}); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+
+	step := &simulationv1.OptimizationStep{
+		IterationIndex: 1,
+		Reason: "topology_guard_blocked action=host_scale_in decision_reason=cross_zone_fraction_above_max " +
+			"cross_zone_request_fraction=0.75 max_cross_zone_request_fraction=0.2 " +
+			"locality_hit_rate=0.25 min_locality_hit_rate=0.8 topology_latency_penalty_ms_mean=12.5 max_topology_latency_penalty_mean_ms=10",
+	}
+	if err := store.AppendOptimizationStep("opt-run-topology", step); err != nil {
+		t.Fatalf("AppendOptimizationStep error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/opt-run-topology/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var export map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &export); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	runData, ok := export["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run data")
+	}
+	history, ok := runData["optimization_history"].([]any)
+	if !ok || len(history) != 1 {
+		t.Fatalf("expected optimization_history with 1 step, got %T %v", runData["optimization_history"], runData["optimization_history"])
+	}
+	stepData, ok := history[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected step as map")
+	}
+	details, ok := stepData["reason_details"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reason_details map, got %T (%v)", stepData["reason_details"], stepData["reason_details"])
+	}
+	if details["type"] != "topology_guard_blocked" || details["action"] != "host_scale_in" || details["decision_reason"] != "cross_zone_fraction_above_max" {
+		t.Fatalf("unexpected reason_details core fields: %+v", details)
+	}
+	if details["cross_zone_request_fraction"].(float64) != 0.75 || details["max_cross_zone_request_fraction"].(float64) != 0.2 {
+		t.Fatalf("unexpected reason_details thresholds: %+v", details)
+	}
+}
+
 func TestHTTPServerExportRunPrefersFinalConfigOverOptimizationHistory(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
@@ -2313,12 +2369,23 @@ func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 		TopicBacklogDepthSum:    9,
 		MaxTopicConsumerLag:     7,
 		TopicOldestMessageAgeMs: 111,
+		LocalityHitRate:         0.9,
+		CrossZoneRequestCountTotal: 5,
+		SameZoneRequestCountTotal:  45,
+		CrossZoneRequestFraction:   0.1,
+		CrossZoneLatencyPenaltyMsTotal: 300,
+		CrossZoneLatencyPenaltyMsMean:  100,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{
 				ServiceName:             "svc1",
 				QueueWaitP50Ms:          1,
 				ProcessingLatencyP50Ms:  9,
 				ProcessingLatencyMeanMs: 10,
+			},
+		},
+		InstanceRouteStats: []*simulationv1.InstanceRouteStats{
+			{
+				ServiceName: "svc1", EndpointPath: "/x", InstanceId: "svc1-instance-0", Strategy: "least_queue", SelectionCount: 12,
 			},
 		},
 	}
@@ -2338,5 +2405,21 @@ func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 	}
 	if j["max_topic_consumer_lag"].(float64) != 7 {
 		t.Fatalf("json max_topic_consumer_lag: %v", j["max_topic_consumer_lag"])
+	}
+	if j["locality_hit_rate"].(float64) != 0.9 {
+		t.Fatalf("json locality_hit_rate: %v", j["locality_hit_rate"])
+	}
+	if j["cross_zone_request_fraction"].(float64) != 0.1 {
+		t.Fatalf("json cross_zone_request_fraction: %v", j["cross_zone_request_fraction"])
+	}
+	if j["cross_zone_latency_penalty_ms_total"].(float64) != 300 {
+		t.Fatalf("json cross_zone_latency_penalty_ms_total: %v", j["cross_zone_latency_penalty_ms_total"])
+	}
+	if j["cross_zone_latency_penalty_ms_mean"].(float64) != 100 {
+		t.Fatalf("json cross_zone_latency_penalty_ms_mean: %v", j["cross_zone_latency_penalty_ms_mean"])
+	}
+	rs := j["instance_route_stats"].([]map[string]any)
+	if len(rs) != 1 || rs[0]["instance_id"].(string) != "svc1-instance-0" || rs[0]["selection_count"].(int64) != 12 {
+		t.Fatalf("json instance_route_stats: %v", rs)
 	}
 }

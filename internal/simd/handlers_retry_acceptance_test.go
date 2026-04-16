@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/internal/engine"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/policy"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
@@ -138,7 +139,7 @@ func TestSyncTimeoutRetryExhaustedPropagatesFailure(t *testing.T) {
 			},
 			{
 				ID:       "svcB",
-				Replicas: 1,
+				Replicas: 2,
 				Endpoints: []config.Endpoint{
 					{
 						Path:            "/slow",
@@ -222,7 +223,7 @@ func TestSyncRetrySuccessWithVariableCPUSigma(t *testing.T) {
 			},
 			{
 				ID:       "svcB",
-				Replicas: 1,
+				Replicas: 2,
 				Endpoints: []config.Endpoint{
 					{
 						Path:            "/v",
@@ -550,5 +551,369 @@ func TestTimeoutErrorLabelsPreserveMetadataWithRetry(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected timeout error with traffic_class and source_kind preserved")
+	}
+}
+
+func TestSyncRetryPreservesSameZonePenaltyAfterCallerRemoval(t *testing.T) {
+	scenario := &config.Scenario{
+		Network: &config.NetworkConfig{
+			SameZoneLatencyMs: config.LatencySpec{Mean: 21, Sigma: 0},
+		},
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h3", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svcA",
+				Replicas: 2,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones: []string{"zone-a"},
+				},
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/root",
+						MeanCPUMs:    2,
+						CPUSigmaMs:   0,
+						NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
+						Downstream: []config.DownstreamCall{
+							{
+								To:            "svcB:/slow",
+								CallLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
+								TimeoutMs:     20,
+							},
+						},
+					},
+				},
+			},
+			{
+				ID:       "svcB",
+				Replicas: 1,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones:         []string{"zone-a"},
+					AntiAffinityServices:  []string{"svcA"},
+				},
+				Endpoints: []config.Endpoint{
+					{Path: "/slow", MeanCPUMs: 100, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
+				},
+			},
+		},
+		Policies: &config.Policies{
+			Retries: &config.RetryPolicy{Enabled: true, MaxRetries: 1, Backoff: "constant", BaseMs: 50},
+		},
+	}
+	eng := engine.NewEngine("retry-topology-sync")
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatal(err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state, err := newScenarioState(scenario, rm, collector, retryPolicies(1), 9201)
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterHandlers(eng, state)
+	parent := &models.Request{
+		ID:          "sync-parent",
+		TraceID:     "sync-trace",
+		ServiceName: "svcA",
+		Endpoint:    "/root",
+		Status:      models.RequestStatusProcessing,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata: map[string]interface{}{
+			"instance_id": "svcA-instance-1",
+		},
+	}
+	eng.GetRunManager().AddRequest(parent)
+	scheduleDownstreamCallEvent(state, eng, parent, interaction.ResolvedCall{
+		ServiceID: "svcB",
+		Path:      "/slow",
+		Call:      scenario.Services[0].Endpoints[0].Downstream[0],
+	}, eng.GetSimTime(), 1, 0, false)
+
+	if err := eng.Run(30 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	before := metrics.ConvertToRunMetrics(collector, nil, nil)
+	tDrain := eng.GetSimTime()
+	if err := rm.ScaleServiceWithOptions("svcA", 1, resource.ScaleServiceOptions{SimTime: tDrain, DrainTimeout: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	rm.ProcessDrainingInstances(tDrain.Add(2 * time.Millisecond))
+	if err := eng.Run(300 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	after := metrics.ConvertToRunMetrics(collector, nil, nil)
+	if after.TopologyLatencyPenaltyMsTotal <= before.TopologyLatencyPenaltyMsTotal {
+		t.Fatalf("expected retry to add topology penalty after caller removal, before=%v after=%v", before.TopologyLatencyPenaltyMsTotal, after.TopologyLatencyPenaltyMsTotal)
+	}
+}
+
+func TestAsyncRetryPreservesSameZonePenaltyAfterCallerRemoval(t *testing.T) {
+	scenario := &config.Scenario{
+		Network: &config.NetworkConfig{
+			SameZoneLatencyMs: config.LatencySpec{Mean: 19, Sigma: 0},
+		},
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h3", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "svcA",
+				Replicas: 2,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones: []string{"zone-a"},
+				},
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/root",
+						MeanCPUMs:    2,
+						CPUSigmaMs:   0,
+						NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
+						Downstream: []config.DownstreamCall{
+							{
+								To:            "svcB:/slow",
+								Mode:          "async",
+								CallLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
+								TimeoutMs:     20,
+							},
+						},
+					},
+				},
+			},
+			{
+				ID:       "svcB",
+				Replicas: 1,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones:        []string{"zone-a"},
+					AntiAffinityServices: []string{"svcA"},
+				},
+				Endpoints: []config.Endpoint{
+					{Path: "/slow", MeanCPUMs: 100, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
+				},
+			},
+		},
+		Policies: &config.Policies{
+			Retries: &config.RetryPolicy{Enabled: true, MaxRetries: 1, Backoff: "constant", BaseMs: 50},
+		},
+	}
+	eng := engine.NewEngine("retry-topology-async")
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatal(err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	state, err := newScenarioState(scenario, rm, collector, retryPolicies(1), 9202)
+	if err != nil {
+		t.Fatal(err)
+	}
+	RegisterHandlers(eng, state)
+	parent := &models.Request{
+		ID:          "async-parent",
+		TraceID:     "async-trace",
+		ServiceName: "svcA",
+		Endpoint:    "/root",
+		Status:      models.RequestStatusProcessing,
+		ArrivalTime: eng.GetSimTime(),
+		Metadata: map[string]interface{}{
+			"instance_id": "svcA-instance-1",
+		},
+	}
+	eng.GetRunManager().AddRequest(parent)
+	scheduleDownstreamCallEvent(state, eng, parent, interaction.ResolvedCall{
+		ServiceID: "svcB",
+		Path:      "/slow",
+		Call:      scenario.Services[0].Endpoints[0].Downstream[0],
+	}, eng.GetSimTime(), 1, 1, true)
+
+	if err := eng.Run(30 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	before := metrics.ConvertToRunMetrics(collector, nil, nil)
+	tDrain := eng.GetSimTime()
+	if err := rm.ScaleServiceWithOptions("svcA", 1, resource.ScaleServiceOptions{SimTime: tDrain, DrainTimeout: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	rm.ProcessDrainingInstances(tDrain.Add(2 * time.Millisecond))
+	if err := eng.Run(300 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	after := metrics.ConvertToRunMetrics(collector, nil, nil)
+	if after.TopologyLatencyPenaltyMsTotal <= before.TopologyLatencyPenaltyMsTotal {
+		t.Fatalf("expected async retry to add topology penalty after caller removal, before=%v after=%v", before.TopologyLatencyPenaltyMsTotal, after.TopologyLatencyPenaltyMsTotal)
+	}
+}
+
+func TestQueueRetryPublishPreservesSameZonePenaltyAfterCallerRemoval(t *testing.T) {
+	scenario := &config.Scenario{
+		Network: &config.NetworkConfig{
+			SameZoneLatencyMs: config.LatencySpec{Mean: 23, Sigma: 0},
+		},
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h3", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "producer",
+				Replicas: 2,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones: []string{"zone-a"},
+				},
+				Endpoints: []config.Endpoint{{Path: "/p", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+			{
+				ID:       "consumer",
+				Replicas: 1,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones:        []string{"zone-a"},
+					AntiAffinityServices: []string{"producer"},
+				},
+				Endpoints: []config.Endpoint{{Path: "/consume", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+			{
+				ID:       "queue",
+				Kind:     "queue",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
+				Behavior: &config.ServiceBehavior{
+					Queue: &config.QueueBehavior{
+						ConsumerTarget:  "consumer:/consume",
+						ConsumerConcurrency: 1,
+						DeliveryLatencyMs: config.LatencySpec{Mean: 50, Sigma: 0},
+					},
+				},
+			},
+		},
+	}
+	eng, state, rm, collector := setupBrokerTopologyState(t, scenario)
+	t0 := eng.GetSimTime()
+	parent := &models.Request{
+		ID:          "queue-retry-parent",
+		TraceID:     "queue-retry-trace",
+		ServiceName: "producer",
+		Endpoint:    "/p",
+		Status:      models.RequestStatusProcessing,
+		ArrivalTime: t0,
+		Metadata: map[string]interface{}{
+			"instance_id": "producer-instance-1",
+		},
+	}
+	eng.GetRunManager().AddRequest(parent)
+	if err := rm.ScaleServiceWithOptions("producer", 1, resource.ScaleServiceOptions{SimTime: t0, DrainTimeout: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	rm.ProcessDrainingInstances(t0.Add(2 * time.Millisecond))
+	scheduleDownstreamWithCallerOverhead(state, eng, parent, interaction.ResolvedCall{
+		ServiceID: "queue",
+		Path:      "/q",
+		Call:      config.DownstreamCall{Mode: "async"},
+	}, t0, 1, 1, true, true, 1, "queue-retry-logical", downstreamCallerTopology{
+		CallerInstanceID: "producer-instance-1",
+		CallerHostZone:   "zone-a",
+		CallerHostID:     "h2",
+	})
+	if err := eng.Run(300 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	rmOut := metrics.ConvertToRunMetrics(collector, nil, nil)
+	if rmOut.SameZoneLatencyPenaltyMsTotal <= 0 {
+		t.Fatalf("expected same-zone penalty for queue retry publish after caller removal, got total=%v mean=%v", rmOut.SameZoneLatencyPenaltyMsTotal, rmOut.SameZoneLatencyPenaltyMsMean)
+	}
+}
+
+func TestTopicRetryPublishPreservesSameZonePenaltyAfterCallerRemoval(t *testing.T) {
+	scenario := &config.Scenario{
+		Network: &config.NetworkConfig{
+			SameZoneLatencyMs: config.LatencySpec{Mean: 25, Sigma: 0},
+		},
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+			{ID: "h3", Cores: 8, MemoryGB: 16, Zone: "zone-a"},
+		},
+		Services: []config.Service{
+			{
+				ID:       "producer",
+				Replicas: 2,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones: []string{"zone-a"},
+				},
+				Endpoints: []config.Endpoint{{Path: "/p", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+			{
+				ID:       "consumer",
+				Replicas: 1,
+				Model:    "cpu",
+				Placement: &config.PlacementPolicy{
+					RequiredZones:        []string{"zone-a"},
+					AntiAffinityServices: []string{"producer"},
+				},
+				Endpoints: []config.Endpoint{{Path: "/consume", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
+			},
+			{
+				ID:       "topic",
+				Kind:     "topic",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{{Path: "/events", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
+				Behavior: &config.ServiceBehavior{
+					Topic: &config.TopicBehavior{
+						DeliveryLatencyMs: config.LatencySpec{Mean: 50, Sigma: 0},
+						Subscribers: []config.TopicSubscriber{{
+							Name: "sub", ConsumerGroup: "g1", ConsumerTarget: "consumer:/consume", ConsumerConcurrency: 1,
+						}},
+					},
+				},
+			},
+		},
+	}
+	eng, state, rm, collector := setupBrokerTopologyState(t, scenario)
+	t0 := eng.GetSimTime()
+	parent := &models.Request{
+		ID:          "topic-retry-parent",
+		TraceID:     "topic-retry-trace",
+		ServiceName: "producer",
+		Endpoint:    "/p",
+		Status:      models.RequestStatusProcessing,
+		ArrivalTime: t0,
+		Metadata: map[string]interface{}{
+			"instance_id": "producer-instance-1",
+		},
+	}
+	eng.GetRunManager().AddRequest(parent)
+	if err := rm.ScaleServiceWithOptions("producer", 1, resource.ScaleServiceOptions{SimTime: t0, DrainTimeout: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	rm.ProcessDrainingInstances(t0.Add(2 * time.Millisecond))
+	scheduleDownstreamWithCallerOverhead(state, eng, parent, interaction.ResolvedCall{
+		ServiceID: "topic",
+		Path:      "/events",
+		Call:      config.DownstreamCall{Mode: "async"},
+	}, t0, 1, 1, true, true, 1, "topic-retry-logical", downstreamCallerTopology{
+		CallerInstanceID: "producer-instance-1",
+		CallerHostZone:   "zone-a",
+		CallerHostID:     "h2",
+	})
+	if err := eng.Run(300 * time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	rmOut := metrics.ConvertToRunMetrics(collector, nil, nil)
+	if rmOut.SameZoneLatencyPenaltyMsTotal <= 0 {
+		t.Fatalf("expected same-zone penalty for topic retry publish after caller removal, got total=%v mean=%v", rmOut.SameZoneLatencyPenaltyMsTotal, rmOut.SameZoneLatencyPenaltyMsMean)
 	}
 }

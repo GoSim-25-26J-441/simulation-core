@@ -154,6 +154,28 @@ func TestConvertMetricsToProtoEndpointRequestStats(t *testing.T) {
 	}
 }
 
+func TestConvertMetricsToProtoInstanceRouteStats(t *testing.T) {
+	engineMetrics := &models.RunMetrics{
+		TotalRequests: 1, SuccessfulRequests: 1, LatencyP50: 1, LatencyP95: 1, LatencyP99: 1, LatencyMean: 1, ThroughputRPS: 1,
+		InstanceRouteStats: []models.InstanceRouteStats{
+			{
+				ServiceName: "api", EndpointPath: "/x", InstanceID: "api-instance-0", Strategy: "weighted_round_robin", SelectionCount: 9,
+			},
+		},
+	}
+	pb := convertMetricsToProto(engineMetrics)
+	if len(pb.InstanceRouteStats) != 1 {
+		t.Fatalf("expected instance_route_stats in proto, got %d", len(pb.InstanceRouteStats))
+	}
+	rs := pb.InstanceRouteStats[0]
+	if rs.GetServiceName() != "api" || rs.GetEndpointPath() != "/x" || rs.GetInstanceId() != "api-instance-0" {
+		t.Fatalf("unexpected route stats identity: %+v", rs)
+	}
+	if rs.GetSelectionCount() != 9 || rs.GetStrategy() != "weighted_round_robin" {
+		t.Fatalf("unexpected route stats values: %+v", rs)
+	}
+}
+
 func TestConvertMetricsToProtoWithNilServiceMetrics(t *testing.T) {
 	engineMetrics := &models.RunMetrics{
 		TotalRequests:      10,

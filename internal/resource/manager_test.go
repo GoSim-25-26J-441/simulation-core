@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
+	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
 func TestNewManager(t *testing.T) {
@@ -1422,5 +1423,542 @@ func TestManagerEnqueueRequestError(t *testing.T) {
 	err := m.EnqueueRequest("nonexistent", "req-1")
 	if err == nil {
 		t.Fatalf("expected error for non-existent instance")
+	}
+}
+
+func TestSelectInstanceForRequest_DefaultRoundRobinCompatibility(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 3, Model: "cpu",
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for i := 0; i < 6; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, strategy, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strategy != RoutingRoundRobin {
+			t.Fatalf("expected round_robin, got %s", strategy)
+		}
+		got = append(got, inst.ID())
+	}
+	if got[0] != got[3] || got[1] != got[4] || got[2] != got[5] {
+		t.Fatalf("round robin sequence changed: %v", got)
+	}
+}
+
+func TestSelectInstanceForRequest_LeastQueue(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{Strategy: RoutingLeastQueue},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	insts := m.GetInstancesForService("svc")
+	busy, idle := insts[0], insts[1]
+	_ = m.EnqueueRequest(busy.ID(), "q1")
+	_ = m.EnqueueRequest(busy.ID(), "q2")
+	req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+	chosen, strategy, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy != RoutingLeastQueue {
+		t.Fatalf("strategy=%s", strategy)
+	}
+	if chosen.ID() != idle.ID() {
+		t.Fatalf("expected least queued instance %s, got %s", idle.ID(), chosen.ID())
+	}
+}
+
+func TestSelectInstanceForRequest_LeastConnections(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{Strategy: RoutingLeastConnections},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	insts := m.GetInstancesForService("svc")
+	busy, idle := insts[0], insts[1]
+	busy.AllocateCPU(5, time.Now())
+	req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+	chosen, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chosen.ID() != idle.ID() {
+		t.Fatalf("expected least active %s, got %s", idle.ID(), chosen.ID())
+	}
+}
+
+func TestSelectInstanceForRequest_Sticky(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 3, Model: "cpu",
+			Routing: &config.RoutingPolicy{Strategy: RoutingSticky, StickyKeyFrom: "session_id"},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	req1 := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{"session_id": "abc"}}
+	a, _, err := m.SelectInstanceForRequest("svc", req1, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{"session_id": "abc"}}
+		b, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b.ID() != a.ID() {
+			t.Fatalf("sticky routing mismatch: first=%s now=%s", a.ID(), b.ID())
+		}
+	}
+}
+
+func TestSelectInstanceForRequest_DrainingAndScaleChanges(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}, {ID: "h2", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ScaleServiceWithOptions("svc", 1, ScaleServiceOptions{SimTime: time.Unix(100, 0), DrainTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+	chosen, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(101, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chosen.Lifecycle() != InstanceActive {
+		t.Fatalf("selected draining instance: %s", chosen.ID())
+	}
+	if err := m.ScaleService("svc", 3); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]struct{}{}
+	for i := 0; i < 12; i++ {
+		r := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, _, err := m.SelectInstanceForRequest("svc", r, time.Unix(102, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[inst.ID()] = struct{}{}
+	}
+	if len(seen) < 3 {
+		t.Fatalf("expected new replica to become routable, seen=%v", seen)
+	}
+}
+
+func TestSelectInstanceForRequest_RandomDeterministicWithSeed(t *testing.T) {
+	buildSeq := func(seed int64) ([]string, error) {
+		m := NewManager()
+		m.SetRoutingSeed(seed)
+		sc := &config.Scenario{
+			Hosts: []config.Host{{ID: "h1", Cores: 8}},
+			Services: []config.Service{{
+				ID: "svc", Replicas: 3, Model: "cpu",
+				Routing: &config.RoutingPolicy{Strategy: RoutingRandom},
+				Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+			}},
+		}
+		if err := m.InitializeFromScenario(sc); err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, 10)
+		for i := 0; i < 10; i++ {
+			req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+			inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, inst.ID())
+		}
+		return out, nil
+	}
+	a, err := buildSeq(99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := buildSeq(99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("random routing not deterministic for fixed seed at idx %d: %v vs %v", i, a, b)
+		}
+	}
+}
+
+func TestSelectInstanceForRequest_WeightedRoundRobinZeroWeight(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy: RoutingWeightedRR,
+				Weights: map[string]float64{
+					"svc-instance-0": 1.0,
+					"svc-instance-1": 0.0,
+				},
+			},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for i := 0; i < 20; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, strategy, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strategy != RoutingWeightedRR {
+			t.Fatalf("expected weighted strategy, got %s", strategy)
+		}
+		seen[inst.ID()]++
+	}
+	if seen["svc-instance-1"] != 0 {
+		t.Fatalf("expected zero-weight instance to receive no traffic, seen=%v", seen)
+	}
+}
+
+func TestSelectInstanceForRequest_WeightedRoundRobinFractionalProportions(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy: RoutingWeightedRR,
+				Weights: map[string]float64{
+					"svc-instance-0": 0.1,
+					"svc-instance-1": 0.9,
+				},
+			},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]int{}
+	for i := 0; i < 1000; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[inst.ID()]++
+	}
+	if seen["svc-instance-0"] < 80 || seen["svc-instance-0"] > 120 {
+		t.Fatalf("expected ~10%% selection on instance-0, seen=%v", seen)
+	}
+	if seen["svc-instance-1"] < 880 || seen["svc-instance-1"] > 920 {
+		t.Fatalf("expected ~90%% selection on instance-1, seen=%v", seen)
+	}
+}
+
+func TestSelectInstanceForRequest_WeightedRoundRobinAllZeroFallsBack(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy: RoutingWeightedRR,
+				Weights: map[string]float64{
+					"svc-instance-0": 0.0,
+					"svc-instance-1": 0.0,
+				},
+			},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for i := 0; i < 4; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, strategy, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strategy != RoutingRoundRobin {
+			t.Fatalf("expected fallback round_robin strategy, got %s", strategy)
+		}
+		seq = append(seq, inst.ID())
+	}
+	if seq[0] != seq[2] || seq[1] != seq[3] {
+		t.Fatalf("expected RR fallback sequence, got %v", seq)
+	}
+}
+
+func TestSelectInstanceForRequest_WeightedRoundRobinDeterministicSequence(t *testing.T) {
+	buildSeq := func() ([]string, error) {
+		m := NewManager()
+		sc := &config.Scenario{
+			Hosts: []config.Host{{ID: "h1", Cores: 8}},
+			Services: []config.Service{{
+				ID: "svc", Replicas: 3, Model: "cpu",
+				Routing: &config.RoutingPolicy{
+					Strategy: RoutingWeightedRR,
+					Weights: map[string]float64{
+						"svc-instance-0": 0.2,
+						"svc-instance-1": 0.3,
+						"svc-instance-2": 0.5,
+					},
+				},
+				Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+			}},
+		}
+		if err := m.InitializeFromScenario(sc); err != nil {
+			return nil, err
+		}
+		out := make([]string, 0, 40)
+		for i := 0; i < 40; i++ {
+			req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+			inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, inst.ID())
+		}
+		return out, nil
+	}
+	a, err := buildSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := buildSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("weighted sequence should be deterministic; mismatch at %d: %v vs %v", i, a, b)
+		}
+	}
+}
+
+func TestSelectInstanceForRequest_WeightedRoundRobinScaleOutScaleDown(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}, {ID: "h2", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy: RoutingWeightedRR,
+				Weights: map[string]float64{
+					"svc-instance-0": 0.9,
+					"svc-instance-1": 0.1,
+				},
+			},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.ScaleService("svc", 3); err != nil {
+		t.Fatal(err)
+	}
+	seenAfterScaleOut := map[string]struct{}{}
+	for i := 0; i < 2500; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		seenAfterScaleOut[inst.ID()] = struct{}{}
+	}
+	if len(seenAfterScaleOut) < 3 {
+		t.Fatalf("expected scale-out instance to join weighted routing pool, seen=%v", seenAfterScaleOut)
+	}
+	if err := m.ScaleServiceWithOptions("svc", 1, ScaleServiceOptions{SimTime: time.Unix(10, 0), DrainTimeout: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+		inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(11, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if inst.Lifecycle() != InstanceActive {
+			t.Fatalf("draining instance should not receive new weighted traffic, got %s", inst.ID())
+		}
+	}
+}
+
+func TestSelectInstanceForRequest_UnknownStrategyErrors(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 1, Model: "cpu",
+			Routing: &config.RoutingPolicy{Strategy: "unknown"},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+	_, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+	if err == nil {
+		t.Fatalf("expected error for unsupported routing strategy")
+	}
+}
+
+func TestSelectInstanceForRequest_LocalityPreferencePrefersMatchingZone(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, Zone: "zone-b"},
+		},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy:         RoutingRoundRobin,
+				LocalityZoneFrom: "client_zone",
+			},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{"client_zone": "zone-b"}}
+		inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		host, ok := m.GetHost(inst.HostID())
+		if !ok {
+			t.Fatalf("host missing for %s", inst.ID())
+		}
+		if host.Zone() != "zone-b" {
+			t.Fatalf("expected zone-b preference, got host=%s zone=%s", host.ID(), host.Zone())
+		}
+	}
+}
+
+func TestSelectInstanceForRequest_LocalityPreferenceFallsBackWhenNoZoneMatch(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, Zone: "zone-b"},
+		},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy:         RoutingRoundRobin,
+				LocalityZoneFrom: "client_zone",
+			},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	for i := 0; i < 4; i++ {
+		req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{"client_zone": "zone-x"}}
+		inst, strategy, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strategy != RoutingRoundRobin {
+			t.Fatalf("expected round_robin strategy, got %s", strategy)
+		}
+		seq = append(seq, inst.ID())
+	}
+	if seq[0] != seq[2] || seq[1] != seq[3] {
+		t.Fatalf("expected RR fallback sequence under non-matching locality, got %v", seq)
+	}
+}
+
+func TestSelectInstanceForRequest_LocalityPreferenceEndpointOverride(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 8, Zone: "zone-a"},
+			{ID: "h2", Cores: 8, Zone: "zone-b"},
+		},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{
+				Strategy:         RoutingRoundRobin,
+				LocalityZoneFrom: "service_zone",
+			},
+			Endpoints: []config.Endpoint{{
+				Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0,
+				Routing: &config.RoutingPolicy{
+					Strategy:         RoutingRoundRobin,
+					LocalityZoneFrom: "endpoint_zone",
+				},
+			}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	req := &models.Request{
+		ServiceName: "svc",
+		Endpoint:    "/a",
+		Metadata: map[string]interface{}{
+			"service_zone":  "zone-a",
+			"endpoint_zone": "zone-b",
+		},
+	}
+	inst, _, err := m.SelectInstanceForRequest("svc", req, time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, ok := m.GetHost(inst.HostID())
+	if !ok {
+		t.Fatalf("host missing for %s", inst.ID())
+	}
+	if host.Zone() != "zone-b" {
+		t.Fatalf("expected endpoint locality override to zone-b, got zone=%s host=%s", host.Zone(), host.ID())
 	}
 }
