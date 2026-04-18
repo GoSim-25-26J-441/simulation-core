@@ -200,12 +200,3 @@ func (m *Manager) selectRoundRobinLocked(serviceName string, instances []*Servic
 	m.roundRobinIdx[serviceName] = (idx + 1) % len(instances)
 	return selected
 }
-
-// SelectInstanceForService selects an instance for a service using round-robin selection.
-// Deprecated path retained for backward compatibility in tests/callers.
-func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance, error) {
-	req := &models.Request{ServiceName: serviceName}
-	inst, _, err := m.SelectInstanceForRequest(serviceName, req, time.Now())
-	return inst, err
-}
-

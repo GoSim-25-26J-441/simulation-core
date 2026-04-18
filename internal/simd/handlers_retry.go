@@ -16,9 +16,9 @@ import (
 
 // Retry / logical-call metadata (stable across physical attempts).
 const (
-	metaLogicalCallID        = "logical_call_id"
-	metaRetryAttempt         = "retry_attempt"
-	metaIsRetry              = "is_retry"
+	metaLogicalCallID         = "logical_call_id"
+	metaRetryAttempt          = "retry_attempt"
+	metaIsRetry               = "is_retry"
 	metaAsyncAttemptAbandoned = "async_attempt_abandoned"
 )
 
@@ -228,19 +228,29 @@ func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest
 	dsLabels := labelsForRequestMetricsWithRetry(downstreamRequest, downstreamServiceID, endpointPath)
 	metrics.RecordRequestCount(state.collector, 1.0, simTime, dsLabels)
 
+	inst, _, err := selectInstanceForRequest(state, downstreamRequest, simTime)
+	if err != nil {
+		downstreamRequest.Status = models.RequestStatusFailed
+		el := metrics.EndpointErrorLabels(dsLabels, metrics.ReasonNoInstance)
+		metrics.RecordErrorCount(state.collector, 1.0, simTime, el)
+		return fmt.Errorf("no instances available for service %s: %w", downstreamServiceID, err)
+	}
+	downstreamRequest.Metadata["instance_id"] = inst.ID()
+
 	rm := eng.GetRunManager()
 	rm.AddRequest(downstreamRequest)
 
 	eng.ScheduleAt(engine.EventTypeRequestStart, simTime, downstreamRequest, downstreamServiceID, map[string]interface{}{
 		"endpoint_path": endpointPath,
+		"instance_id":   inst.ID(),
 	})
 
 	if timeoutMs > 0 {
 		deadline := simTime.Add(time.Duration(timeoutMs) * time.Millisecond)
 		eng.ScheduleAtPriority(engine.EventTypeDownstreamTimeout, deadline, 1, nil, "", map[string]interface{}{
-			"child_request_id":      downstreamRequest.ID,
-			"parent_request_id":     parentRequest.ID,
-			"is_async_downstream":   isAsync,
+			"child_request_id":    downstreamRequest.ID,
+			"parent_request_id":   parentRequest.ID,
+			"is_async_downstream": isAsync,
 		})
 	}
 	return nil
@@ -272,17 +282,17 @@ func execDownstreamSpawnFromEvent(state *scenarioState, eng *engine.Engine, pare
 func scheduleDownstreamRetryEvent(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, nextRetryAttempt int, logicalCallID, callerInstanceID, callerHostZone, callerHostID string, delay time.Duration) {
 	t := eng.GetSimTime().Add(delay)
 	data := map[string]interface{}{
-		"endpoint_path":           endpointPath,
-		"parent_request_id":       parentRequest.ID,
-		"trace_depth":             traceDepth,
-		"async_depth":             asyncDepth,
-		"is_async_downstream":     isAsync,
-		"downstream_timeout_ms":   timeoutMs,
-		metaRetryAttempt:          nextRetryAttempt,
-		metaLogicalCallID:         logicalCallID,
-		"caller_instance_id":      callerInstanceID,
-		"caller_host_zone":        callerHostZone,
-		"caller_host_id":          callerHostID,
+		"endpoint_path":         endpointPath,
+		"parent_request_id":     parentRequest.ID,
+		"trace_depth":           traceDepth,
+		"async_depth":           asyncDepth,
+		"is_async_downstream":   isAsync,
+		"downstream_timeout_ms": timeoutMs,
+		metaRetryAttempt:        nextRetryAttempt,
+		metaLogicalCallID:       logicalCallID,
+		"caller_instance_id":    callerInstanceID,
+		"caller_host_zone":      callerHostZone,
+		"caller_host_id":        callerHostID,
 	}
 	eng.ScheduleAt(engine.EventTypeDownstreamRetry, t, parentRequest, downstreamServiceID, data)
 }

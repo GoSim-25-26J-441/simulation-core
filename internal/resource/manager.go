@@ -27,18 +27,17 @@ const (
 
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
-	mu                   sync.RWMutex
-	hosts                map[string]*Host
-	instances            map[string]*ServiceInstance
-	hostToInstances      map[string][]string           // host ID -> instance IDs
-	roundRobinIdx        map[string]int                // service name -> last selected instance index
-	weightedRoundRobinIdx map[string]int               // service name -> weighted rr cursor
-	sortedServiceInstMap map[string][]*ServiceInstance // service name -> sorted instances (cached); scale-down only shrinks this
-	serviceRouting       map[string]*config.RoutingPolicy
-	servicePlacement     map[string]*config.PlacementPolicy
-	endpointRouting      map[string]*config.RoutingPolicy // key: serviceID:endpointPath
-	routingRand          *rand.Rand
-	nextInstanceID       int                           // global counter for new instance IDs when scaling up
+	mu                    sync.RWMutex
+	hosts                 map[string]*Host
+	instances             map[string]*ServiceInstance
+	hostToInstances       map[string][]string              // host ID -> instance IDs
+	roundRobinIdx         map[string]int                   // service name -> last selected instance index
+	weightedRoundRobinIdx map[string]int                   // service name -> weighted RR cursor
+	sortedServiceInstMap  map[string][]*ServiceInstance    // service name -> sorted instances (cached); scale-down only shrinks this
+	serviceRouting        map[string]*config.RoutingPolicy // service id -> routing policy
+	endpointRouting       map[string]*config.RoutingPolicy // service:endpoint -> routing policy
+	routingRand           *rand.Rand
+	nextInstanceID        int // global counter for new instance IDs when scaling up
 	// drainTimeout is the simulated-time budget for scale-down drains when callers
 	// use ScaleService without explicit options (set per run from optimization config).
 	drainTimeout time.Duration
@@ -51,17 +50,16 @@ type Manager struct {
 // NewManager creates a new resource manager
 func NewManager() *Manager {
 	return &Manager{
-		hosts:                make(map[string]*Host),
-		instances:            make(map[string]*ServiceInstance),
-		hostToInstances:      make(map[string][]string),
-		roundRobinIdx:        make(map[string]int),
+		hosts:                 make(map[string]*Host),
+		instances:             make(map[string]*ServiceInstance),
+		hostToInstances:       make(map[string][]string),
+		roundRobinIdx:         make(map[string]int),
 		weightedRoundRobinIdx: make(map[string]int),
-		sortedServiceInstMap: make(map[string][]*ServiceInstance),
-		serviceRouting:       make(map[string]*config.RoutingPolicy),
-		servicePlacement:     make(map[string]*config.PlacementPolicy),
-		endpointRouting:      make(map[string]*config.RoutingPolicy),
-		routingRand:          rand.New(rand.NewSource(1)),
-		brokerQueues:         newBrokerQueues(),
+		sortedServiceInstMap:  make(map[string][]*ServiceInstance),
+		serviceRouting:        make(map[string]*config.RoutingPolicy),
+		endpointRouting:       make(map[string]*config.RoutingPolicy),
+		routingRand:           rand.New(rand.NewSource(time.Now().UnixNano())),
+		brokerQueues:          newBrokerQueues(),
 	}
 }
 
@@ -76,96 +74,6 @@ func hostMemoryCapacityMB(h *Host) float64 {
 	return float64(gb) * 1024.0
 }
 
-func containsStringFold(values []string, target string) bool {
-	target = strings.TrimSpace(target)
-	for _, v := range values {
-		if strings.EqualFold(strings.TrimSpace(v), target) {
-			return true
-		}
-	}
-	return false
-}
-
-func (m *Manager) serviceReplicasOnHostLocked(serviceID, hostID string) int {
-	n := 0
-	for _, iid := range m.hostToInstances[hostID] {
-		inst, ok := m.instances[iid]
-		if !ok || inst == nil {
-			continue
-		}
-		if inst.ServiceName() == serviceID {
-			n++
-		}
-	}
-	return n
-}
-
-func (m *Manager) serviceReplicasByZoneLocked(serviceID string) map[string]int {
-	out := map[string]int{}
-	for _, inst := range m.instances {
-		if inst == nil || inst.ServiceName() != serviceID {
-			continue
-		}
-		host, ok := m.hosts[inst.HostID()]
-		if !ok || host == nil {
-			continue
-		}
-		out[host.Zone()]++
-	}
-	return out
-}
-
-// hostSatisfiesPlacementLocked checks placement constraints excluding capacity.
-// Caller must hold m.mu.
-func (m *Manager) hostSatisfiesPlacementLocked(hostID, serviceID string, placement *config.PlacementPolicy) bool {
-	if placement == nil {
-		return true
-	}
-	host, ok := m.hosts[hostID]
-	if !ok || host == nil {
-		return false
-	}
-	if len(placement.AffinityZones) > 0 && !containsStringFold(placement.AffinityZones, host.Zone()) {
-		return false
-	}
-	if len(placement.RequiredZones) > 0 && !containsStringFold(placement.RequiredZones, host.Zone()) {
-		return false
-	}
-	if len(placement.AntiAffinityZones) > 0 && containsStringFold(placement.AntiAffinityZones, host.Zone()) {
-		return false
-	}
-	if len(placement.RequiredHostLabels) > 0 {
-		labels := host.Labels()
-		for k, v := range placement.RequiredHostLabels {
-			if labels[k] != v {
-				return false
-			}
-		}
-	}
-	if len(placement.AntiAffinityServices) > 0 {
-		for _, iid := range m.hostToInstances[hostID] {
-			inst, ok := m.instances[iid]
-			if !ok || inst == nil {
-				continue
-			}
-			instSvc := inst.ServiceName()
-			for _, blockedSvc := range placement.AntiAffinityServices {
-				blockedSvc = strings.TrimSpace(blockedSvc)
-				if blockedSvc == "" {
-					continue
-				}
-				if instSvc == blockedSvc {
-					return false
-				}
-			}
-		}
-	}
-	if placement.MaxReplicasPerHost > 0 && m.serviceReplicasOnHostLocked(serviceID, hostID) >= placement.MaxReplicasPerHost {
-		return false
-	}
-	return true
-}
-
 // pickHostForNewInstanceLocked returns a host ID that can fit another instance with the
 // given reservation, or an error if none qualify. Hosts are tried in round-robin order
 // (by existing instance count for this service) among those with capacity. Caller must hold m.mu (write lock).
@@ -178,22 +86,15 @@ func (m *Manager) pickHostForNewInstanceLocked(serviceID string, cpuCores, memor
 	if len(hostIDs) == 0 {
 		return "", fmt.Errorf("no hosts available")
 	}
-	placement := m.servicePlacement[serviceID]
-	zoneLoad := m.serviceReplicasByZoneLocked(serviceID)
-	type candidate struct {
-		hostID    string
-		matchPref int
-		zoneLoad  int
-		hostLoad  int
-	}
-	cands := make([]candidate, 0, len(hostIDs))
-	placementRejected := 0
-	capacityRejected := 0
-	for _, hid := range hostIDs {
-		if !m.hostSatisfiesPlacementLocked(hid, serviceID, placement) {
-			placementRejected++
-			continue
+	var existing int
+	for _, inst := range m.instances {
+		if inst != nil && inst.ServiceName() == serviceID {
+			existing++
 		}
+	}
+	start := existing % len(hostIDs)
+	for j := 0; j < len(hostIDs); j++ {
+		hid := hostIDs[(start+j)%len(hostIDs)]
 		h := m.hosts[hid]
 		var cpuSum, memSum float64
 		for _, iid := range m.hostToInstances[hid] {
@@ -205,53 +106,11 @@ func (m *Manager) pickHostForNewInstanceLocked(serviceID string, cpuCores, memor
 			memSum += inst.MemoryMB()
 		}
 		capMem := hostMemoryCapacityMB(h)
-		if cpuSum+cpuCores > float64(h.CPUCores())+1e-9 || memSum+memoryMB > capMem+1e-6 {
-			capacityRejected++
-			continue
+		if cpuSum+cpuCores <= float64(h.CPUCores())+1e-9 && memSum+memoryMB <= capMem+1e-6 {
+			return hid, nil
 		}
-		matchPref := 0
-		if placement != nil {
-			if containsStringFold(placement.PreferredZones, h.Zone()) {
-				matchPref++
-			}
-			if len(placement.PreferredHostLabels) > 0 {
-				labels := h.Labels()
-				for k, v := range placement.PreferredHostLabels {
-					if labels[k] == v {
-						matchPref++
-					}
-				}
-			}
-		}
-		cands = append(cands, candidate{
-			hostID:    hid,
-			matchPref: matchPref,
-			zoneLoad:  zoneLoad[h.Zone()],
-			hostLoad:  m.serviceReplicasOnHostLocked(serviceID, hid),
-		})
 	}
-	if len(cands) == 0 {
-		if placementRejected > 0 && capacityRejected == 0 {
-			return "", fmt.Errorf("no host satisfies placement constraints for service %s", serviceID)
-		}
-		if capacityRejected > 0 && placementRejected == 0 {
-			return "", fmt.Errorf("no host has capacity for new instance (need %.2f CPU cores, %.2f MB memory)", cpuCores, memoryMB)
-		}
-		return "", fmt.Errorf("no host can place new instance for %s due to placement/capacity constraints", serviceID)
-	}
-	sort.SliceStable(cands, func(i, j int) bool {
-		if cands[i].matchPref != cands[j].matchPref {
-			return cands[i].matchPref > cands[j].matchPref
-		}
-		if placement != nil && placement.SpreadAcrossZones && cands[i].zoneLoad != cands[j].zoneLoad {
-			return cands[i].zoneLoad < cands[j].zoneLoad
-		}
-		if cands[i].hostLoad != cands[j].hostLoad {
-			return cands[i].hostLoad < cands[j].hostLoad
-		}
-		return cands[i].hostID < cands[j].hostID
-	})
-	return cands[0].hostID, nil
+	return "", fmt.Errorf("no host has capacity for new instance (need %.2f CPU cores, %.2f MB memory)", cpuCores, memoryMB)
 }
 
 // InitializeFromScenario initializes the resource manager from a scenario configuration
@@ -271,17 +130,35 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 		m.hosts[hostConfig.ID] = host
 	}
 
-	if len(m.hosts) == 0 {
+	hostIDs := make([]string, 0, len(m.hosts))
+	for id := range m.hosts {
+		hostIDs = append(hostIDs, id)
+	}
+	sort.Strings(hostIDs)
+	if len(hostIDs) == 0 {
 		return fmt.Errorf("no hosts defined")
+	}
+	hostLoad := make(map[string]struct {
+		cpu float64
+		mem float64
+	})
+	for _, id := range hostIDs {
+		hostLoad[id] = struct {
+			cpu float64
+			mem float64
+		}{}
 	}
 
 	// Initialize service instances with per-host reservation feasibility
 	instanceID := 0
 	for _, serviceConfig := range scenario.Services {
-		m.serviceRouting[serviceConfig.ID] = serviceConfig.Routing
-		m.servicePlacement[serviceConfig.ID] = serviceConfig.Placement
+		if serviceConfig.Routing != nil {
+			m.serviceRouting[serviceConfig.ID] = serviceConfig.Routing
+		}
 		for _, ep := range serviceConfig.Endpoints {
-			m.endpointRouting[serviceConfig.ID+":"+ep.Path] = ep.Routing
+			if ep.Routing != nil {
+				m.endpointRouting[serviceConfig.ID+":"+ep.Path] = ep.Routing
+			}
 		}
 		cpuCores := serviceConfig.CPUCores
 		if cpuCores == 0 {
@@ -293,17 +170,66 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 		}
 
 		for replica := 0; replica < serviceConfig.Replicas; replica++ {
-			hostID, err := m.pickHostForNewInstanceLocked(serviceConfig.ID, cpuCores, memoryMB)
-			if err != nil {
-				return fmt.Errorf("cannot place service %s: %w (each instance needs %.2f CPU cores, %.2f MB memory)",
-					serviceConfig.ID, err, cpuCores, memoryMB)
+			placed := false
+			start := replica % len(hostIDs)
+			for j := 0; j < len(hostIDs); j++ {
+				hostID := hostIDs[(start+j)%len(hostIDs)]
+				h := m.hosts[hostID]
+				if serviceConfig.Placement != nil && len(serviceConfig.Placement.RequiredZones) > 0 {
+					zoneOK := false
+					for _, z := range serviceConfig.Placement.RequiredZones {
+						if strings.EqualFold(strings.TrimSpace(h.Zone()), strings.TrimSpace(z)) {
+							zoneOK = true
+							break
+						}
+					}
+					if !zoneOK {
+						continue
+					}
+				}
+				if serviceConfig.Placement != nil && len(serviceConfig.Placement.AntiAffinityServices) > 0 {
+					conflict := false
+					for _, iid := range m.hostToInstances[hostID] {
+						inst, ok := m.instances[iid]
+						if !ok || inst == nil {
+							continue
+						}
+						for _, blockedSvc := range serviceConfig.Placement.AntiAffinityServices {
+							if strings.EqualFold(strings.TrimSpace(blockedSvc), strings.TrimSpace(inst.ServiceName())) {
+								conflict = true
+								break
+							}
+						}
+						if conflict {
+							break
+						}
+					}
+					if conflict {
+						continue
+					}
+				}
+				l := hostLoad[hostID]
+				capMem := hostMemoryCapacityMB(h)
+				if l.cpu+cpuCores <= float64(h.CPUCores())+1e-9 && l.mem+memoryMB <= capMem+1e-6 {
+					l.cpu += cpuCores
+					l.mem += memoryMB
+					hostLoad[hostID] = l
+
+					instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
+					instanceID++
+
+					instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
+					m.instances[instanceIDStr] = instance
+					m.hosts[hostID].AddService(instanceIDStr)
+					m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
+					placed = true
+					break
+				}
 			}
-			instanceIDStr := fmt.Sprintf("%s-instance-%d", serviceConfig.ID, instanceID)
-			instanceID++
-			instance := NewServiceInstance(instanceIDStr, serviceConfig.ID, hostID, cpuCores, memoryMB)
-			m.instances[instanceIDStr] = instance
-			m.hosts[hostID].AddService(instanceIDStr)
-			m.hostToInstances[hostID] = append(m.hostToInstances[hostID], instanceIDStr)
+			if !placed {
+				return fmt.Errorf("cannot place service %s: insufficient host capacity (each instance needs %.2f CPU cores, %.2f MB memory)",
+					serviceConfig.ID, cpuCores, memoryMB)
+			}
 		}
 	}
 	m.nextInstanceID = instanceID
@@ -385,6 +311,29 @@ func (m *Manager) getInstancesForServiceLocked(serviceName string) []*ServiceIns
 		}
 	}
 	return instances
+}
+
+// SelectInstanceForService selects an instance for a service using round-robin selection
+func (m *Manager) SelectInstanceForService(serviceName string) (*ServiceInstance, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Use cached sorted instances if available
+	instances, ok := m.sortedServiceInstMap[serviceName]
+	if !ok || len(instances) == 0 {
+		return nil, fmt.Errorf("no instances available for service %s", serviceName)
+	}
+
+	// Get the current index for this service (defaults to 0)
+	idx := m.roundRobinIdx[serviceName]
+
+	// Select the instance at the current index
+	selectedInstance := instances[idx]
+
+	// Update the index for next time (wrap around to 0 if we reach the end)
+	m.roundRobinIdx[serviceName] = (idx + 1) % len(instances)
+
+	return selectedInstance, nil
 }
 
 // rebuildSortedInstanceCache rebuilds the cache of sorted routable (active) instances per service.
@@ -705,77 +654,9 @@ func (m *Manager) ScaleOutHosts(targetCount int) error {
 			continue
 		}
 		host := NewHost(id, template.CPUCores(), template.MemoryGB())
-		host.SetZone(template.Zone())
-		host.SetLabels(template.Labels())
 		m.hosts[id] = host
 	}
 
-	return nil
-}
-
-// ScaleOutHostsForService scales out hosts using a template that best matches the
-// service placement constraints/preferences.
-func (m *Manager) ScaleOutHostsForService(serviceID string, targetCount int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	current := len(m.hosts)
-	if targetCount <= current {
-		return nil
-	}
-	if current == 0 {
-		return fmt.Errorf("cannot scale out hosts: no existing hosts to copy capacity from")
-	}
-	placement := m.servicePlacement[serviceID]
-	var template *Host
-	var templateID string
-	hostIDs := make([]string, 0, len(m.hosts))
-	for id := range m.hosts {
-		hostIDs = append(hostIDs, id)
-	}
-	sort.Strings(hostIDs)
-	bestScore := -1
-	for _, hid := range hostIDs {
-		h := m.hosts[hid]
-		if h == nil {
-			continue
-		}
-		score := 0
-		if placement == nil || m.hostSatisfiesPlacementLocked(hid, serviceID, placement) {
-			score += 2
-		}
-		if placement != nil {
-			if containsStringFold(placement.PreferredZones, h.Zone()) {
-				score++
-			}
-			labels := h.Labels()
-			for k, v := range placement.PreferredHostLabels {
-				if labels[k] == v {
-					score++
-				}
-			}
-		}
-		if score > bestScore {
-			bestScore = score
-			template = h
-			templateID = hid
-		}
-	}
-	if template == nil {
-		return fmt.Errorf("cannot scale out hosts: template host not found")
-	}
-	nextIndex := current + 1
-	for len(m.hosts) < targetCount {
-		id := fmt.Sprintf("host-auto-%d", nextIndex)
-		nextIndex++
-		if _, exists := m.hosts[id]; exists {
-			continue
-		}
-		host := NewHost(id, template.CPUCores(), template.MemoryGB())
-		host.SetZone(template.Zone())
-		host.SetLabels(template.Labels())
-		m.hosts[id] = host
-	}
-	_ = templateID
 	return nil
 }
 

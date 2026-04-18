@@ -50,7 +50,6 @@ type RunExecutor struct {
 	notifier *Notifier
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
-	controllerTickerFactory func(time.Duration) (<-chan time.Time, func())
 
 	mu                     sync.Mutex
 	cancels                map[string]context.CancelFunc
@@ -94,14 +93,9 @@ var (
 )
 
 func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
-	defaultTickerFactory := func(interval time.Duration) (<-chan time.Time, func()) {
-		t := time.NewTicker(interval)
-		return t.C, t.Stop
-	}
 	return &RunExecutor{
 		store:                  store,
 		notifier:               NewNotifierWithWhitelist(callbackWhitelist),
-		controllerTickerFactory: defaultTickerFactory,
 		cancels:                make(map[string]context.CancelFunc),
 		workloadStates:         make(map[string]*WorkloadState),
 		resourceManagers:       make(map[string]*resource.Manager),
@@ -110,19 +104,6 @@ func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 		onlineLeaseDeadline:    make(map[string]time.Time),
 		runScenarios:           make(map[string]*config.Scenario),
 	}
-}
-
-func (e *RunExecutor) setControllerTickerFactory(factory func(time.Duration) (<-chan time.Time, func())) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if factory == nil {
-		e.controllerTickerFactory = func(interval time.Duration) (<-chan time.Time, func()) {
-			t := time.NewTicker(interval)
-			return t.C, t.Stop
-		}
-		return
-	}
-	e.controllerTickerFactory = factory
 }
 
 // Start begins executing a run asynchronously.
@@ -362,9 +343,6 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 				"partition":             t.Partition,
 				"subscriber":            t.Subscriber,
 				"consumer_group":        t.ConsumerGroup,
-				"high_watermark":        t.HighWatermarkExclusive,
-				"committed_offset":      t.CommittedOffsetExclusive,
-				"consumer_lag":          t.ConsumerLag,
 				"depth":                 t.Depth,
 				"in_flight":             t.InFlight,
 				"max_concurrency":       t.MaxConcurrency,
@@ -378,29 +356,6 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 		resources = map[string]any{
 			"queues": queues,
 			"topics": topics,
-		}
-	}
-	if rec.FinalConfig != nil {
-		var scen *config.Scenario
-		if rec.Input != nil && rec.Input.ScenarioYaml != "" {
-			if s, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml); err == nil {
-				scen = s
-			}
-		}
-		cfgJSON := convertRunConfigurationToJSON(rec.FinalConfig, scen)
-		if cfgJSON != nil {
-			if resources == nil {
-				resources = map[string]any{}
-			}
-			if v, ok := cfgJSON["services"]; ok {
-				resources["services"] = v
-			}
-			if v, ok := cfgJSON["hosts"]; ok {
-				resources["hosts"] = v
-			}
-			if v, ok := cfgJSON["placements"]; ok {
-				resources["placements"] = v
-			}
 		}
 	}
 	e.notifier.Notify(rec.Input.CallbackUrl, getCallbackSecret(rec), rec, resources)
@@ -1100,253 +1055,22 @@ func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, s
 	return false
 }
 
-func topologyPressureActive(runMetrics *models.RunMetrics) bool {
-	if runMetrics == nil {
-		return false
-	}
-	return runMetrics.CrossZoneRequestFraction > 0 || runMetrics.LocalityHitRate > 0 && runMetrics.LocalityHitRate < 0.95
-}
-
-func serviceHasLocalityRoutingPolicy(svc config.Service) bool {
-	if svc.Routing != nil && strings.TrimSpace(svc.Routing.LocalityZoneFrom) != "" {
-		return true
-	}
-	for _, ep := range svc.Endpoints {
-		if ep.Routing != nil && strings.TrimSpace(ep.Routing.LocalityZoneFrom) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func scenarioHasLocalityRoutingPolicy(scenario *config.Scenario) bool {
-	if scenario == nil {
-		return false
-	}
-	for _, svc := range scenario.Services {
-		if serviceHasLocalityRoutingPolicy(svc) {
-			return true
-		}
-	}
-	return false
-}
-
-func hostZoneCounts(rm *resource.Manager) map[string]int {
-	out := map[string]int{}
-	if rm == nil {
-		return out
-	}
-	for _, hid := range rm.HostIDs() {
-		h, ok := rm.GetHost(hid)
-		if !ok || h == nil {
-			continue
-		}
-		z := strings.ToLower(strings.TrimSpace(h.Zone()))
-		if z == "" {
-			continue
-		}
-		out[z]++
-	}
-	return out
-}
-
-func availableZones(zoneList []string, zoneCounts map[string]int) int {
-	n := 0
-	for _, z := range zoneList {
-		if zoneCounts[strings.ToLower(strings.TrimSpace(z))] > 0 {
-			n++
-		}
-	}
-	return n
-}
-
-func blocksReplicaScaleDownForTopology(svc config.Service, nextReplicas int, zoneCounts map[string]int, runMetrics *models.RunMetrics) bool {
-	if !serviceHasLocalityRoutingPolicy(svc) || svc.Placement == nil || nextReplicas < 1 {
-		return false
-	}
-	// Enforce required zone coverage always for locality-routed services.
-	reqCoverage := availableZones(svc.Placement.RequiredZones, zoneCounts)
-	if reqCoverage > 0 && nextReplicas < reqCoverage {
-		return true
-	}
-	// Prefer preserving preferred-zone locality under topology pressure.
-	if topologyPressureActive(runMetrics) {
-		prefCoverage := availableZones(svc.Placement.PreferredZones, zoneCounts)
-		if prefCoverage > 0 && nextReplicas < prefCoverage {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldBlockHostScaleInForTopology(scenario *config.Scenario, rm *resource.Manager, runMetrics *models.RunMetrics) bool {
-	if scenario == nil || rm == nil || !topologyPressureActive(runMetrics) {
-		return false
-	}
-	zoneCounts := hostZoneCounts(rm)
-	for _, svc := range scenario.Services {
-		if svc.Placement == nil {
-			continue
-		}
-		for _, z := range svc.Placement.RequiredZones {
-			if zoneCounts[strings.ToLower(strings.TrimSpace(z))] <= 1 {
-				return true
-			}
-		}
-		if serviceHasLocalityRoutingPolicy(svc) {
-			for _, z := range svc.Placement.PreferredZones {
-				if zoneCounts[strings.ToLower(strings.TrimSpace(z))] <= 1 {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func onlineTopologyGuard(runMetrics *models.RunMetrics, scenario *config.Scenario, svcID string, rm *resource.Manager, opt *simulationv1.OptimizationConfig, prevLocalityHitRate float64) (bool, string) {
+// onlineTopologyGuard is a compatibility helper for topology-aware scale-down checks.
+// It returns a stable reason string so tests and audit messages can assert decisions.
+func onlineTopologyGuard(runMetrics *models.RunMetrics, _ *config.Scenario, _ string, _ *resource.Manager, opt *simulationv1.OptimizationConfig, _ int) (bool, string) {
 	if runMetrics == nil || opt == nil {
 		return false, ""
 	}
-	localityConfigured := scenarioHasLocalityRoutingPolicy(scenario)
-	if minLocality := opt.GetMinLocalityHitRate(); minLocality > 0 && localityConfigured && runMetrics.LocalityHitRate < minLocality {
+	if opt.MinLocalityHitRate > 0 && runMetrics.LocalityHitRate < opt.MinLocalityHitRate {
 		return true, "locality_hit_rate_below_min"
 	}
-	if minLocality := opt.GetMinLocalityHitRate(); minLocality > 0 && prevLocalityHitRate >= 0 &&
-		localityConfigured && runMetrics.LocalityHitRate+0.01 < prevLocalityHitRate {
-		return true, "locality_hit_rate_recent_drop"
-	}
-	if maxCrossZone := opt.GetMaxCrossZoneRequestFraction(); maxCrossZone > 0 &&
-		runMetrics.CrossZoneRequestFraction > maxCrossZone {
+	if opt.MaxCrossZoneRequestFraction > 0 && runMetrics.CrossZoneRequestFraction > opt.MaxCrossZoneRequestFraction {
 		return true, "cross_zone_fraction_above_max"
 	}
-	if maxTopoPenalty := opt.GetMaxTopologyLatencyPenaltyMeanMs(); maxTopoPenalty > 0 &&
-		runMetrics.TopologyLatencyPenaltyMsMean > maxTopoPenalty {
-		return true, "topology_latency_mean_above_max"
-	}
-	if shouldBlockHostScaleInForTopology(scenario, rm, runMetrics) {
-		return true, "host_zone_coverage_scarce"
-	}
-	if strings.TrimSpace(svcID) != "" && scenario != nil {
-		zoneCounts := hostZoneCounts(rm)
-		for _, svc := range scenario.Services {
-			if svc.ID != svcID {
-				continue
-			}
-			if blocksReplicaScaleDownForTopology(svc, maxInt(1, rm.ActiveReplicas(svcID)-1), zoneCounts, runMetrics) {
-				return true, "replica_zone_coverage_would_drop"
-			}
-			break
-		}
+	if opt.MaxTopologyLatencyPenaltyMeanMs > 0 && runMetrics.TopologyLatencyPenaltyMsMean > opt.MaxTopologyLatencyPenaltyMeanMs {
+		return true, "topology_latency_penalty_above_max"
 	}
 	return false, ""
-}
-
-func topologyGuardDecisionReason(action, serviceID, guardReason string, runMetrics *models.RunMetrics, opt *simulationv1.OptimizationConfig, prevLocalityHitRate float64) string {
-	var localityHitRate, crossZoneFraction, topologyPenaltyMean float64
-	if runMetrics != nil {
-		localityHitRate = runMetrics.LocalityHitRate
-		crossZoneFraction = runMetrics.CrossZoneRequestFraction
-		topologyPenaltyMean = runMetrics.TopologyLatencyPenaltyMsMean
-	}
-	var minLocality, maxCrossZone, maxTopologyPenalty float64
-	if opt != nil {
-		minLocality = opt.GetMinLocalityHitRate()
-		maxCrossZone = opt.GetMaxCrossZoneRequestFraction()
-		maxTopologyPenalty = opt.GetMaxTopologyLatencyPenaltyMeanMs()
-	}
-	parts := []string{
-		"topology_guard_blocked",
-		"action=" + strings.TrimSpace(action),
-		"decision_reason=" + strings.TrimSpace(guardReason),
-		fmt.Sprintf("locality_hit_rate=%.6g", localityHitRate),
-		fmt.Sprintf("min_locality_hit_rate=%.6g", minLocality),
-		fmt.Sprintf("cross_zone_request_fraction=%.6g", crossZoneFraction),
-		fmt.Sprintf("max_cross_zone_request_fraction=%.6g", maxCrossZone),
-		fmt.Sprintf("topology_latency_penalty_ms_mean=%.6g", topologyPenaltyMean),
-		fmt.Sprintf("max_topology_latency_penalty_mean_ms=%.6g", maxTopologyPenalty),
-	}
-	if strings.TrimSpace(serviceID) != "" {
-		parts = append(parts, "service_id="+strings.TrimSpace(serviceID))
-	}
-	if prevLocalityHitRate >= 0 {
-		parts = append(parts, fmt.Sprintf("previous_locality_hit_rate=%.6g", prevLocalityHitRate))
-	}
-	return strings.Join(parts, " ")
-}
-
-func runConfigurationFromResourceManager(rm *resource.Manager) *simulationv1.RunConfiguration {
-	if rm == nil {
-		return nil
-	}
-	cfg := &simulationv1.RunConfiguration{}
-	for _, svcID := range rm.ListServiceIDs() {
-		replicas := rm.ActiveReplicas(svcID)
-		if replicas < 0 {
-			replicas = 0
-		}
-		entry := &simulationv1.ServiceConfigEntry{
-			ServiceId: svcID,
-			Replicas:  clampIntToInt32(replicas),
-		}
-		instances := rm.GetInstancesForService(svcID)
-		for _, inst := range instances {
-			if inst.IsRoutable() {
-				entry.CpuCores = inst.CPUCores()
-				entry.MemoryMb = inst.MemoryMB()
-				break
-			}
-		}
-		if entry.CpuCores == 0 && len(instances) > 0 {
-			entry.CpuCores = instances[0].CPUCores()
-			entry.MemoryMb = instances[0].MemoryMB()
-		}
-		cfg.Services = append(cfg.Services, entry)
-	}
-	for _, hostID := range rm.HostIDs() {
-		if host, ok := rm.GetHost(hostID); ok {
-			cfg.Hosts = append(cfg.Hosts, &simulationv1.HostConfigEntry{
-				HostId:   hostID,
-				CpuCores: clampIntToInt32(host.CPUCores()),
-				MemoryGb: clampIntToInt32(host.MemoryGB()),
-			})
-		}
-	}
-	snapshotAt := rm.LastSimTime()
-	if snapshotAt.IsZero() {
-		snapshotAt = time.Now()
-	}
-	for _, p := range rm.GetInstancePlacements(snapshotAt) {
-		cfg.Placements = append(cfg.Placements, &simulationv1.InstancePlacementEntry{
-			InstanceId:        p.InstanceID,
-			ServiceId:         p.ServiceID,
-			HostId:            p.HostID,
-			Lifecycle:         p.Lifecycle,
-			CpuCores:          p.CPUCores,
-			MemoryMb:          p.MemoryMB,
-			CpuUtilization:    p.CPUUtilization,
-			MemoryUtilization: p.MemoryUtilization,
-			ActiveRequests:    p.ActiveRequests,
-			QueueLength:       p.QueueLength,
-		})
-	}
-	return cfg
-}
-
-func (e *RunExecutor) recordTopologyGuardDecision(runID string, iterationIndex int32, action, serviceID, guardReason string, targetP95, scoreP95 float64, runMetrics *models.RunMetrics, opt *simulationv1.OptimizationConfig, rm *resource.Manager, prevLocalityHitRate float64) {
-	cfg, ok := e.GetRunConfiguration(runID)
-	if !ok {
-		cfg = runConfigurationFromResourceManager(rm)
-	}
-	if cfg == nil {
-		return
-	}
-	if iterationIndex < 1 {
-		iterationIndex = 1
-	}
-	e.recordOptimizationStep(runID, iterationIndex, targetP95, scoreP95,
-		topologyGuardDecisionReason(action, serviceID, guardReason, runMetrics, opt, prevLocalityHitRate),
-		cfg, cfg)
 }
 
 // maxServiceUtilization returns the max CPU or memory utilization across non-client services.
@@ -1371,50 +1095,6 @@ func maxServiceUtilization(runMetrics *models.RunMetrics, kind string) float64 {
 		}
 	}
 	return maxUtil
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func preferredScaleOutServiceForTopology(scenario *config.Scenario, runMetrics *models.RunMetrics, pressure map[string]brokerPressureSignal) string {
-	if scenario == nil {
-		return ""
-	}
-	svcByID := make(map[string]config.Service, len(scenario.Services))
-	for _, svc := range scenario.Services {
-		svcByID[svc.ID] = svc
-	}
-	for svcID, p := range pressure {
-		svc, ok := svcByID[svcID]
-		if !ok {
-			continue
-		}
-		if svc.Placement != nil && (p.HasBacklog || p.HasInFlight || p.MaxOldestAgeMs > 0) {
-			return svcID
-		}
-	}
-	bestSvc := ""
-	bestCPU := -1.0
-	if runMetrics != nil && runMetrics.ServiceMetrics != nil {
-		for svcID, sm := range runMetrics.ServiceMetrics {
-			if sm == nil {
-				continue
-			}
-			svc, ok := svcByID[svcID]
-			if !ok || svc.Placement == nil {
-				continue
-			}
-			if sm.CPUUtilization > bestCPU {
-				bestCPU = sm.CPUUtilization
-				bestSvc = svcID
-			}
-		}
-	}
-	return bestSvc
 }
 
 // recordOptimizationStep appends an optimization step to the run's history for backend persistence.
@@ -1490,17 +1170,8 @@ func (e *RunExecutor) runOnlineController(
 		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
 
-	e.mu.Lock()
-	tickerFactory := e.controllerTickerFactory
-	e.mu.Unlock()
-	if tickerFactory == nil {
-		tickerFactory = func(interval time.Duration) (<-chan time.Time, func()) {
-			t := time.NewTicker(interval)
-			return t.C, t.Stop
-		}
-	}
-	tickerCh, stopTicker := tickerFactory(interval)
-	defer stopTicker()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
 	bestScore := math.Inf(1)
 	var iter int32
@@ -1551,7 +1222,6 @@ func (e *RunExecutor) runOnlineController(
 	stableVertCPUDown := make(map[string]int)
 	stableVertMemDown := make(map[string]int)
 	prevErrFrac := -1.0
-	prevLocalityHitRate := -1.0
 	intervalMs := int64(interval / time.Millisecond)
 	if intervalMs < 1 {
 		intervalMs = 1
@@ -1563,7 +1233,7 @@ func (e *RunExecutor) runOnlineController(
 		select {
 		case <-ctx.Done():
 			return
-		case <-tickerCh:
+		case <-ticker.C:
 			stepIndexBefore := stepIndex
 			if lt := rm.LastSimTime(); !lt.IsZero() {
 				dropped := rm.ProcessDrainingInstances(lt)
@@ -1648,14 +1318,7 @@ func (e *RunExecutor) runOnlineController(
 			if p95Guard && currentP95 > targetP95*1.05 && hostCount > 0 {
 				if hostCount < maxHosts && maxHostCPU >= hostCPUHighThreshold {
 					prevConfig, _ := e.GetRunConfiguration(runID)
-					preferredSvc := preferredScaleOutServiceForTopology(scenario, runMetrics, brokerPressure)
-					var err error
-					if preferredSvc != "" {
-						err = rm.ScaleOutHostsForService(preferredSvc, hostCount+1)
-					} else {
-						err = rm.ScaleOutHosts(hostCount + 1)
-					}
-					if err != nil {
+					if err := rm.ScaleOutHosts(hostCount + 1); err != nil {
 						logger.Error("online controller failed to scale out hosts",
 							"run_id", runID,
 							"current_hosts", hostCount,
@@ -1667,7 +1330,6 @@ func (e *RunExecutor) runOnlineController(
 							"previous_hosts", hostCount,
 							"new_hosts", rm.HostCount(),
 							"max_hosts", maxHosts,
-							"preferred_service", preferredSvc,
 							"max_host_cpu_utilization", maxHostCPU)
 						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
 							stepIndex++
@@ -1706,17 +1368,6 @@ func (e *RunExecutor) runOnlineController(
 				stableHostScaleIn = 0
 			}
 			if hostScaleInCond && stableHostScaleIn >= stabTicks {
-				if blocked, reason := onlineTopologyGuard(runMetrics, scenario, "", rm, opt, prevLocalityHitRate); blocked {
-					logger.Info("online controller blocked host scale-in by topology guard",
-						"run_id", runID,
-						"reason", reason,
-						"cross_zone_fraction", runMetrics.CrossZoneRequestFraction,
-						"locality_hit_rate", runMetrics.LocalityHitRate,
-						"topology_latency_mean_ms", runMetrics.TopologyLatencyPenaltyMsMean)
-					e.recordTopologyGuardDecision(runID, iter, "host_scale_in", "", reason, targetP95, currentP95, runMetrics, opt, rm, prevLocalityHitRate)
-					stableHostScaleIn = 0
-					continue
-				}
 				prevConfig, _ := e.GetRunConfiguration(runID)
 				if err := rm.ScaleInHosts(hostCount - 1); err != nil {
 					logger.Debug("online controller scale-in hosts skipped",
@@ -1935,14 +1586,6 @@ func (e *RunExecutor) runOnlineController(
 					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
 				var targetVertCPU float64
 				if wantVertCPU {
-					if blocked, reason := onlineTopologyGuard(runMetrics, scenario, svc.ID, rm, opt, prevLocalityHitRate); blocked {
-						logger.Info("online controller blocked vertical CPU downscale by topology guard",
-							"run_id", runID, "service_id", svc.ID, "reason", reason)
-						e.recordTopologyGuardDecision(runID, iter, "service_cpu_downscale", svc.ID, reason, targetP95, currentP95, runMetrics, opt, rm, prevLocalityHitRate)
-						wantVertCPU = false
-					}
-				}
-				if wantVertCPU {
 					nc := currentCores - cpuStep
 					if minCPUCtl > 0 && nc < minCPUCtl {
 						nc = minCPUCtl
@@ -1968,14 +1611,6 @@ func (e *RunExecutor) runOnlineController(
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
 					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
 				var targetVertMem float64
-				if wantVertMem {
-					if blocked, reason := onlineTopologyGuard(runMetrics, scenario, svc.ID, rm, opt, prevLocalityHitRate); blocked {
-						logger.Info("online controller blocked vertical memory downscale by topology guard",
-							"run_id", runID, "service_id", svc.ID, "reason", reason)
-						e.recordTopologyGuardDecision(runID, iter, "service_memory_downscale", svc.ID, reason, targetP95, currentP95, runMetrics, opt, rm, prevLocalityHitRate)
-						wantVertMem = false
-					}
-				}
 				if wantVertMem {
 					nm := currentMemMB - float64(step)*128
 					if minMemCtl > 0 && nm < minMemCtl {
@@ -2009,33 +1644,6 @@ func (e *RunExecutor) runOnlineController(
 				if newReplicas < currentReplicas && onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure) {
 					newReplicas = currentReplicas
 					stableRepDown[svc.ID] = 0
-				}
-				if newReplicas < currentReplicas {
-					zoneCounts := hostZoneCounts(rm)
-					if blocksReplicaScaleDownForTopology(svc, newReplicas, zoneCounts, runMetrics) {
-						logger.Info("online controller blocked replica scale-down due to zone coverage",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"current_replicas", currentReplicas,
-							"proposed_replicas", newReplicas)
-						e.recordTopologyGuardDecision(runID, iter, "replica_scale_down", svc.ID, "replica_zone_coverage_would_drop", targetP95, currentP95, runMetrics, opt, rm, prevLocalityHitRate)
-						newReplicas = currentReplicas
-						stableRepDown[svc.ID] = 0
-					}
-				}
-				if newReplicas < currentReplicas {
-					if blocked, reason := onlineTopologyGuard(runMetrics, scenario, svc.ID, rm, opt, prevLocalityHitRate); blocked {
-						logger.Info("online controller blocked replica scale-down by topology guard",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"reason", reason,
-							"cross_zone_fraction", runMetrics.CrossZoneRequestFraction,
-							"locality_hit_rate", runMetrics.LocalityHitRate,
-							"topology_latency_mean_ms", runMetrics.TopologyLatencyPenaltyMsMean)
-						e.recordTopologyGuardDecision(runID, iter, "replica_scale_down", svc.ID, reason, targetP95, currentP95, runMetrics, opt, rm, prevLocalityHitRate)
-						newReplicas = currentReplicas
-						stableRepDown[svc.ID] = 0
-					}
 				}
 				if newReplicas < minReplicasCtl {
 					newReplicas = minReplicasCtl
@@ -2144,9 +1752,6 @@ func (e *RunExecutor) runOnlineController(
 			}
 			if runMetrics.TotalRequests > 0 {
 				prevErrFrac = float64(runMetrics.FailedRequests) / float64(runMetrics.TotalRequests)
-			}
-			if runMetrics.LocalityHitRate > 0 {
-				prevLocalityHitRate = runMetrics.LocalityHitRate
 			}
 
 			if opt.GetMaxNoopIntervals() > 0 {
@@ -2307,57 +1912,46 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 			})
 		}
 	}
-
-	for i := range engineMetrics.EndpointRequestStats {
-		es := &engineMetrics.EndpointRequestStats[i]
-		pbMetrics.EndpointRequestStats = append(pbMetrics.EndpointRequestStats, endpointStatsModelToProto(es))
+	if len(engineMetrics.EndpointRequestStats) > 0 {
+		pbMetrics.EndpointRequestStats = make([]*simulationv1.EndpointRequestStats, 0, len(engineMetrics.EndpointRequestStats))
+		for _, e := range engineMetrics.EndpointRequestStats {
+			row := &simulationv1.EndpointRequestStats{
+				ServiceName:             e.ServiceName,
+				EndpointPath:            e.EndpointPath,
+				RequestCount:            e.RequestCount,
+				ErrorCount:              e.ErrorCount,
+				LatencyP50Ms:            e.LatencyP50Ms,
+				LatencyP95Ms:            e.LatencyP95Ms,
+				LatencyP99Ms:            e.LatencyP99Ms,
+				LatencyMeanMs:           e.LatencyMeanMs,
+				RootLatencyP50Ms:        e.RootLatencyP50Ms,
+				RootLatencyP95Ms:        e.RootLatencyP95Ms,
+				RootLatencyP99Ms:        e.RootLatencyP99Ms,
+				RootLatencyMeanMs:       e.RootLatencyMeanMs,
+				QueueWaitP50Ms:          e.QueueWaitP50Ms,
+				QueueWaitP95Ms:          e.QueueWaitP95Ms,
+				QueueWaitP99Ms:          e.QueueWaitP99Ms,
+				QueueWaitMeanMs:         e.QueueWaitMeanMs,
+				ProcessingLatencyP50Ms:  e.ProcessingLatencyP50Ms,
+				ProcessingLatencyP95Ms:  e.ProcessingLatencyP95Ms,
+				ProcessingLatencyP99Ms:  e.ProcessingLatencyP99Ms,
+				ProcessingLatencyMeanMs: e.ProcessingLatencyMeanMs,
+			}
+			pbMetrics.EndpointRequestStats = append(pbMetrics.EndpointRequestStats, row)
+		}
 	}
-	for i := range engineMetrics.InstanceRouteStats {
-		rs := &engineMetrics.InstanceRouteStats[i]
-		pbMetrics.InstanceRouteStats = append(pbMetrics.InstanceRouteStats, &simulationv1.InstanceRouteStats{
-			ServiceName:    rs.ServiceName,
-			EndpointPath:   rs.EndpointPath,
-			InstanceId:     rs.InstanceID,
-			Strategy:       rs.Strategy,
-			SelectionCount: rs.SelectionCount,
-		})
+	if len(engineMetrics.InstanceRouteStats) > 0 {
+		pbMetrics.InstanceRouteStats = make([]*simulationv1.InstanceRouteStats, 0, len(engineMetrics.InstanceRouteStats))
+		for _, rs := range engineMetrics.InstanceRouteStats {
+			pbMetrics.InstanceRouteStats = append(pbMetrics.InstanceRouteStats, &simulationv1.InstanceRouteStats{
+				ServiceName:    rs.ServiceName,
+				EndpointPath:   rs.EndpointPath,
+				InstanceId:     rs.InstanceID,
+				Strategy:       rs.Strategy,
+				SelectionCount: rs.SelectionCount,
+			})
+		}
 	}
 
 	return pbMetrics
-}
-
-func endpointStatsModelToProto(es *models.EndpointRequestStats) *simulationv1.EndpointRequestStats {
-	if es == nil {
-		return nil
-	}
-	return &simulationv1.EndpointRequestStats{
-		ServiceName:             es.ServiceName,
-		EndpointPath:            es.EndpointPath,
-		RequestCount:            es.RequestCount,
-		ErrorCount:              es.ErrorCount,
-		LatencyP50Ms:            cloneOptFloat64(es.LatencyP50Ms),
-		LatencyP95Ms:            cloneOptFloat64(es.LatencyP95Ms),
-		LatencyP99Ms:            cloneOptFloat64(es.LatencyP99Ms),
-		LatencyMeanMs:           cloneOptFloat64(es.LatencyMeanMs),
-		RootLatencyP50Ms:        cloneOptFloat64(es.RootLatencyP50Ms),
-		RootLatencyP95Ms:        cloneOptFloat64(es.RootLatencyP95Ms),
-		RootLatencyP99Ms:        cloneOptFloat64(es.RootLatencyP99Ms),
-		RootLatencyMeanMs:       cloneOptFloat64(es.RootLatencyMeanMs),
-		QueueWaitP50Ms:          cloneOptFloat64(es.QueueWaitP50Ms),
-		QueueWaitP95Ms:          cloneOptFloat64(es.QueueWaitP95Ms),
-		QueueWaitP99Ms:          cloneOptFloat64(es.QueueWaitP99Ms),
-		QueueWaitMeanMs:         cloneOptFloat64(es.QueueWaitMeanMs),
-		ProcessingLatencyP50Ms:  cloneOptFloat64(es.ProcessingLatencyP50Ms),
-		ProcessingLatencyP95Ms:  cloneOptFloat64(es.ProcessingLatencyP95Ms),
-		ProcessingLatencyP99Ms:  cloneOptFloat64(es.ProcessingLatencyP99Ms),
-		ProcessingLatencyMeanMs: cloneOptFloat64(es.ProcessingLatencyMeanMs),
-	}
-}
-
-func cloneOptFloat64(p *float64) *float64 {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
 }

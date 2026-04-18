@@ -5,64 +5,16 @@ simulation_limits:
   max_trace_depth: 48
   max_async_hops: 12
 
-# Batch optimizer topology controls (BatchOptimizationConfig) now support:
-# - min_locality_hit_rate
-# - max_cross_zone_request_fraction
-# - max_topology_latency_penalty_mean_ms
-# and penalty_weights:
-# - locality
-# - cross_zone
-# - topology_latency
-# Online optimizer topology guardrails (OptimizationConfig) also support:
-# - min_locality_hit_rate
-# - max_cross_zone_request_fraction
-# - max_topology_latency_penalty_mean_ms
-# Online guard decisions are emitted as no-op optimization_history entries with
-# reason strings prefixed by topology_guard_blocked. If locality routing exists
-# and locality_hit_rate is 0, the controller treats it as an all-miss violation.
-# These are API/optimizer settings (not scenario fields), listed here for quick reference.
-
-# Optional topology/network overlays for research runs (omit for legacy behavior).
-# - cross_zone_latency_ms is directed (caller_zone -> callee_zone) unless symmetric_cross_zone_latency: true,
-#   in which case a missing forward edge can fall back to the reverse edge when present.
-# - Precedence per downstream hop (non-external): same_host_latency_ms → same_zone_latency_ms (same zone,
-#   different hosts) → directed cross-zone map / default_cross_zone_latency_ms.
-# - kind: external uses external_latency_ms (scenario) or external_network_latency_ms (service override) and
-#   does not require caller/callee zones for that overlay.
-# network:
-#   symmetric_cross_zone_latency: false
-#   same_host_latency_ms: { mean: 0, sigma: 0 }
-#   same_zone_latency_ms: { mean: 0, sigma: 0 }
-#   default_cross_zone_latency_ms: { mean: 0, sigma: 0 }
-#   external_latency_ms: { mean: 0, sigma: 0 }
-#   cross_zone_latency_ms:
-#     zone-a:
-#       zone-b: { mean: 12, sigma: 2 }
-#     zone-b:
-#       zone-a: { mean: 15, sigma: 2 }
-
 hosts:
   - id: host-1
     cores: 8
     memory_gb: 32
-    zone: zone-a
-    labels:
-      rack: r1
-      tier: edge
   - id: host-2
     cores: 8
     memory_gb: 32
-    zone: zone-b
-    labels:
-      rack: r2
-      tier: app
   - id: host-3
     cores: 8
     memory_gb: 32
-    zone: zone-c
-    labels:
-      rack: r3
-      tier: data
 
 services:
   - id: api-gateway
@@ -70,12 +22,6 @@ services:
     role: ingress
     replicas: 2
     model: cpu
-    routing:
-      # Default is round_robin; least_queue/least_connections are often more realistic for APIs.
-      strategy: least_queue
-      # Prefer serving requests from same-zone instances when caller metadata includes client_zone.
-      # Runtime topology metrics now report locality hit/miss and same/cross-zone counters.
-      locality_zone_from: client_zone
     cpu_cores: 1.0
     memory_mb: 768
     scaling:
@@ -130,13 +76,6 @@ services:
       horizontal: true
       vertical_cpu: true
       vertical_memory: true
-    placement:
-      required_zones: [zone-a, zone-b]
-      preferred_zones: [zone-a]
-      required_host_labels:
-        tier: app
-      spread_across_zones: true
-      max_replicas_per_host: 1
     endpoints:
       - path: /checkout
         mean_cpu_ms: 12
@@ -409,8 +348,6 @@ services:
             call_count_mean: 1
             timeout_ms: 500
             downstream_fraction_cpu: 0.08
-            # DES demo: all async publishes on this edge share one partition key → hotspot on one shard.
-            partition_key: "hotspot-tenant-a"
             call_latency_ms:
               mean: 2
               sigma: 0.5
@@ -426,10 +363,6 @@ services:
       horizontal: true
       vertical_cpu: true
       vertical_memory: true
-    placement:
-      required_host_labels:
-        rack: r2
-      preferred_zones: [zone-b]
     endpoints:
       - path: /notify
         mean_cpu_ms: 14
@@ -459,10 +392,6 @@ services:
       horizontal: false
       vertical_cpu: true
       vertical_memory: true
-    placement:
-      required_zones: [zone-c]
-      required_host_labels:
-        tier: data
     endpoints:
       - path: /query
         mean_cpu_ms: 3
@@ -484,8 +413,6 @@ services:
       horizontal: false
       vertical_cpu: true
       vertical_memory: true
-    placement:
-      required_zones: [zone-c]
     endpoints:
       - path: /query
         mean_cpu_ms: 4
@@ -507,8 +434,6 @@ services:
       horizontal: false
       vertical_cpu: true
       vertical_memory: true
-    placement:
-      required_zones: [zone-c]
     endpoints:
       - path: /query
         mean_cpu_ms: 5
@@ -590,13 +515,9 @@ services:
         downstream: []
 
 workload:
-  # NOTE: same_zone_request_count / cross_zone_request_count are also emitted for downstream
-  # calls by comparing caller host zone to selected callee host zone.
   - from: web-client
     source_kind: client
     traffic_class: ingress
-    metadata:
-      client_zone: zone-a
     to: api-gateway:/REST
     arrival:
       type: poisson
@@ -604,8 +525,6 @@ workload:
   - from: mobile-client
     source_kind: client
     traffic_class: ingress
-    metadata:
-      client_zone: zone-b
     to: api-gateway:/REST
     arrival:
       type: bursty

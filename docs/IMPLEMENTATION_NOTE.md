@@ -72,11 +72,7 @@
 ## Broker / pub-sub topic (`kind: topic` + `downstream.kind: topic`)
 
 - **Semantics**: **`kind: topic`** models **fan-out** to **independent consumer groups** (Kafka-style offsets / RabbitMQ fan-out) and partition-scoped queues. Runtime shards are keyed by `(broker_service, topic, partition, consumer_group)`. Each **`behavior.topic.subscribers[]`** entry is one group: **`consumer_group`** key, **`consumer_target`**, **`consumer_concurrency`**, **`ack_timeout_ms`**, **`max_redeliveries`**, **`dlq`**, **`drop_policy`**. A **publish** creates **one queued message per subscriber group** in one assigned partition; backlog depth, in-flight, redelivery, and DLQ are **per partition per group**.
-- **Offsets / commit / lag**: Each `(broker, topic, partition)` has a monotonic **log offset** (0,1,2,…) assigned at publish (one logical offset per publish, shared across subscriber fan-out). Each subscriber group tracks a **committed offset frontier** (contiguous offsets considered done). **`topic_consumer_lag`** (gauge) uses **`max(0, high_watermark_exclusive − committed_offset_exclusive)`**, so in-flight work before commit still counts as lag, matching **HW − committed** semantics (not raw queue depth alone). Successful consumer completion **commits** the message offset. Ack-timeout / redelivery **does not** commit until success or DLQ.
-- **Per-group enqueue drops**: If a subscriber shard rejects a message (`reject` / `drop_newest` / `block_full` when full), the partition offset was still allocated for that publish; the simulator **commits/skips** that offset for **that group only** via `RecordTopicOffsetProcessed` so consumer lag does not stick permanently while depth/in_flight are zero. `drop_oldest` still commits the evicted head offset separately from accepting the new message.
-- **Retention (`topic_retention_expire`)**: When **`retention_ms > 0`**, a DES **`topic_retention_expire`** event is scheduled for **oldest queued enqueue time + retention_ms** (per shard/partition/group), with **per-shard dedup**: a new event is scheduled only if there is no pending schedule or the new **fire time** is **strictly earlier** than the next already-scheduled retention fire (avoids O(publishes) duplicate events for the same earliest-expiry instant). The handler removes queued messages whose age is ≥ retention at the current simulation time, emits **`topic_drop_count`** with **`reason=retention_expired`**, advances the commit frontier for removed offsets (treat as skipped/expired), clears the dedup token, refreshes backlog/lag gauges, and reschedules the next expiry if backlog remains. Late/stale retention events are idempotent.
-- **DLQ**: When **`topic_dlq`** fires after max redeliveries, the shard records DLQ and **commits** that message’s offset so lag cannot stick unbounded (“resolved” DLQ, not unresolved ghost lag).
-- **Edges**: Use **`downstream.kind: topic`** targeting a **`kind: topic`** service; the **topic path** is the broker **endpoint** (e.g. `to: events-broker:/orders`). Optional edge fields: **`partition_key`** (static string) and **`partition_key_from`** (parent **`Request.Metadata`** field name); if both are set, **`partition_key`** wins for routing hash / round-robin partition choice.
+- **Edges**: Use **`downstream.kind: topic`** targeting a **`kind: topic`** service; the **topic path** is the broker **endpoint** (e.g. `to: events-broker:/orders`).
 - **Producer timing**: Same async pattern as queue: caller CPU + **`delivery_latency_ms`** unless **`async_fire_and_forget: true`**. **`max_async_hops`** / **`max_trace_depth`** still apply.
 - **Metrics**: **`topic_*`** series (`topic_publish_count`, `topic_deliver_count`, `topic_drop_count`, `topic_redelivery_count`, `topic_dlq_count`, `topic_backlog_depth`, `topic_message_age_ms`, `topic_publish_latency_ms`, optional **`topic_consumer_lag`**) with labels **`topic_service`/`broker_service`**, **`topic`**, **`partition`**, **`subscriber`**, **`consumer_group`**, producer/consumer **`service`/`endpoint`**, **`origin`**, **`source_kind`**, **`traffic_class`**, **`reason`**. **`topic_drop_rate`** uses subscriber delivery attempts as denominator (`topic_deliver_count + topic_drop_count`), so fan-out drop rates stay bounded by 1. Retention uses simulated time (`retention_ms`) and emits drops with `reason=retention_expired`. **RunMetrics** rollups: **`topic_*_count_total`**, **`topic_backlog_depth_sum`**, **`topic_consumer_lag_sum`**.
 
@@ -106,10 +102,6 @@
   - SSE `metrics_snapshot` payload (`/metrics/stream`),
   - `GET /v1/runs/{id}/export`,
   - callback notifications (`NotificationPayload.resources`).
-- Callback `resources` also carries configuration snapshots when available from `FinalConfig`:
-  - `resources.services`
-  - `resources.hosts` (including host topology metadata such as `zone`/`labels` when present in scenario)
-  - `resources.placements` (including `host_zone`/`host_labels` enrichment when scenario topology is available)
 - `resources.queues[]` fields:
   - `broker_service`, `topic`,
   - `depth`, `in_flight`, `max_concurrency`,
@@ -118,7 +110,6 @@
   - `drop_count`, `redelivery_count`, `dlq_count`.
 - `resources.topics[]` fields:
   - `broker_service`, `topic`, `partition`, `subscriber`, `consumer_group`,
-  - `high_watermark`, `committed_offset`, `consumer_lag` (partition log end offset exclusive, group commit frontier exclusive, and lag in offset units),
   - `depth`, `in_flight`, `max_concurrency`,
   - `consumer_target`,
   - `oldest_message_age_ms`,
@@ -173,29 +164,8 @@
 ## Optimizer / scaling guards
 
 - **Online**: Primary target `p95_latency` (default) **requires** `target_p95_latency_ms > 0` when starting an online optimization run. **Utilization-primary** (`cpu_utilization`, `memory_utilization`) does **not** require a P95 target; when `target_p95_latency_ms > 0`, it acts as an optional guardrail for scale-down decisions.
-- **Online topology guardrails**: Online optimization accepts `min_locality_hit_rate`, `max_cross_zone_request_fraction`, and `max_topology_latency_penalty_mean_ms`. These guardrails block host scale-in, replica scale-down, and service vertical downscale when the proposed action would happen while topology health is outside configured bounds. If a scenario declares locality routing and the measured `locality_hit_rate` is `0`, the controller treats that as a real all-miss violation, not as missing data.
-- **Online topology decision traces**: When a topology guard blocks an action, the controller appends a no-op `OptimizationStep` with identical `previous_config` / `current_config`. The `reason` is a structured `key=value` trace containing `action`, `service_id` when applicable, `decision_reason`, observed topology metrics, and configured guardrail values. Existing optimization history, SSE `optimization_step`, export, and callback paths can surface this without a schema break.
 - **Batch**: Neighbor generation uses `ServiceAllowsBatchScalingAction` so database defaults and explicit `scaling` flags are respected.
-- **Placement**: Initial scenario load and runtime **scale-out** require a host that satisfies topology and capacity constraints. Supported placement knobs are `required_host_labels`, `preferred_host_labels`, `required_zones`, `preferred_zones`, legacy `affinity_zones`/`anti_affinity_zones`, `anti_affinity_services`, `spread_across_zones`, and `max_replicas_per_host`. If no host satisfies constraints, initialization or `ScaleService` fails with a clear placement/capacity reason.
-- **Topology-aware host scale-out**: Online and batch host scale-out prefer template hosts whose zone/labels satisfy pending service placement needs, so new capacity is added in feasible zones first.
-- **Topology-aware host scale-in search**: Batch `HOST_SCALE_IN` now evaluates removal of every removable host (not only the last host). Candidates are ordered to try lower-risk removals first: empty hosts, then auto-created hosts, then lower-impact hosts; feasibility is still validated by `resource.Manager.InitializeFromScenario`.
-
-## Batch topology-aware optimization
-
-- Batch config now includes topology guardrails:
-  - `min_locality_hit_rate`
-  - `max_cross_zone_request_fraction`
-  - `max_topology_latency_penalty_mean_ms`
-- Batch penalty weights now include:
-  - `penalty_weights.locality`
-  - `penalty_weights.cross_zone`
-  - `penalty_weights.topology_latency`
-- Feasibility-first ordering is unchanged:
-  - Topology guardrail breaches are added to `violation_score` (hard constraints).
-  - Topology soft penalties are added to `efficiency_score` (tie-break among similarly feasible candidates).
-- Neighbor generation adds topology-sensitive host heuristics:
-  - Host scale-in scoring penalizes removing scarce required-zone capacity.
-  - Host scale-out zone preference is biased toward zones likely to improve locality under cross-zone pressure.
+- **Placement**: Initial scenario load and runtime **scale-out** require a host with enough **CPU and memory reservation**; otherwise initialization or `ScaleService` fails with a clear error (host scale-out can add capacity before retrying).
 
 ## Workload: uniform arrivals
 
@@ -210,59 +180,9 @@
 
 - Events with the same `Time` and `Priority` are ordered by monotonic **Sequence** assigned at schedule time (tie-breaker for deterministic replay).
 
-## Routing and load balancing
-
-- Services/endpoints can define optional `routing` policy with strategy:
-  `round_robin` (default), `random`, `least_connections`, `least_queue`, `least_cpu`,
-  `weighted_round_robin`, `sticky`.
-- Request placement now uses **`resource.Manager.SelectInstanceForRequest(service, request, simTime)`**.
-  It is request-aware, ignores draining replicas, and uses current DES state (active requests, queue length, CPU utilization at simulation time) for least-* strategies.
-- Optional locality preference: `routing.locality_zone_from` reads a request metadata key (for example `client_zone`) and prefers instances on hosts whose `zone` matches that value. If no instances match, routing falls back to the full active instance set (no hard failure).
-- Workload-driven locality metadata: `workload[].metadata` is copied into generated request metadata for each arrival (`source_kind` / `traffic_class` are still mirrored as dedicated fields). This allows normal scenario YAML to provide keys like `client_zone` consumed by `locality_zone_from`.
-- Endpoint routing policy still overrides service routing policy for all routing fields, including `locality_zone_from`.
-- Sticky routing uses `sticky_key_from` to hash a request metadata field to a stable active instance.
-  If the key is missing, routing falls back to round-robin (explicit fallback).
-- Weighted round robin uses per-instance weights (`weights[instance_id]`) with deterministic cursor progression.
-- Weighted round robin supports fractional weights by mapping each weight onto a fixed deterministic wheel scale (1000 slots per unit weight). `0` means no weighted traffic for that instance; if all effective weights are zero, routing falls back to round-robin explicitly.
-- Random/weighted strategies are deterministic under fixed run seed (`SetRoutingSeed(seed)` from scenario state bootstrap).
-- Scale-out replicas become routable immediately after manager cache rebuild; draining replicas stop receiving new work immediately.
-- Routing observability metrics:
-  - `route_selection_count` with labels `{service, endpoint, instance, strategy}`
-  - `route_rejection_count` with labels `{service, endpoint, strategy}` when no eligible instance exists
-  - `locality_route_hit_count` / `locality_route_miss_count` with labels `{service, endpoint, instance, host, host_zone, requested_zone, origin, traffic_class, source_kind}` when `locality_zone_from` is configured and request metadata carries the requested zone.
-  - `same_zone_request_count` / `cross_zone_request_count` with the same topology labels; for downstream calls these compare caller host zone vs selected callee host zone when known.
-- RunMetrics topology rollups (backward-compatible additions):
-  - `locality_hit_rate`
-  - `same_zone_request_count_total`
-  - `cross_zone_request_count_total`
-  - `cross_zone_request_fraction`
-  - `cross_zone_latency_penalty_ms_*` (inter-zone hops only)
-  - `same_zone_latency_penalty_ms_*` (same-zone, different-host hops when configured)
-  - `external_latency_ms_*` (hops to `kind: external` when `external_latency_ms` / per-service override is set)
-  - `topology_latency_penalty_ms_*` (aggregate sampled penalty for every downstream hop that applied a topology-class overlay)
-
-## Network topology overlays (`scenario.network`)
-
-- **Directed cross-zone map**: `network.cross_zone_latency_ms` is keyed by **caller zone → callee zone**. If `symmetric_cross_zone_latency` is **false** (default), there is **no automatic reverse edge**—list both directions explicitly, or use `default_cross_zone_latency_ms`, or set symmetric to **true** to reuse the reverse entry when the forward key is absent.
-- **Hop classes** (all optional; zero mean/sigma preserves legacy “no extra penalty” behavior):
-  - **`same_host_latency_ms`**: Same caller instance host as callee instance (when `caller_instance_id` resolves).
-  - **`same_zone_latency_ms`**: Same zone, **different** hosts (requires both host IDs).
-  - **`cross_zone_latency_ms` / `default_cross_zone_latency_ms`**: Different zones.
-  - **`external_latency_ms`**: Default overlay for downstream hops whose target service has **`kind: external`**. A per-service **`external_network_latency_ms`** overrides the scenario default for that service.
-- **Precedence** (for non-`external` services): same host → same zone (different hosts) → cross zone. **`external`** hops use only the external overlay (and do not combine with zone classes), independent of host zones.
-- **Metrics**: Cross-zone penalties still populate **`cross_zone_latency_penalty_ms`**. Same-zone-different-host and external overlays use **`same_zone_latency_penalty_ms`** and **`external_latency_penalty_ms`** respectively. **`topology_latency_penalty_ms`** duplicates the per-hop total applied penalty for aggregation (`topology_latency_penalty_ms_total` / `_mean` on **`RunMetrics`**).
-
 ## Scenario identity / optimizer hashing
 
 - **Single source of truth**: `internal/batchspec.ConfigHash` fingerprints the full v2 scenario for batch candidate deduplication, `CandidateStore` lookup (`hash → runID`), and deterministic per-candidate seeds (`seed = int64(ConfigHash(scenario)) ^ …` in batch evaluation). `internal/improvement.configsMatch` delegates to `batchspec.ScenarioSemanticsEqual` (hash equality) so the optimizer and orchestrator never disagree on “same scenario.”
-- **Fields included**: `metadata.schema_version`; `simulation_limits` (`max_trace_depth`, `max_async_hops`); optional `network` (`symmetric_cross_zone_latency`, `same_host_latency_ms`, `same_zone_latency_ms`, `default_cross_zone_latency_ms`, `cross_zone_latency_ms` pairs, `external_latency_ms`); every host (`id`, `cores`, `memory_gb`, `zone`, `labels`); every service (`id`, `kind`, `role`, `replicas`, `model`, `cpu_cores`, `memory_mb`, optional `external_network_latency_ms`, scaling flags, optional `placement` including required/preferred zones, required/preferred labels, affinity/anti-affinity, spread, and max-per-host, full optional `behavior` including `cache`, optional `routing` including `locality_zone_from`/`sticky_key_from`/`weights`); every endpoint (`path`, CPU stats, `default_memory_mb`, `failure_rate`, `timeout_ms`, `io_ms`, `connection_pool`, `net_latency_ms`, optional `routing` including locality/sticky/weights); every downstream call (full edge: `to`, `mode`, `kind`, probabilities, latencies, `timeout_ms`, `failure_rate`, `retryable`, `downstream_fraction_cpu`); every workload row (`from`, `source_kind`, `traffic_class`, `to`, full `arrival` including bursty parameters); full `policies` (`autoscaling` and `retries` including `backoff` and `base_ms`).
+- **Fields included**: `metadata.schema_version`; `simulation_limits` (`max_trace_depth`, `max_async_hops`); every host (`id`, `cores`, `memory_gb`); every service (`id`, `kind`, `role`, `replicas`, `model`, `cpu_cores`, `memory_mb`, scaling flags, full optional `behavior` including `cache`); every endpoint (`path`, CPU stats, `default_memory_mb`, `failure_rate`, `timeout_ms`, `io_ms`, `connection_pool`, `net_latency_ms`); every downstream call (full edge: `to`, `mode`, `kind`, probabilities, latencies, `timeout_ms`, `failure_rate`, `retryable`, `downstream_fraction_cpu`); every workload row (`from`, `source_kind`, `traffic_class`, `to`, full `arrival` including bursty parameters); full `policies` (`autoscaling` and `retries` including `backoff` and `base_ms`).
 - **Ordering**: Hosts, services, endpoints, downstream edges, and workload rows are hashed in **canonical** sorted order (hosts by `id`, services by `id`, endpoints by `path` with stable tie-break on slice index for duplicate paths, downstream by full tuple + index, workload by full semantic tuple + index). **Service slice order in YAML is not part of identity**—only the multiset of services by `id` matters. If two workload rows are fully identical, relative order is preserved via stable sort so multiplicity stays consistent.
 - **Why it matters**: If two behaviorally different scenarios collapsed to the same hash, batch optimization could dedupe them incorrectly, reuse metrics, or reuse seeds, producing wrong recommendations even when the DES is accurate.
-
-## Calibration and validation (`internal/calibration`)
-
-- **ObservedMetrics**: Vendor-neutral structs with **`ObservedValue[T]{Present, Value}`** on scalar observation fields so **explicit zero** is not confused with **missing**. Helpers **`F64` / `I64`** mark populated values. **`WorkloadTargetObservation`** optionally maps throughput to **`workload.to` / `traffic_class` / `source_kind`**. Used as **targets** for calibration and as **expected** values for validation.
-- **FromRunMetrics**: Converts a completed simulator **`RunMetrics` plus window duration** into `ObservedMetrics` (golden runs and tests), marking fields **`Present`** for every quantity copied from the run. Fills **ingress throughput** from recorded ingress RPS or `ingress_requests` / window, or **`total_requests` / window** when ingress split is absent.
-- **CalibrateScenario**: Clones the scenario via **`cloneScenarioViaYAML`** (marshal scenario to YAML and parse back) so **`internal/calibration` does not import `internal/improvement`**. That avoids **`calibration` → `improvement` → `simd` → `calibration`** package cycles while still producing an independent copy for edits. Ratio-based updates apply when **`CalibrateOptions.PredictedRun`** is set (or when HTTP/CLI **auto-predict** runs **`RunBaselinePredictedRun`**). **`shouldApply(overwrite, fieldEmpty, confidence, ConfidenceFloor)`** gates each heuristic. Global workload scaling: **mixed `traffic_class`** with external observations uses **sum of ingress-like rates** as the denominator (see **`CalibrationReport.AmbiguousMappings` / `Warnings`**); **`simulator_run_metrics`** with mixed classes scales **all** workloads to preserve **`FromRunMetrics`** golden behavior. Per-row **`WorkloadTargets`** override. Skipped low-confidence updates are listed in **`CalibrationReport.SkippedLowConfidence`**.
-- **ValidateScenario**: Runs **`simd.RunScenarioForMetrics`** per seed, then **aggregates** conservatively (mean for throughput, root P50/mean; max across seeds for tails, error/drop rates, broker stress, DLQ counts, oldest message ages, retries, timeouts). **Only `Present` observation fields** are checked. Queue/topic **observed drop rates** use the same denominators as **`RunMetrics`** (queue: publish attempts, with enqueue+drop fallback + warning; topic: deliver+drop, never publish). **`RunMetrics.EndpointRequestStats`** (from collector labels) enables **per-endpoint** error-rate checks; **`ValidationReport.Warnings`** note approximate denominators, skipped broker checks, or **`*`** / missing-rollups using service-level predictions.
-- **Outcome**: **`ValidationReport.Pass`**, **`MetricCheckResult`** rows, **`largest_errors`**, and **`Warnings`**. **`CalibrationReport`** records **`Changes`**, **`Warnings`**, **`Skipped`**, **`SkippedLowConfidence`**, and **`AmbiguousMappings`**.

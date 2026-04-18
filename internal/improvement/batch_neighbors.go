@@ -7,7 +7,6 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
-	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
@@ -51,227 +50,6 @@ func StaticCapacityOK(s *config.Scenario) bool {
 		capMemMB = needMemMB
 	}
 	return needCPU <= capCPU*1.001 && needMemMB <= capMemMB*1.001
-}
-
-func topologyPlacementFeasible(s *config.Scenario) bool {
-	if s == nil {
-		return false
-	}
-	rm := resource.NewManager()
-	return rm.InitializeFromScenario(s) == nil
-}
-
-func preferredZoneForHostScaleOut(s *config.Scenario, lastMetrics *simulationv1.RunMetrics) string {
-	if s == nil {
-		return ""
-	}
-	score := map[string]float64{}
-	for _, svc := range s.Services {
-		if svc.Replicas <= 0 || svc.Placement == nil {
-			continue
-		}
-		w := float64(svc.Replicas)
-		if lastMetrics != nil && (lastMetrics.GetCrossZoneRequestFraction() > 0 || lastMetrics.GetLocalityHitRate() < 0.9) {
-			w *= 1.5
-		}
-		if len(svc.Placement.RequiredZones) > 0 {
-			for _, z := range svc.Placement.RequiredZones {
-				score[strings.TrimSpace(z)] += 4 * w
-			}
-		} else if len(svc.Placement.AffinityZones) > 0 {
-			for _, z := range svc.Placement.AffinityZones {
-				score[strings.TrimSpace(z)] += 3 * w
-			}
-		}
-		for _, z := range svc.Placement.PreferredZones {
-			score[strings.TrimSpace(z)] += 2 * w
-		}
-	}
-	bestZone := ""
-	bestScore := 0.0
-	for z, sc := range score {
-		if strings.TrimSpace(z) == "" {
-			continue
-		}
-		if sc > bestScore {
-			bestScore = sc
-			bestZone = z
-		}
-	}
-	return bestZone
-}
-
-func requiredZonePressure(cur *config.Scenario, zone string) int {
-	if cur == nil || strings.TrimSpace(zone) == "" {
-		return 0
-	}
-	requiredReplicas := 0
-	zoneHosts := 0
-	for _, h := range cur.Hosts {
-		if strings.EqualFold(strings.TrimSpace(h.Zone), strings.TrimSpace(zone)) {
-			zoneHosts++
-		}
-	}
-	for _, svc := range cur.Services {
-		if svc.Replicas <= 0 || svc.Placement == nil {
-			continue
-		}
-		if containsStringFold(svc.Placement.RequiredZones, zone) {
-			requiredReplicas += svc.Replicas
-		}
-	}
-	if zoneHosts <= 0 {
-		return requiredReplicas * 100
-	}
-	return requiredReplicas * 100 / zoneHosts
-}
-
-func hostMatchesRequiredLabels(host config.Host, required map[string]string) bool {
-	if len(required) == 0 {
-		return true
-	}
-	for k, v := range required {
-		if host.Labels == nil || host.Labels[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func candidateHostCountForService(cur *config.Scenario, svc config.Service) int {
-	if cur == nil {
-		return 0
-	}
-	n := 0
-	for _, h := range cur.Hosts {
-		if svc.Placement == nil {
-			n++
-			continue
-		}
-		p := svc.Placement
-		if len(p.RequiredZones) > 0 && !containsStringFold(p.RequiredZones, h.Zone) {
-			continue
-		}
-		if len(p.AffinityZones) > 0 && !containsStringFold(p.AffinityZones, h.Zone) {
-			continue
-		}
-		if !hostMatchesRequiredLabels(h, p.RequiredHostLabels) {
-			continue
-		}
-		n++
-	}
-	return n
-}
-
-func servicePlacementCriticalityForHost(cur *config.Scenario, host config.Host) int {
-	if cur == nil {
-		return 0
-	}
-	criticality := 0
-	for _, svc := range cur.Services {
-		if svc.Replicas <= 0 || svc.Placement == nil {
-			continue
-		}
-		p := svc.Placement
-		match := true
-		if len(p.RequiredZones) > 0 && !containsStringFold(p.RequiredZones, host.Zone) {
-			match = false
-		}
-		if len(p.AffinityZones) > 0 && !containsStringFold(p.AffinityZones, host.Zone) {
-			match = false
-		}
-		if !hostMatchesRequiredLabels(host, p.RequiredHostLabels) {
-			match = false
-		}
-		if !match {
-			continue
-		}
-		candidates := candidateHostCountForService(cur, svc)
-		if candidates <= 0 {
-			criticality += 1000
-			continue
-		}
-		// Fewer eligible hosts and higher replica demand means host is more critical.
-		base := (svc.Replicas * 100) / candidates
-		if len(p.RequiredZones) > 0 {
-			base += 60
-		}
-		if len(p.RequiredHostLabels) > 0 {
-			base += 80
-		}
-		if p.SpreadAcrossZones {
-			base += 40
-		}
-		if p.MaxReplicasPerHost > 0 && p.MaxReplicasPerHost <= 1 {
-			base += 40
-		}
-		if len(p.AntiAffinityServices) > 0 {
-			base += 30
-		}
-		criticality += base
-	}
-	return criticality
-}
-
-func scoreHostForScaleIn(cur *config.Scenario, hostIdx int, lastMetrics *simulationv1.RunMetrics) int {
-	if cur == nil || hostIdx < 0 || hostIdx >= len(cur.Hosts) {
-		return -1
-	}
-	h := cur.Hosts[hostIdx]
-	usage := 0
-	for _, svc := range cur.Services {
-		if svc.Replicas <= 0 {
-			continue
-		}
-		needsHost := true
-		if svc.Placement != nil {
-			p := svc.Placement
-			if len(p.RequiredZones) > 0 && !containsStringFold(p.RequiredZones, h.Zone) {
-				needsHost = false
-			}
-			if len(p.AffinityZones) > 0 && !containsStringFold(p.AffinityZones, h.Zone) {
-				needsHost = false
-			}
-			if len(p.RequiredHostLabels) > 0 {
-				for k, v := range p.RequiredHostLabels {
-					if h.Labels[k] != v {
-						needsHost = false
-						break
-					}
-				}
-			}
-		}
-		if needsHost {
-			usage += svc.Replicas
-		}
-	}
-	score := 100000 - usage
-	score -= requiredZonePressure(cur, h.Zone)
-	score -= servicePlacementCriticalityForHost(cur, h)
-	if lastMetrics != nil && lastMetrics.GetCrossZoneRequestFraction() > 0 {
-		// Prefer removing hosts from less constrained zones first when cross-zone pressure exists.
-		score -= int(100 * lastMetrics.GetCrossZoneRequestFraction())
-	}
-	if strings.HasPrefix(h.ID, "host-auto-") {
-		score += 10000
-	}
-	if usage == 0 {
-		score += 20000
-	}
-	return score
-}
-
-func containsStringFold(vals []string, target string) bool {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return false
-	}
-	for _, v := range vals {
-		if strings.EqualFold(strings.TrimSpace(v), target) {
-			return true
-		}
-	}
-	return false
 }
 
 // neighborStress is true when the current state looks overloaded vs SLOs or utilization bands.
@@ -411,110 +189,6 @@ func brokerConsumerTargetServiceIndices(cur *config.Scenario, lastMetrics *simul
 	return indices
 }
 
-func hostCountsByZone(cur *config.Scenario) map[string]int {
-	out := map[string]int{}
-	if cur == nil {
-		return out
-	}
-	for _, h := range cur.Hosts {
-		z := strings.TrimSpace(h.Zone)
-		if z == "" {
-			continue
-		}
-		out[strings.ToLower(z)]++
-	}
-	return out
-}
-
-func serviceHasLocalityRouting(svc config.Service) bool {
-	if svc.Routing != nil && strings.TrimSpace(svc.Routing.LocalityZoneFrom) != "" {
-		return true
-	}
-	for _, ep := range svc.Endpoints {
-		if ep.Routing != nil && strings.TrimSpace(ep.Routing.LocalityZoneFrom) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func zonesWithHosts(zoneList []string, hostsByZone map[string]int) int {
-	n := 0
-	for _, z := range zoneList {
-		if hostsByZone[strings.ToLower(strings.TrimSpace(z))] > 0 {
-			n++
-		}
-	}
-	return n
-}
-
-func serviceScaleOutPriorityIndices(cur *config.Scenario, lastMetrics *simulationv1.RunMetrics, stressed bool) []int {
-	if cur == nil {
-		return nil
-	}
-	indices := make([]int, 0, len(cur.Services))
-	for i := range cur.Services {
-		indices = append(indices, i)
-	}
-	pressureScores := servicePressureScore(lastMetrics)
-	brokerTargets := map[int]bool{}
-	for _, idx := range brokerConsumerTargetServiceIndices(cur, lastMetrics) {
-		brokerTargets[idx] = true
-	}
-	topologyPressure := lastMetrics != nil &&
-		(lastMetrics.GetCrossZoneRequestFraction() > 0 || lastMetrics.GetLocalityHitRate() < 0.9)
-	hostsByZone := hostCountsByZone(cur)
-	sort.SliceStable(indices, func(i, j int) bool {
-		li := indices[i]
-		lj := indices[j]
-		si := cur.Services[li]
-		sj := cur.Services[lj]
-		pi := pressureScores[si.ID]
-		pj := pressureScores[sj.ID]
-		priI := 0.0
-		priJ := 0.0
-		if stressed && brokerTargets[li] {
-			priI += 200
-		}
-		if stressed && brokerTargets[lj] {
-			priJ += 200
-		}
-		if topologyPressure {
-			if si.Placement != nil {
-				requiredWithHosts := zonesWithHosts(si.Placement.RequiredZones, hostsByZone)
-				if requiredWithHosts > si.Replicas {
-					priI += float64((requiredWithHosts - si.Replicas) * 150)
-				}
-				if serviceHasLocalityRouting(si) {
-					preferredWithHosts := zonesWithHosts(si.Placement.PreferredZones, hostsByZone)
-					if preferredWithHosts > si.Replicas {
-						priI += float64((preferredWithHosts - si.Replicas) * 90)
-					}
-				}
-			}
-			if sj.Placement != nil {
-				requiredWithHosts := zonesWithHosts(sj.Placement.RequiredZones, hostsByZone)
-				if requiredWithHosts > sj.Replicas {
-					priJ += float64((requiredWithHosts - sj.Replicas) * 150)
-				}
-				if serviceHasLocalityRouting(sj) {
-					preferredWithHosts := zonesWithHosts(sj.Placement.PreferredZones, hostsByZone)
-					if preferredWithHosts > sj.Replicas {
-						priJ += float64((preferredWithHosts - sj.Replicas) * 90)
-					}
-				}
-			}
-		}
-		scoreI := priI + pi
-		scoreJ := priJ + pj
-		if scoreI == scoreJ {
-			return si.ID < sj.ID
-		}
-		return scoreI > scoreJ
-	})
-	return indices
-}
-
 func orderNeighborsForExpansion(spec *batchspec.BatchSpec, cur *config.Scenario, lastMetrics *simulationv1.RunMetrics, neighbors []*config.Scenario) []*config.Scenario {
 	if len(neighbors) < 2 {
 		return neighbors
@@ -539,7 +213,7 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 	}
 	var out []*config.Scenario
 	add := func(ns *config.Scenario) {
-		if ns == nil || !StaticCapacityOK(ns) || !topologyPlacementFeasible(ns) {
+		if ns == nil || !StaticCapacityOK(ns) {
 			return
 		}
 		if !withinBatchBounds(spec, baseline, ns) {
@@ -558,7 +232,15 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 	for _, act := range actions {
 		switch act {
 		case simulationv1.BatchScalingAction_SERVICE_SCALE_OUT:
-			scaleIndices := serviceScaleOutPriorityIndices(cur, lastMetrics, neighborStress(spec, lastMetrics))
+			scaleIndices := make([]int, 0, len(cur.Services))
+			if neighborStress(spec, lastMetrics) {
+				scaleIndices = brokerConsumerTargetServiceIndices(cur, lastMetrics)
+			}
+			if len(scaleIndices) == 0 {
+				for i := range cur.Services {
+					scaleIndices = append(scaleIndices, i)
+				}
+			}
 			for _, i := range scaleIndices {
 				if !config.ServiceAllowsBatchScalingAction(&cur.Services[i], act) {
 					continue
@@ -678,55 +360,21 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			if int32(len(ns.Hosts)) >= spec.MaxHosts {
 				break
 			}
-			bestZone := preferredZoneForHostScaleOut(cur, lastMetrics)
 			h0 := ns.Hosts[0]
-			if bestZone != "" {
-				for i := range ns.Hosts {
-					if strings.EqualFold(strings.TrimSpace(ns.Hosts[i].Zone), strings.TrimSpace(bestZone)) {
-						h0 = ns.Hosts[i]
-						break
-					}
-				}
-			}
 			nh := len(ns.Hosts) + 1
-			var hostLabels map[string]string
-			if len(h0.Labels) > 0 {
-				hostLabels = make(map[string]string, len(h0.Labels))
-				for k, v := range h0.Labels {
-					hostLabels[k] = v
-				}
-			}
 			ns.Hosts = append(ns.Hosts, config.Host{
 				ID:       fmt.Sprintf("host-%d", nh),
 				Cores:    h0.Cores,
 				MemoryGB: h0.MemoryGB,
-				Zone:     h0.Zone,
-				Labels:   hostLabels,
 			})
 			add(ns)
 		case simulationv1.BatchScalingAction_HOST_SCALE_IN:
 			if len(cur.Hosts) <= int(spec.MinHosts) {
 				break
 			}
-			type cand struct {
-				idx   int
-				score int
-			}
-			cands := make([]cand, 0, len(cur.Hosts))
-			for i := range cur.Hosts {
-				cands = append(cands, cand{idx: i, score: scoreHostForScaleIn(cur, i, lastMetrics)})
-			}
-			sort.SliceStable(cands, func(i, j int) bool {
-				if cands[i].score != cands[j].score {
-					return cands[i].score > cands[j].score
-				}
-				return cur.Hosts[cands[i].idx].ID < cur.Hosts[cands[j].idx].ID
-			})
-			for _, c := range cands {
-				ns := cloneScenario(cur)
-				ns.Hosts = append(ns.Hosts[:c.idx], ns.Hosts[c.idx+1:]...)
-				add(ns)
-			}
+			ns := cloneScenario(cur)
+			ns.Hosts = ns.Hosts[:len(ns.Hosts)-1]
+			add(ns)
 		case simulationv1.BatchScalingAction_HOST_SCALE_UP_CPU:
 			for i := range cur.Hosts {
 				ns := cloneScenario(cur)

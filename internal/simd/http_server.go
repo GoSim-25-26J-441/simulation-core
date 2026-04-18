@@ -32,15 +32,43 @@ func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/v1/runs", s.handleRuns)
 	s.mux.HandleFunc("/v1/runs/", s.handleRunByID)
+	s.mux.HandleFunc("/v1/scenarios:validate", s.handleValidateScenario)
 
 	return s
+}
+
+// handleValidateScenario handles POST /v1/scenarios:validate.
+func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		ScenarioYAML string `json:"scenario_yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.ScenarioYAML) == "" {
+		s.writeError(w, http.StatusBadRequest, "scenario_yaml is required")
+		return
+	}
+
+	result := ValidateScenarioPreflight(req.ScenarioYAML)
+	if !result.Valid {
+		s.writeJSON(w, http.StatusBadRequest, result)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, result)
 }
 
 func (s *HTTPServer) Handler() http.Handler {
 	return s.mux
 }
 
-// ServeMux exposes the underlying mux so cmd/simd can register extra routes (e.g. calibration) without import cycles.
+// ServeMux exposes the underlying mux for compatibility.
 func (s *HTTPServer) ServeMux() *http.ServeMux {
 	return s.mux
 }
@@ -974,7 +1002,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 		resources := map[string]any{
 			"services":   serviceResources,
 			"hosts":      hostResources,
-			"placements": instancePlacementsToJSON(cfg.Placements, scen),
+			"placements": instancePlacementsToJSON(cfg.Placements),
 		}
 		if queues, topics, ok := s.brokerShardResourcesJSON(runID); ok {
 			resources["queues"] = queues
@@ -1033,9 +1061,6 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 			"partition":             t.Partition,
 			"subscriber":            t.Subscriber,
 			"consumer_group":        t.ConsumerGroup,
-			"high_watermark":        t.HighWatermarkExclusive,
-			"committed_offset":      t.CommittedOffsetExclusive,
-			"consumer_lag":          t.ConsumerLag,
 			"depth":                 t.Depth,
 			"in_flight":             t.InFlight,
 			"max_concurrency":       t.MaxConcurrency,
@@ -1523,29 +1548,6 @@ func enrichServiceConfigEntryJSON(m map[string]any, scenario *config.Scenario, s
 	}
 }
 
-func hostTopologyFromScenario(scenario *config.Scenario) map[string]map[string]any {
-	if scenario == nil {
-		return nil
-	}
-	out := make(map[string]map[string]any, len(scenario.Hosts))
-	for i := range scenario.Hosts {
-		h := scenario.Hosts[i]
-		row := map[string]any{}
-		if h.Zone != "" {
-			row["zone"] = h.Zone
-		}
-		if len(h.Labels) > 0 {
-			labels := make(map[string]any, len(h.Labels))
-			for k, v := range h.Labels {
-				labels[k] = v
-			}
-			row["labels"] = labels
-		}
-		out[h.ID] = row
-	}
-	return out
-}
-
 func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario *config.Scenario) map[string]any {
 	if cfg == nil {
 		return nil
@@ -1569,21 +1571,14 @@ func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario 
 		})
 	}
 	hosts := make([]map[string]any, 0, len(cfg.Hosts))
-	hostTopology := hostTopologyFromScenario(scenario)
 	for _, h := range cfg.Hosts {
-		row := map[string]any{
+		hosts = append(hosts, map[string]any{
 			"host_id":   h.HostId,
 			"cpu_cores": h.CpuCores,
 			"memory_gb": h.MemoryGb,
-		}
-		if topo, ok := hostTopology[h.HostId]; ok {
-			for k, v := range topo {
-				row[k] = v
-			}
-		}
-		hosts = append(hosts, row)
+		})
 	}
-	placements := instancePlacementsToJSON(cfg.Placements, scenario)
+	placements := instancePlacementsToJSON(cfg.Placements)
 	return map[string]any{
 		"services":   services,
 		"workload":   workload,
@@ -1592,17 +1587,16 @@ func convertRunConfigurationToJSON(cfg *simulationv1.RunConfiguration, scenario 
 	}
 }
 
-func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry, scenario *config.Scenario) []map[string]any {
+func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry) []map[string]any {
 	if len(entries) == 0 {
 		return nil
 	}
-	hostTopology := hostTopologyFromScenario(scenario)
 	out := make([]map[string]any, 0, len(entries))
 	for _, p := range entries {
 		if p == nil {
 			continue
 		}
-		row := map[string]any{
+		out = append(out, map[string]any{
 			"instance_id":        p.InstanceId,
 			"service_id":         p.ServiceId,
 			"host_id":            p.HostId,
@@ -1613,16 +1607,7 @@ func instancePlacementsToJSON(entries []*simulationv1.InstancePlacementEntry, sc
 			"memory_utilization": p.MemoryUtilization,
 			"active_requests":    p.ActiveRequests,
 			"queue_length":       p.QueueLength,
-		}
-		if topo, ok := hostTopology[p.HostId]; ok {
-			if zone, zok := topo["zone"]; zok {
-				row["host_zone"] = zone
-			}
-			if labels, lok := topo["labels"]; lok {
-				row["host_labels"] = labels
-			}
-		}
-		out = append(out, row)
+		})
 	}
 	return out
 }
@@ -1637,14 +1622,14 @@ func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[stri
 		"score_p95_ms":    step.ScoreP95Ms,
 		"reason":          step.Reason,
 	}
-	if details := parseOptimizationReasonDetails(step.Reason); len(details) > 0 {
-		result["reason_details"] = details
-	}
 	if step.PreviousConfig != nil {
 		result["previous_config"] = convertRunConfigurationToJSON(step.PreviousConfig, nil)
 	}
 	if step.CurrentConfig != nil {
 		result["current_config"] = convertRunConfigurationToJSON(step.CurrentConfig, nil)
+	}
+	if details := parseOptimizationReasonDetails(step.Reason); len(details) > 0 {
+		result["reason_details"] = details
 	}
 	return result
 }
@@ -1658,36 +1643,18 @@ func parseOptimizationReasonDetails(reason string) map[string]any {
 	if len(parts) == 0 {
 		return nil
 	}
-	// Backward-compatible enrichment: only parse structured topology guard traces.
-	if parts[0] != "topology_guard_blocked" {
-		return nil
-	}
-	out := map[string]any{
-		"type": parts[0],
-	}
-	for _, token := range parts[1:] {
-		k, v, ok := strings.Cut(token, "=")
-		if !ok {
+	out := map[string]any{"type": parts[0]}
+	for _, p := range parts[1:] {
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
 			continue
 		}
-		k = strings.TrimSpace(k)
-		v = strings.TrimSpace(v)
-		if k == "" || v == "" {
+		k, v := kv[0], kv[1]
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			out[k] = f
 			continue
 		}
-		switch k {
-		case "action", "service_id", "decision_reason":
-			out[k] = v
-		case "locality_hit_rate", "cross_zone_request_fraction", "topology_latency_penalty_ms_mean",
-			"min_locality_hit_rate", "max_cross_zone_request_fraction", "max_topology_latency_penalty_mean_ms",
-			"previous_locality_hit_rate":
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				out[k] = f
-			}
-		}
-	}
-	if len(out) == 1 {
-		return nil
+		out[k] = v
 	}
 	return out
 }
@@ -1780,55 +1747,49 @@ func hostMetricsFromCollector(collector *metrics.Collector, inventoryHostIDs []s
 
 func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 	result := map[string]any{
-		"total_requests":               metrics.TotalRequests,
-		"successful_requests":          metrics.SuccessfulRequests,
-		"failed_requests":              metrics.FailedRequests,
-		"latency_p50_ms":               metrics.LatencyP50Ms,
-		"latency_p95_ms":               metrics.LatencyP95Ms,
-		"latency_p99_ms":               metrics.LatencyP99Ms,
-		"latency_mean_ms":              metrics.LatencyMeanMs,
-		"throughput_rps":               metrics.ThroughputRps,
-		"ingress_requests":             metrics.IngressRequests,
-		"internal_requests":            metrics.InternalRequests,
-		"ingress_throughput_rps":       metrics.IngressThroughputRps,
-		"ingress_failed_requests":      metrics.IngressFailedRequests,
-		"ingress_error_rate":           metrics.IngressErrorRate,
-		"attempt_failed_requests":      metrics.AttemptFailedRequests,
-		"attempt_error_rate":           metrics.AttemptErrorRate,
-		"retry_attempts":               metrics.RetryAttempts,
-		"timeout_errors":               metrics.TimeoutErrors,
-		"queue_enqueue_count_total":    metrics.QueueEnqueueCountTotal,
-		"queue_dequeue_count_total":    metrics.QueueDequeueCountTotal,
-		"queue_drop_count_total":       metrics.QueueDropCountTotal,
-		"queue_redelivery_count_total": metrics.QueueRedeliveryCountTotal,
-		"queue_dlq_count_total":        metrics.QueueDlqCountTotal,
-		"queue_depth_sum":              metrics.QueueDepthSum,
-		"topic_publish_count_total":    metrics.TopicPublishCountTotal,
-		"topic_deliver_count_total":    metrics.TopicDeliverCountTotal,
-		"topic_drop_count_total":       metrics.TopicDropCountTotal,
-		"topic_redelivery_count_total": metrics.TopicRedeliveryCountTotal,
-		"topic_dlq_count_total":        metrics.TopicDlqCountTotal,
-		"topic_backlog_depth_sum":      metrics.TopicBacklogDepthSum,
-		"topic_consumer_lag_sum":       metrics.TopicConsumerLagSum,
-		"queue_oldest_message_age_ms":  metrics.QueueOldestMessageAgeMs,
-		"topic_oldest_message_age_ms":  metrics.TopicOldestMessageAgeMs,
-		"max_queue_depth":              metrics.MaxQueueDepth,
-		"max_topic_backlog_depth":      metrics.MaxTopicBacklogDepth,
-		"max_topic_consumer_lag":       metrics.MaxTopicConsumerLag,
-		"queue_drop_rate":              metrics.QueueDropRate,
-		"topic_drop_rate":              metrics.TopicDropRate,
-		"locality_hit_rate":            metrics.LocalityHitRate,
-		"cross_zone_request_count_total": metrics.CrossZoneRequestCountTotal,
-		"same_zone_request_count_total":  metrics.SameZoneRequestCountTotal,
-		"cross_zone_request_fraction":    metrics.CrossZoneRequestFraction,
+		"total_requests":                      metrics.TotalRequests,
+		"successful_requests":                 metrics.SuccessfulRequests,
+		"failed_requests":                     metrics.FailedRequests,
+		"latency_p50_ms":                      metrics.LatencyP50Ms,
+		"latency_p95_ms":                      metrics.LatencyP95Ms,
+		"latency_p99_ms":                      metrics.LatencyP99Ms,
+		"latency_mean_ms":                     metrics.LatencyMeanMs,
+		"throughput_rps":                      metrics.ThroughputRps,
+		"ingress_requests":                    metrics.IngressRequests,
+		"internal_requests":                   metrics.InternalRequests,
+		"ingress_throughput_rps":              metrics.IngressThroughputRps,
+		"ingress_failed_requests":             metrics.IngressFailedRequests,
+		"ingress_error_rate":                  metrics.IngressErrorRate,
+		"attempt_failed_requests":             metrics.AttemptFailedRequests,
+		"attempt_error_rate":                  metrics.AttemptErrorRate,
+		"retry_attempts":                      metrics.RetryAttempts,
+		"timeout_errors":                      metrics.TimeoutErrors,
+		"queue_enqueue_count_total":           metrics.QueueEnqueueCountTotal,
+		"queue_dequeue_count_total":           metrics.QueueDequeueCountTotal,
+		"queue_drop_count_total":              metrics.QueueDropCountTotal,
+		"queue_redelivery_count_total":        metrics.QueueRedeliveryCountTotal,
+		"queue_dlq_count_total":               metrics.QueueDlqCountTotal,
+		"queue_depth_sum":                     metrics.QueueDepthSum,
+		"topic_publish_count_total":           metrics.TopicPublishCountTotal,
+		"topic_deliver_count_total":           metrics.TopicDeliverCountTotal,
+		"topic_drop_count_total":              metrics.TopicDropCountTotal,
+		"topic_redelivery_count_total":        metrics.TopicRedeliveryCountTotal,
+		"topic_dlq_count_total":               metrics.TopicDlqCountTotal,
+		"topic_backlog_depth_sum":             metrics.TopicBacklogDepthSum,
+		"topic_consumer_lag_sum":              metrics.TopicConsumerLagSum,
+		"queue_oldest_message_age_ms":         metrics.QueueOldestMessageAgeMs,
+		"topic_oldest_message_age_ms":         metrics.TopicOldestMessageAgeMs,
+		"max_queue_depth":                     metrics.MaxQueueDepth,
+		"max_topic_backlog_depth":             metrics.MaxTopicBacklogDepth,
+		"max_topic_consumer_lag":              metrics.MaxTopicConsumerLag,
+		"queue_drop_rate":                     metrics.QueueDropRate,
+		"topic_drop_rate":                     metrics.TopicDropRate,
+		"locality_hit_rate":                   metrics.LocalityHitRate,
+		"cross_zone_request_count_total":      metrics.CrossZoneRequestCountTotal,
+		"same_zone_request_count_total":       metrics.SameZoneRequestCountTotal,
+		"cross_zone_request_fraction":         metrics.CrossZoneRequestFraction,
 		"cross_zone_latency_penalty_ms_total": metrics.CrossZoneLatencyPenaltyMsTotal,
 		"cross_zone_latency_penalty_ms_mean":  metrics.CrossZoneLatencyPenaltyMsMean,
-		"same_zone_latency_penalty_ms_total":  metrics.SameZoneLatencyPenaltyMsTotal,
-		"same_zone_latency_penalty_ms_mean":   metrics.SameZoneLatencyPenaltyMsMean,
-		"external_latency_ms_total":          metrics.ExternalLatencyMsTotal,
-		"external_latency_ms_mean":           metrics.ExternalLatencyMsMean,
-		"topology_latency_penalty_ms_total":  metrics.TopologyLatencyPenaltyMsTotal,
-		"topology_latency_penalty_ms_mean":   metrics.TopologyLatencyPenaltyMsMean,
 	}
 
 	if len(metrics.ServiceMetrics) > 0 {
@@ -1877,59 +1838,22 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		}
 	}
 
-	if len(metrics.EndpointRequestStats) > 0 {
-		eps := make([]map[string]any, 0, len(metrics.EndpointRequestStats))
-		for _, e := range metrics.EndpointRequestStats {
-			if e == nil {
-				continue
-			}
-			row := map[string]any{
-				"service_name":  e.ServiceName,
-				"endpoint_path": e.EndpointPath,
-				"request_count": e.RequestCount,
-				"error_count":   e.ErrorCount,
-			}
-			putOpt := func(key string, p *float64) {
-				if p != nil {
-					row[key] = *p
-				}
-			}
-			putOpt("latency_p50_ms", e.LatencyP50Ms)
-			putOpt("latency_p95_ms", e.LatencyP95Ms)
-			putOpt("latency_p99_ms", e.LatencyP99Ms)
-			putOpt("latency_mean_ms", e.LatencyMeanMs)
-			putOpt("root_latency_p50_ms", e.RootLatencyP50Ms)
-			putOpt("root_latency_p95_ms", e.RootLatencyP95Ms)
-			putOpt("root_latency_p99_ms", e.RootLatencyP99Ms)
-			putOpt("root_latency_mean_ms", e.RootLatencyMeanMs)
-			putOpt("queue_wait_p50_ms", e.QueueWaitP50Ms)
-			putOpt("queue_wait_p95_ms", e.QueueWaitP95Ms)
-			putOpt("queue_wait_p99_ms", e.QueueWaitP99Ms)
-			putOpt("queue_wait_mean_ms", e.QueueWaitMeanMs)
-			putOpt("processing_latency_p50_ms", e.ProcessingLatencyP50Ms)
-			putOpt("processing_latency_p95_ms", e.ProcessingLatencyP95Ms)
-			putOpt("processing_latency_p99_ms", e.ProcessingLatencyP99Ms)
-			putOpt("processing_latency_mean_ms", e.ProcessingLatencyMeanMs)
-			eps = append(eps, row)
-		}
-		result["endpoint_request_stats"] = eps
-	}
 	if len(metrics.InstanceRouteStats) > 0 {
-		rs := make([]map[string]any, 0, len(metrics.InstanceRouteStats))
-		for _, r := range metrics.InstanceRouteStats {
-			if r == nil {
+		routeStats := make([]map[string]any, 0, len(metrics.InstanceRouteStats))
+		for _, rs := range metrics.InstanceRouteStats {
+			if rs == nil {
 				continue
 			}
-			rs = append(rs, map[string]any{
-				"service_name":    r.ServiceName,
-				"endpoint_path":   r.EndpointPath,
-				"instance_id":     r.InstanceId,
-				"strategy":        r.Strategy,
-				"selection_count": r.SelectionCount,
+			routeStats = append(routeStats, map[string]any{
+				"service_name":    rs.ServiceName,
+				"endpoint_path":   rs.EndpointPath,
+				"instance_id":     rs.InstanceId,
+				"strategy":        rs.Strategy,
+				"selection_count": rs.SelectionCount,
 			})
 		}
-		if len(rs) > 0 {
-			result["instance_route_stats"] = rs
+		if len(routeStats) > 0 {
+			result["instance_route_stats"] = routeStats
 		}
 	}
 

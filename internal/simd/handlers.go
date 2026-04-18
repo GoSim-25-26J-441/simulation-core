@@ -68,9 +68,6 @@ func newScenarioState(scenario *config.Scenario, rm *resource.Manager, collector
 		pendingSync:          make(map[string]int),
 		topicPartitionCursor: make(map[string]int),
 	}
-	if rm != nil {
-		rm.SetRoutingSeed(rngSeed + 11)
-	}
 
 	// Build service and endpoint maps (kept for backward compatibility and quick lookups)
 	for i := range scenario.Services {
@@ -106,97 +103,6 @@ func parseWorkloadTarget(target string) (serviceID, path string, err error) {
 	return serviceID, path, nil
 }
 
-func selectInstanceForRequest(state *scenarioState, request *models.Request, simTime time.Time) (*resource.ServiceInstance, string, error) {
-	serviceID := request.ServiceName
-	instance, strategy, err := state.rm.SelectInstanceForRequest(serviceID, request, simTime)
-	if err != nil {
-		metrics.RecordRouteRejectionCount(state.collector, 1.0, simTime, metrics.CreateRouteSelectionLabels(serviceID, request.Endpoint, "", strategy))
-		return nil, strategy, err
-	}
-	metrics.RecordRouteSelectionCount(state.collector, 1.0, simTime, metrics.CreateRouteSelectionLabels(serviceID, request.Endpoint, instance.ID(), strategy))
-	recordTopologyRoutingMetrics(state, request, instance, simTime)
-	return instance, strategy, nil
-}
-
-func effectiveLocalityZoneFrom(state *scenarioState, serviceID, endpointPath string) string {
-	if state == nil {
-		return ""
-	}
-	if ep, ok := state.endpoints[serviceID+":"+endpointPath]; ok && ep != nil && ep.Routing != nil && strings.TrimSpace(ep.Routing.LocalityZoneFrom) != "" {
-		return strings.TrimSpace(ep.Routing.LocalityZoneFrom)
-	}
-	if svc, ok := state.services[serviceID]; ok && svc != nil && svc.Routing != nil {
-		return strings.TrimSpace(svc.Routing.LocalityZoneFrom)
-	}
-	return ""
-}
-
-func topologyMetricLabelsForRequest(req *models.Request, instance *resource.ServiceInstance, hostZone, requestedZone string) map[string]string {
-	lbl := map[string]string{
-		"service":      req.ServiceName,
-		"endpoint":     req.Endpoint,
-		"instance":     instance.ID(),
-		"host":         instance.HostID(),
-		"host_zone":    hostZone,
-		"requested_zone": requestedZone,
-	}
-	if req.ParentID == "" {
-		lbl[metrics.LabelOrigin] = metrics.OriginIngress
-	} else {
-		lbl[metrics.LabelOrigin] = metrics.OriginDownstream
-	}
-	if req.Metadata != nil {
-		if tc, ok := req.Metadata["workload_traffic_class"].(string); ok && tc != "" {
-			lbl[metrics.LabelTrafficClass] = tc
-		}
-		if sk, ok := req.Metadata["workload_source_kind"].(string); ok && sk != "" {
-			lbl[metrics.LabelSourceKind] = sk
-		}
-	}
-	return lbl
-}
-
-func recordTopologyRoutingMetrics(state *scenarioState, req *models.Request, instance *resource.ServiceInstance, simTime time.Time) {
-	if state == nil || req == nil || instance == nil || state.collector == nil || state.rm == nil {
-		return
-	}
-	host, ok := state.rm.GetHost(instance.HostID())
-	if !ok || host == nil {
-		return
-	}
-	hostZone := strings.TrimSpace(host.Zone())
-	localityKey := effectiveLocalityZoneFrom(state, req.ServiceName, req.Endpoint)
-	requestedZone := ""
-	if localityKey != "" && req.Metadata != nil {
-		if s, ok := req.Metadata[localityKey].(string); ok {
-			requestedZone = strings.TrimSpace(s)
-		}
-	}
-	lbl := topologyMetricLabelsForRequest(req, instance, hostZone, requestedZone)
-	// For downstream requests, compare caller host zone vs selected callee host zone when available.
-	if req.ParentID != "" && req.Metadata != nil {
-		callerZone := downstreamCallerHostZone(state, req)
-		lbl["requested_zone"] = callerZone
-		if callerZone != "" && hostZone != "" {
-			if strings.EqualFold(callerZone, hostZone) {
-				metrics.RecordSameZoneRequestCount(state.collector, 1.0, simTime, lbl)
-			} else {
-				metrics.RecordCrossZoneRequestCount(state.collector, 1.0, simTime, lbl)
-			}
-		}
-		return
-	}
-
-	// Ingress or root requests use locality key preference hit/miss when configured.
-	if requestedZone != "" && strings.EqualFold(requestedZone, hostZone) {
-		metrics.RecordLocalityRouteHitCount(state.collector, 1.0, simTime, lbl)
-		metrics.RecordSameZoneRequestCount(state.collector, 1.0, simTime, lbl)
-	} else if requestedZone != "" {
-		metrics.RecordLocalityRouteMissCount(state.collector, 1.0, simTime, lbl)
-		metrics.RecordCrossZoneRequestCount(state.collector, 1.0, simTime, lbl)
-	}
-}
-
 // RegisterHandlers registers all event handlers for the engine
 func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeRequestArrival, handleRequestArrival(state))
@@ -215,8 +121,8 @@ func RegisterHandlers(eng *engine.Engine, state *scenarioState) {
 	eng.RegisterHandler(engine.EventTypeTopicPublish, handleTopicPublish(state, eng))
 	eng.RegisterHandler(engine.EventTypeTopicDequeue, handleTopicDequeue(state, eng))
 	eng.RegisterHandler(engine.EventTypeTopicAckTimeout, handleTopicAckTimeout(state, eng))
-	eng.RegisterHandler(engine.EventTypeTopicDLQ, handleTopicDLQ(state, eng))
 	eng.RegisterHandler(engine.EventTypeTopicRetentionExpire, handleTopicRetentionExpire(state, eng))
+	eng.RegisterHandler(engine.EventTypeTopicDLQ, handleTopicDLQ(state, eng))
 	eng.RegisterHandler(engine.EventTypeDownstreamTimeout, handleDownstreamTimeout(state, eng))
 	eng.RegisterHandler(engine.EventTypeDrainSweep, handleDrainSweep(state))
 }
@@ -271,28 +177,6 @@ func metadataInt(m map[string]interface{}, key string) int {
 	}
 }
 
-func metadataInt64(m map[string]interface{}, key string) int64 {
-	if m == nil {
-		return 0
-	}
-	v, ok := m[key]
-	if !ok {
-		return 0
-	}
-	switch t := v.(type) {
-	case int64:
-		return t
-	case int:
-		return int64(t)
-	case int32:
-		return int64(t)
-	case float64:
-		return int64(t)
-	default:
-		return 0
-	}
-}
-
 func metadataBool(m map[string]interface{}, key string) bool {
 	if m == nil {
 		return false
@@ -337,6 +221,108 @@ func metadataFloat64(m map[string]interface{}, key string) float64 {
 	default:
 		return 0
 	}
+}
+
+func metadataInt64(m map[string]interface{}, key string) int64 {
+	if m == nil {
+		return 0
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	case float32:
+		return int64(x)
+	default:
+		return 0
+	}
+}
+
+func selectInstanceForRequest(state *scenarioState, request *models.Request, simTime time.Time) (*resource.ServiceInstance, string, error) {
+	if state == nil || state.rm == nil {
+		return nil, "", fmt.Errorf("resource manager not initialized")
+	}
+	if request == nil {
+		return nil, "", fmt.Errorf("request is nil")
+	}
+	inst, strategy, err := state.rm.SelectInstanceForRequest(request.ServiceName, request, simTime)
+	if err != nil {
+		return nil, strategy, err
+	}
+	if state.collector != nil {
+		labels := labelsForRequestMetrics(request, request.ServiceName, request.Endpoint)
+		labels["strategy"] = strategy
+		if inst != nil {
+			labels["instance"] = inst.ID()
+		}
+		metrics.RecordRouteSelectionCount(state.collector, 1.0, simTime, labels)
+
+		// Determine locality preference key from endpoint override first, then service routing.
+		localityKey := ""
+		if svc, ok := state.services[request.ServiceName]; ok && svc != nil {
+			for _, ep := range svc.Endpoints {
+				if ep.Path == request.Endpoint && ep.Routing != nil && strings.TrimSpace(ep.Routing.LocalityZoneFrom) != "" {
+					localityKey = strings.TrimSpace(ep.Routing.LocalityZoneFrom)
+					break
+				}
+			}
+			if localityKey == "" && svc.Routing != nil {
+				localityKey = strings.TrimSpace(svc.Routing.LocalityZoneFrom)
+			}
+		}
+
+		calleeZone := ""
+		if inst != nil {
+			if host, ok := state.rm.GetHost(inst.HostID()); ok && host != nil {
+				calleeZone = strings.TrimSpace(host.Zone())
+			}
+		}
+
+		callerZone := metadataString(request.Metadata, "caller_host_zone")
+		if callerZone == "" {
+			callerInstanceID := metadataString(request.Metadata, "caller_instance_id")
+			if callerInstanceID != "" {
+				if callerInst, ok := state.rm.GetServiceInstance(callerInstanceID); ok && callerInst != nil {
+					if callerHost, ok := state.rm.GetHost(callerInst.HostID()); ok && callerHost != nil {
+						callerZone = strings.TrimSpace(callerHost.Zone())
+					}
+				}
+			}
+		}
+		if callerZone == "" && localityKey != "" && request.Metadata != nil {
+			if raw, ok := request.Metadata[localityKey]; ok {
+				callerZone = strings.TrimSpace(fmt.Sprint(raw))
+			}
+		}
+
+		if localityKey != "" && request.Metadata != nil {
+			if raw, ok := request.Metadata[localityKey]; ok {
+				targetZone := strings.TrimSpace(fmt.Sprint(raw))
+				if targetZone != "" && calleeZone != "" {
+					if strings.EqualFold(targetZone, calleeZone) {
+						metrics.RecordLocalityRouteHitCount(state.collector, 1.0, simTime, labels)
+					} else {
+						metrics.RecordLocalityRouteMissCount(state.collector, 1.0, simTime, labels)
+					}
+				}
+			}
+		}
+		if callerZone != "" && calleeZone != "" {
+			if strings.EqualFold(callerZone, calleeZone) {
+				metrics.RecordSameZoneRequestCount(state.collector, 1.0, simTime, labels)
+			} else {
+				metrics.RecordCrossZoneRequestCount(state.collector, 1.0, simTime, labels)
+			}
+		}
+	}
+	return inst, strategy, nil
 }
 
 func labelsForRequestMetrics(req *models.Request, serviceID, endpointPath string) map[string]string {
@@ -427,18 +413,25 @@ func scheduleDownstreamCallEvent(state *scenarioState, eng *engine.Engine, paren
 		}
 	}
 	scheduleTime := simTime.Add(time.Duration(callLatencyMs * float64(time.Millisecond)))
-	callerInstanceID, callerHostZone, callerHostID := callerTopologyFromRequest(state, parentRequest)
-	eng.ScheduleAt(engine.EventTypeDownstreamCall, scheduleTime, parentRequest, downstreamCall.ServiceID, map[string]interface{}{
+	callerInstanceID, callerHostZone, callerHostID := resolveCallerTopologyForSpawn(state, parentRequest, downstreamCallerTopology{})
+	data := map[string]interface{}{
 		"endpoint_path":         downstreamCall.Path,
 		"parent_request_id":     parentRequest.ID,
 		"trace_depth":           nextTD,
 		"async_depth":           nextAD,
 		"is_async_downstream":   isAsync,
 		"downstream_timeout_ms": downstreamCall.Call.TimeoutMs,
-		"caller_instance_id":    callerInstanceID,
-		"caller_host_zone":      callerHostZone,
-		"caller_host_id":        callerHostID,
-	})
+	}
+	if callerInstanceID != "" {
+		data["caller_instance_id"] = callerInstanceID
+	}
+	if callerHostZone != "" {
+		data["caller_host_zone"] = callerHostZone
+	}
+	if callerHostID != "" {
+		data["caller_host_id"] = callerHostID
+	}
+	eng.ScheduleAt(engine.EventTypeDownstreamCall, scheduleTime, parentRequest, downstreamCall.ServiceID, data)
 }
 
 // ScheduleDrainSweepKickoff schedules the first simulated-time drain sweep so draining
@@ -531,16 +524,6 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		}
 		if md, ok := evt.Data["metadata"].(map[string]interface{}); ok {
 			for k, v := range md {
-				if strings.TrimSpace(k) == "" {
-					continue
-				}
-				request.Metadata[k] = v
-			}
-		} else if md, ok := evt.Data["metadata"].(map[string]string); ok {
-			for k, v := range md {
-				if strings.TrimSpace(k) == "" {
-					continue
-				}
 				request.Metadata[k] = v
 			}
 		}
@@ -572,7 +555,7 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 			}
 		}
 
-		// Select an instance for this service
+		// Select an instance for this service and emit routing/locality metrics.
 		instance, _, err := selectInstanceForRequest(state, request, simTime)
 		if err != nil {
 			request.Status = models.RequestStatusFailed
@@ -643,6 +626,22 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 		if request.Metadata == nil {
 			request.Metadata = make(map[string]interface{})
 		}
+		if instanceID != "" {
+			request.Metadata["instance_id"] = instanceID
+		}
+		// For ingress/root requests only, seed caller topology from selected instance
+		// so their downstream children can inherit stable caller host metadata.
+		if request.ParentID == "" && (metadataString(request.Metadata, "caller_host_id") == "") {
+			if inst, ok := state.rm.GetServiceInstance(instanceID); ok && inst != nil {
+				hostID := inst.HostID()
+				if hostID != "" {
+					request.Metadata["caller_host_id"] = hostID
+					if host, ok := state.rm.GetHost(hostID); ok && host != nil && strings.TrimSpace(host.Zone()) != "" {
+						request.Metadata["caller_host_zone"] = strings.TrimSpace(host.Zone())
+					}
+				}
+			}
+		}
 
 		cpuTimeMs := prof.CPUTimeMs
 		netLatencyMs := prof.NetworkLatencyMs
@@ -680,13 +679,6 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			}
 		}
 
-		if request.ParentID != "" {
-			pen := applyTopologyNetworkPenaltyMs(state, serviceID, endpointPath, request, instanceID, simTime)
-			if pen > 0 {
-				netLatencyMs += pen
-			}
-		}
-
 		pLocal := mergedLocalFailureRate(svc, endpoint)
 		if pLocal > 0 && state.rng.Float64() < pLocal {
 			request.Status = models.RequestStatusFailed
@@ -700,9 +692,6 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 			finalizeRequestFailure(state, eng, rm, request, simTime, lbl, metrics.ReasonLocalFailure)
 			return nil
 		}
-
-		request.CPUTimeMs = cpuTimeMs
-		request.NetworkLatencyMs = netLatencyMs
 
 		var cpuStart, cpuEnd time.Time
 		deferredExec := false
@@ -752,6 +741,13 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 				return nil
 			}
 		}
+
+		// Apply topology penalty exactly once at real request start (after deferred CPU admission).
+		if topologyPenaltyMs := applyTopologyNetworkPenaltyMs(state, serviceID, endpointPath, request, instanceID, simTime); topologyPenaltyMs > 0 {
+			netLatencyMs += topologyPenaltyMs
+		}
+		request.CPUTimeMs = cpuTimeMs
+		request.NetworkLatencyMs = netLatencyMs
 
 		// CPU service interval begins at cpuStart (simTime matches for this invocation).
 		request.Status = models.RequestStatusProcessing
@@ -1021,10 +1017,15 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 
 		var maxAck time.Time
 		tAfter := simTime
+		callerTopology := downstreamCallerTopology{
+			CallerInstanceID: metadataString(request.Metadata, "instance_id"),
+			CallerHostZone:   metadataString(request.Metadata, "caller_host_zone"),
+			CallerHostID:     metadataString(request.Metadata, "caller_host_id"),
+		}
 		for _, downstreamCall := range asyncCalls {
 			nextTD := td + 1
 			nextAD := ad + 1
-			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "", downstreamCallerTopology{})
+			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "", callerTopology)
 			if ackT.After(maxAck) {
 				maxAck = ackT
 			}
@@ -1073,7 +1074,7 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		for _, downstreamCall := range syncCalls {
 			nextTD := td + 1
 			nextAD := ad
-			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "", downstreamCallerTopology{})
+			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "", callerTopology)
 		}
 		if hasInstance {
 			dequeueAt := tAfter
