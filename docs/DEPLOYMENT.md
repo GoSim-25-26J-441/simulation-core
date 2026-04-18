@@ -14,17 +14,17 @@ Simulation-core is deployed via **GitHub Actions** on push to `main`. No applica
 | Path | Description |
 |------|-------------|
 | `s3://<bucket>/simulation-core/simd` | Linux binary (built from `./cmd/simd`) |
-| `s3://<bucket>/simulation-core/scripts/deploy.sh` | EC2 deploy script (from `scripts/ec2-deploy.sh`) |
+| `s3://<bucket>/simulation-core/scripts/install-service.sh` | Creates `simulation-core.service` and `systemctl enable` ([scripts/install-simulation-core-service.sh](../scripts/install-simulation-core-service.sh)) |
+| `s3://<bucket>/simulation-core/scripts/deploy.sh` | Downloads binary from S3 and `systemctl restart simulation-core` ([scripts/ec2-deploy.sh](../scripts/ec2-deploy.sh)) |
 
-## Deploy script (EC2)
+## Deploy scripts (EC2)
 
-The script [scripts/ec2-deploy.sh](../scripts/ec2-deploy.sh) follows the same pattern as go-sim-backend: it is uploaded to S3 and triggered on the instance via **SSM Run Command** (document `AWS-RunShellScript`). The workflow downloads it to `/tmp/deploy.sh`, makes it executable, and runs `/tmp/deploy.sh BUCKET REGION`. The script:
+1. **Install (idempotent, once per host or after unit changes):** [scripts/install-simulation-core-service.sh](../scripts/install-simulation-core-service.sh) writes `/etc/systemd/system/simulation-core.service`, runs `daemon-reload`, and `enables` the unit. Default `ExecStart` uses `-http-addr :8080` and `-grpc-addr :50051` (see `./cmd/simd` flags).
+2. **Deploy:** [scripts/ec2-deploy.sh](../scripts/ec2-deploy.sh) downloads the binary to `/opt/simulation-core/simd` and runs `systemctl restart simulation-core`.
 
-1. Downloads the `simd` binary from S3.
-2. Installs it to a fixed path (default `/opt/simulation-core/simd`).
-3. Restarts the process with runtime ports: `-http-addr :${HTTP_PORT:-8080}` and `-grpc-addr :${GRPC_PORT:-50051}`.
+The GitHub Actions deploy job downloads both scripts via SSM, runs install then deploy in one shell command, and **waits for success by polling SSM command status** ([scripts/wait-ssm-command.sh](../scripts/wait-ssm-command.sh)) using the returned command id — not an HTTP health check.
 
-Optional environment variables on the EC2 host: `HTTP_PORT`, `GRPC_PORT`, `INSTALL_DIR`. The script supports systemd (`simulation-core` service), a PID file (`SIMD_PIDFILE`), or a fallback (nohup).
+Optional on the instance: set `INSTALL_DIR` when running `install-simulation-core-service.sh` if the unit and binary path should differ from `/opt/simulation-core`.
 
 ## GitHub secrets (for deploy job)
 
@@ -34,8 +34,7 @@ Optional environment variables on the EC2 host: `HTTP_PORT`, `GRPC_PORT`, `INSTA
 | `AWS_ROLE_ARN` | OIDC role for GitHub Actions to assume |
 | `DEPLOY_BUCKET` | S3 bucket for binary and deploy script |
 | `EC2_INSTANCE_ID` | EC2 instance ID for SSM Run Command |
-| `HEALTH_CHECK_URL` | (Optional) Full URL for health check after deploy (e.g. `https://host/healthz`). If unset, health check is skipped. |
 
-## Health endpoint
+## Verifying deploys
 
-The HTTP server exposes `/healthz`. Configure `HEALTH_CHECK_URL` to point at that endpoint (e.g. `https://sim.example.com/healthz`) to enable post-deploy health checks in the workflow.
+The workflow treats the deploy as successful when **SSM Run Command** reports `Success` for that invocation. For manual checks, the HTTP server exposes `/healthz` if you want to probe the instance yourself.

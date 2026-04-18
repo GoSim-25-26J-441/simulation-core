@@ -36,6 +36,7 @@ jobs:
         run: go test -v -race -count=1 ./...
 
   deploy:
+    environment: production
     needs: [test]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -77,42 +78,26 @@ jobs:
       - name: Upload binary to S3
         run: aws s3 cp simd s3://${{ secrets.DEPLOY_BUCKET }}/simulation-core/simd
 
-      - name: Upload deploy script to S3
-        run: aws s3 cp scripts/ec2-deploy.sh s3://${{ secrets.DEPLOY_BUCKET }}/simulation-core/scripts/deploy.sh
+      - name: Upload install and deploy scripts to S3
+        run: |
+          aws s3 cp scripts/install-simulation-core-service.sh s3://${{ secrets.DEPLOY_BUCKET }}/simulation-core/scripts/install-service.sh
+          aws s3 cp scripts/ec2-deploy.sh s3://${{ secrets.DEPLOY_BUCKET }}/simulation-core/scripts/deploy.sh
 
-      - name: Deploy via SSM Run Command
+      - name: Deploy via SSM Run Command (wait on command id)
         env:
           BUCKET: ${{ secrets.DEPLOY_BUCKET }}
           REGION: ${{ env.AWS_REGION }}
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
         run: |
-          cmd="aws s3 cp s3://${BUCKET}/simulation-core/scripts/deploy.sh /tmp/deploy.sh --region ${REGION} && chmod +x /tmp/deploy.sh && /tmp/deploy.sh ${BUCKET} ${REGION}"
+          set -euo pipefail
+          cmd="aws s3 cp s3://${BUCKET}/simulation-core/scripts/install-service.sh /tmp/install-service.sh --region ${REGION} && chmod +x /tmp/install-service.sh && aws s3 cp s3://${BUCKET}/simulation-core/scripts/deploy.sh /tmp/deploy.sh --region ${REGION} && chmod +x /tmp/deploy.sh && /tmp/install-service.sh && /tmp/deploy.sh ${BUCKET} ${REGION}"
           json_commands=$(echo -n "$cmd" | jq -Rs .)
           cmd_id=$(aws ssm send-command \
             --region "${REGION}" \
             --document-name "AWS-RunShellScript" \
-            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --instance-ids "${INSTANCE_ID}" \
             --parameters "{\"commands\":[$json_commands]}" \
             --query "Command.CommandId" \
             --output text)
-          echo "SSM command sent (ID: $cmd_id). Deployment verified by health check below."
-
-      - name: Wait for app to be ready
-        run: sleep 60
-
-      - name: Health check
-        run: |
-          HEALTH_URL="${{ secrets.HEALTH_CHECK_URL }}"
-          if [ -z "$HEALTH_URL" ]; then
-            echo "HEALTH_CHECK_URL secret not set; skipping health check"
-            exit 0
-          fi
-          for i in $(seq 1 12); do
-            if curl -sf -o /dev/null "$HEALTH_URL"; then
-              echo "Health check passed"
-              exit 0
-            fi
-            echo "Health check attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
-          echo "Health check failed after 12 attempts"
-          exit 1
+          echo "SSM CommandId=${cmd_id}"
+          bash scripts/wait-ssm-command.sh "${cmd_id}" "${INSTANCE_ID}" "${REGION}"

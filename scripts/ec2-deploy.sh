@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Deploy simulation-core binary from S3 to /opt/simulation-core and restart the service.
+# Install the systemd unit first (once per host) via install-simulation-core-service.sh
+# from the same S3 layout the CI job uploads.
 #
 # Usage: ./ec2-deploy.sh BUCKET REGION
 
@@ -10,6 +12,12 @@ REGION="${2:?Usage: $0 BUCKET REGION}"
 
 INSTALL_DIR="/opt/simulation-core"
 TARGET="${INSTALL_DIR}/simd"
+
+if [ ! -f "/etc/systemd/system/simulation-core.service" ]; then
+  echo "error: simulation-core.service is not installed." >&2
+  echo "Run scripts/install-simulation-core-service.sh on the instance (or chain it before this script in SSM)." >&2
+  exit 1
+fi
 
 echo "[1/2] Downloading binary and installing to ${INSTALL_DIR}..."
 mkdir -p "${INSTALL_DIR}"
