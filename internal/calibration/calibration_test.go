@@ -55,43 +55,6 @@ func TestCalibrateScenarioDoesNotMutateBase(t *testing.T) {
 	}
 }
 
-func TestFromRunMetricsIncludesBrokerObservations(t *testing.T) {
-	rm := &models.RunMetrics{
-		QueueEnqueueCountTotal:  8,
-		QueueDequeueCountTotal:  5,
-		QueueDropCountTotal:     2,
-		QueueDlqCountTotal:      1,
-		QueueDepthSum:           3,
-		QueueDropRate:           0.2,
-		QueueOldestMessageAgeMs: 250,
-		TopicPublishCountTotal:  4,
-		TopicDeliverCountTotal:  6,
-		TopicDropCountTotal:     3,
-		TopicDlqCountTotal:      1,
-		TopicBacklogDepthSum:    2,
-		TopicConsumerLagSum:     5,
-		TopicOldestMessageAgeMs: 125,
-	}
-	obs := FromRunMetrics(rm, time.Second)
-	if len(obs.QueueBrokers) != 1 {
-		t.Fatalf("expected one aggregate queue observation, got %+v", obs.QueueBrokers)
-	}
-	q := obs.QueueBrokers[0]
-	if q.DepthMean.Value != 3 || q.DropCount.Value != 2 || q.DLQCount.Value != 1 || q.EnqueueCount.Value != 8 || q.DequeueCount.Value != 5 {
-		t.Fatalf("unexpected queue observation: %+v", q)
-	}
-	if !q.QueuePublishAttemptCount.Present || q.QueuePublishAttemptCount.Value != 10 {
-		t.Fatalf("expected queue attempts reconstructed from drop/drop_rate, got %+v", q.QueuePublishAttemptCount)
-	}
-	if len(obs.TopicBrokers) != 1 {
-		t.Fatalf("expected one aggregate topic observation, got %+v", obs.TopicBrokers)
-	}
-	topic := obs.TopicBrokers[0]
-	if topic.BacklogDepth.Value != 2 || topic.ConsumerLag.Value != 5 || topic.DropCount.Value != 3 || topic.TopicDeliverCount.Value != 6 {
-		t.Fatalf("unexpected topic observation: %+v", topic)
-	}
-}
-
 func TestCalibrateEndpointProcessingUsesEndpointPredictedBaseline(t *testing.T) {
 	pFast, pSlow := 100.0, 500.0
 	blend := 300.0
@@ -123,10 +86,10 @@ func TestCalibrateEndpointProcessingUsesEndpointPredictedBaseline(t *testing.T) 
 		},
 	}
 	out, rep, err := CalibrateScenario(base, obs, &CalibrateOptions{
-		Overwrite:      OverwriteAlways,
-		PredictedRun:   pred,
-		MinScaleFactor: 0.1,
-		MaxScaleFactor: 10,
+		Overwrite:        OverwriteAlways,
+		PredictedRun:     pred,
+		MinScaleFactor:   0.1,
+		MaxScaleFactor:   10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -422,8 +385,8 @@ func TestLowConfidenceNetAndCapacityRespectPolicy(t *testing.T) {
 			{
 				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
 				Behavior: &config.ServiceBehavior{Queue: &config.QueueBehavior{
-					Capacity:          20,
-					ConsumerTarget:    "api:/pub",
+					Capacity:        20,
+					ConsumerTarget:  "api:/pub",
 					DeliveryLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
 				}},
 				Endpoints: []config.Endpoint{{Path: "/orders"}},

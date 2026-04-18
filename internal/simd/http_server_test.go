@@ -36,6 +36,28 @@ workload:
     arrival: {type: poisson, rate_rps: 10}
 `
 
+const infeasiblePlacementScenarioYAML = `
+hosts:
+  - id: host-1
+    cores: 1
+services:
+  - id: customer-core
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.5
+    memory_mb: 1024
+    endpoints:
+      - path: /work
+        mean_cpu_ms: 5
+        cpu_sigma_ms: 1
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.1}
+workload:
+  - from: client
+    to: customer-core:/work
+    arrival: {type: poisson, rate_rps: 10}
+`
+
 func TestHTTPServerHealthz(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
@@ -88,6 +110,119 @@ func TestHTTPServerCreateRun(t *testing.T) {
 	}
 	if run["id"] == "" {
 		t.Fatalf("expected run id to be set")
+	}
+}
+
+func TestHTTPServerValidateScenario_Valid(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{
+		"scenario_yaml": testScenarioYAML,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["valid"] != true {
+		t.Fatalf("expected valid=true, got %v", resp["valid"])
+	}
+	summary, ok := resp["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected summary object")
+	}
+	if int(summary["hosts"].(float64)) != 1 || int(summary["services"].(float64)) != 1 || int(summary["workloads"].(float64)) != 1 {
+		t.Fatalf("unexpected summary: %#v", summary)
+	}
+	if len(store.ListFiltered(100, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)) != 0 {
+		t.Fatal("validate endpoint must not create runs")
+	}
+}
+
+func TestHTTPServerValidateScenario_InvalidYAML(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{
+		"scenario_yaml": "hosts: [",
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["valid"] != false {
+		t.Fatalf("expected valid=false, got %v", resp["valid"])
+	}
+	errorsRaw, ok := resp["errors"].([]any)
+	if !ok || len(errorsRaw) == 0 {
+		t.Fatalf("expected errors array, got %T %#v", resp["errors"], resp["errors"])
+	}
+	first := errorsRaw[0].(map[string]any)
+	if first["code"] != "SCENARIO_PARSE_INVALID" {
+		t.Fatalf("expected parse error code, got %v", first["code"])
+	}
+	if len(store.ListFiltered(100, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)) != 0 {
+		t.Fatal("validate endpoint must not create runs")
+	}
+}
+
+func TestHTTPServerValidateScenario_PlacementInfeasibleIncludesServiceID(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{
+		"scenario_yaml": infeasiblePlacementScenarioYAML,
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["valid"] != false {
+		t.Fatalf("expected valid=false, got %v", resp["valid"])
+	}
+	errorsRaw, ok := resp["errors"].([]any)
+	if !ok || len(errorsRaw) == 0 {
+		t.Fatalf("expected errors array, got %T %#v", resp["errors"], resp["errors"])
+	}
+	first := errorsRaw[0].(map[string]any)
+	if first["code"] != "PLACEMENT_INFEASIBLE" {
+		t.Fatalf("expected placement error code, got %v", first["code"])
+	}
+	if first["service_id"] != "customer-core" {
+		t.Fatalf("expected service_id customer-core, got %v", first["service_id"])
+	}
+	if _, ok := first["message"].(string); !ok {
+		t.Fatalf("expected message string in first error, got %T", first["message"])
+	}
+	if len(store.ListFiltered(100, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)) != 0 {
+		t.Fatal("validate endpoint must not create runs")
 	}
 }
 
@@ -2357,22 +2492,22 @@ func TestHTTPServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
 
 func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 	pb := &simulationv1.RunMetrics{
-		TotalRequests:           10,
-		IngressRequests:         4,
-		IngressFailedRequests:   1,
-		IngressErrorRate:        0.25,
-		AttemptFailedRequests:   3,
-		AttemptErrorRate:        0.3,
-		RetryAttempts:           2,
-		TimeoutErrors:           1,
-		TopicPublishCountTotal:  4,
-		TopicBacklogDepthSum:    9,
-		MaxTopicConsumerLag:     7,
-		TopicOldestMessageAgeMs: 111,
-		LocalityHitRate:         0.9,
-		CrossZoneRequestCountTotal: 5,
-		SameZoneRequestCountTotal:  45,
-		CrossZoneRequestFraction:   0.1,
+		TotalRequests:                  10,
+		IngressRequests:                4,
+		IngressFailedRequests:          1,
+		IngressErrorRate:               0.25,
+		AttemptFailedRequests:          3,
+		AttemptErrorRate:               0.3,
+		RetryAttempts:                  2,
+		TimeoutErrors:                  1,
+		TopicPublishCountTotal:         4,
+		TopicBacklogDepthSum:           9,
+		MaxTopicConsumerLag:            7,
+		TopicOldestMessageAgeMs:        111,
+		LocalityHitRate:                0.9,
+		CrossZoneRequestCountTotal:     5,
+		SameZoneRequestCountTotal:      45,
+		CrossZoneRequestFraction:       0.1,
 		CrossZoneLatencyPenaltyMsTotal: 300,
 		CrossZoneLatencyPenaltyMsMean:  100,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
