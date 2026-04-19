@@ -684,6 +684,8 @@ go build -o bin/simd ./cmd/simd
 go test ./...
 ```
 
+gRPC stubs under `gen/go/simulation/v1/` are **checked in**; a clean clone does not need `buf` to run tests. After editing `.proto` files, run `make proto` (or `./scripts/gen-proto.sh`) and commit the diff—see [docs/PROTOBUF.md](docs/PROTOBUF.md).
+
 ## API Contracts (Milestone 0)
 
 This repo defines the gRPC contract under `proto/` (see `proto/simulation/v1/simulation.proto`).
@@ -711,11 +713,14 @@ Callback/resource notes:
 
 ### Proto generation
 
-This repo uses [buf](https://buf.build/) for code generation.
+This repo uses [buf](https://buf.build/) for code generation. Generated Go lives in **`gen/go/simulation/v1/`** and is committed.
 
 ```bash
-./scripts/gen-proto.sh
+make proto
+# or: ./scripts/gen-proto.sh
 ```
+
+See [docs/PROTOBUF.md](docs/PROTOBUF.md) for tool versions and layout.
 
 On Windows (PowerShell):
 

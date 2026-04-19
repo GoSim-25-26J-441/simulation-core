@@ -65,8 +65,8 @@ coverage_policy_deterministic
 coverage_policy_heuristic
 coverage_improvement
 
-# Generated protobuf code (buf output)
-gen/
+# Generated protobuf (gen/go/...) is committed so downstream `go get` works without buf.
+# Regenerate after proto edits: `make proto` or `buf generate` (see docs/PROTOBUF.md).
 
 # Reference documentation (stored in docs/reference branch, not pushed to remote)
 IMPLEMENTATION_PLAN.md

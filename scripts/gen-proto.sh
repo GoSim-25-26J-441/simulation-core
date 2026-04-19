@@ -8,7 +8,7 @@ set -euo pipefail
 #   - buf installed: https://buf.build/docs/installation
 #
 # Output:
-#   - Generated code under ./gen/go (gitignored by default)
+#   - Generated code under ./gen/go (committed so downstream `go get` works)
 
 # Check if buf is installed
 if ! command -v buf &> /dev/null; then
@@ -19,8 +19,8 @@ fi
 
 # Install required protoc plugins
 echo "Installing protoc plugins..."
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
 
 echo "Generating protobuf code..."
 PATH="$(go env GOPATH)/bin:$PATH" buf generate
