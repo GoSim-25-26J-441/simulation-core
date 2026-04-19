@@ -50,14 +50,14 @@ func TestValidateScenarioBehaviorAndDownstreamFields(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "c", To: "svc1:/a", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(valid); err != nil {
+	if err := ValidateScenario(valid); err != nil {
 		t.Fatalf("valid scenario: %v", err)
 	}
 
 	invalid := *valid
 	invalid.Services = append([]Service(nil), valid.Services...)
 	invalid.Services[0].Behavior = &ServiceBehavior{FailureRate: 2}
-	if err := validateScenario(&invalid); err == nil {
+	if err := ValidateScenario(&invalid); err == nil {
 		t.Fatal("expected error for failure_rate > 1")
 	}
 }

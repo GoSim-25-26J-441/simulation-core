@@ -163,6 +163,86 @@ Check if the service is running.
 
 ---
 
+### Validate scenario YAML (preflight)
+
+**POST** `/v1/scenarios:validate`
+
+Validate generated or edited scenario YAML **before** creating a run. The backend (`go-sim-backend`, etc.) should call this over HTTP only (do not import `simulation-core` as a Go module).
+
+Validation order:
+
+1. **YAML syntax** — `gopkg.in/yaml.v3` unmarshal into a `Scenario` (see `pkg/config/scenario_types.go`).
+2. **Semantic / schema** — same rules as exported `config.ValidateScenario` in `pkg/config/loader.go`: hosts/services, duplicate IDs, workload and downstream target resolution, queue/topic `consumer_target` / DLQ references, etc.
+3. **Placement / capacity** — `resource.NewManager().InitializeFromScenario` (same path as run startup).
+
+**Request:**
+```json
+{
+  "scenario_yaml": "hosts:\n  - id: host-1\n    ...",
+  "mode": "preflight"
+}
+```
+
+`mode` is optional; when omitted it defaults to `"preflight"`. Any other value returns **400** with `{"error":"..."}`.
+
+**Response (valid, HTTP 200):**
+```json
+{
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}
+```
+
+(`summary` is omitted when valid.)
+
+**Response (invalid YAML syntax, HTTP 400):**
+```json
+{
+  "valid": false,
+  "errors": [{ "code": "SCENARIO_PARSE_INVALID", "message": "..." }],
+  "warnings": [],
+  "summary": { "hosts": 0, "services": 0, "workloads": 0 }
+}
+```
+
+**Response (semantic / graph / placement problems, HTTP 422):**
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "code": "UNKNOWN_WORKLOAD_ENDPOINT",
+      "message": "workload target checkout:/write references missing endpoint /write on service checkout",
+      "path": "workload[0].to"
+    }
+  ],
+  "warnings": [],
+  "summary": { "hosts": 1, "services": 1, "workloads": 1 }
+}
+```
+
+Common `errors[].code` values include: `UNKNOWN_WORKLOAD_SERVICE`, `UNKNOWN_WORKLOAD_ENDPOINT`, `UNKNOWN_DOWNSTREAM_SERVICE`, `UNKNOWN_DOWNSTREAM_ENDPOINT`, `UNKNOWN_QUEUE_CONSUMER_TARGET`, `PLACEMENT_INFEASIBLE`, `INVALID_SCENARIO_SCHEMA`. Each error may include `path` (for UI), `service_id`, or `hint` where applicable.
+
+**Response (empty `scenario_yaml`, HTTP 400):**
+- `errors[0].code` is `SCENARIO_YAML_REQUIRED`, `path` is `scenario_yaml`.
+
+**Other status codes:**
+- `405 Method Not Allowed`: only **POST** is allowed; response body is `{"error":"method not allowed"}` and `Allow: POST` is set.
+- `400 Bad Request`: malformed JSON body uses `{"error":"..."}`.
+
+**HTTP semantics for backends:** treat **422** as user-fixable scenario content; treat **400** `SCENARIO_PARSE_INVALID` as bad YAML; use **502/503** only when the HTTP client cannot reach simulation-core or receives 5xx (map those in the backend, not here).
+
+**Local example (HTTP on port 8082):**
+```bash
+go run ./cmd/simd -http-addr :8082 -grpc-addr :50051
+curl -sS -X POST http://localhost:8082/v1/scenarios:validate \
+  -H 'Content-Type: application/json' \
+  -d "{\"scenario_yaml\": $(jq -Rs . < your-scenario.yaml)}"
+```
+
+---
+
 ### Create Simulation Run
 
 **POST** `/v1/runs`

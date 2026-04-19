@@ -40,28 +40,57 @@ func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
 // handleValidateScenario handles POST /v1/scenarios:validate.
 func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var req struct {
 		ScenarioYAML string `json:"scenario_yaml"`
+		Mode           string `json:"mode,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "preflight"
+	}
+	if mode != "preflight" {
+		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: preflight)")
+		return
+	}
 	if strings.TrimSpace(req.ScenarioYAML) == "" {
-		s.writeError(w, http.StatusBadRequest, "scenario_yaml is required")
+		z := ScenarioValidationSummary{}
+		s.writeJSON(w, http.StatusBadRequest, &ScenarioValidationResult{
+			Valid: false,
+			Errors: []ScenarioValidationIssue{{
+				Code:    "SCENARIO_YAML_REQUIRED",
+				Message: "scenario_yaml is required and must be non-empty after trimming whitespace",
+				Path:    "scenario_yaml",
+			}},
+			Warnings: []ScenarioValidationIssue{},
+			Summary:  &z,
+		})
 		return
 	}
 
 	result := ValidateScenarioPreflight(req.ScenarioYAML)
-	if !result.Valid {
-		s.writeJSON(w, http.StatusBadRequest, result)
-		return
+	status := scenarioValidateHTTPStatus(result)
+	s.writeJSON(w, status, result)
+}
+
+func scenarioValidateHTTPStatus(result *ScenarioValidationResult) int {
+	if result.Valid {
+		return http.StatusOK
 	}
-	s.writeJSON(w, http.StatusOK, result)
+	for _, e := range result.Errors {
+		if e.Code == "SCENARIO_PARSE_INVALID" {
+			return http.StatusBadRequest
+		}
+	}
+	return http.StatusUnprocessableEntity
 }
 
 func (s *HTTPServer) Handler() http.Handler {

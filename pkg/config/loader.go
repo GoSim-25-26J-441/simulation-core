@@ -212,8 +212,9 @@ func validateOptimization(o *Optimization) error {
 	return nil
 }
 
-// validateScenario validates the scenario configuration
-func validateScenario(s *Scenario) error {
+// ValidateScenario validates the scenario configuration (hosts, services, cross-references,
+// workload targets, downstream calls, queue/topic behavior). Call after [UnmarshalScenarioYAML].
+func ValidateScenario(s *Scenario) error {
 	if s.SimulationLimits != nil {
 		if s.SimulationLimits.MaxTraceDepth < 0 {
 			return fmt.Errorf("simulation_limits.max_trace_depth cannot be negative")

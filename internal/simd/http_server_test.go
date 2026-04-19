@@ -58,6 +58,47 @@ workload:
     arrival: {type: poisson, rate_rps: 10}
 `
 
+// checkout defines /read only; workload targets /write (semantic validation failure).
+const workloadMissingEndpointYAML = `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: checkout
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /read
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: checkout:/write
+    arrival: {type: poisson, rate_rps: 10}
+`
+
+const workloadMissingServiceYAML = `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: checkout
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /read
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: nosuchsvc:/read
+    arrival: {type: poisson, rate_rps: 10}
+`
+
 func TestHTTPServerHealthz(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
@@ -136,12 +177,8 @@ func TestHTTPServerValidateScenario_Valid(t *testing.T) {
 	if resp["valid"] != true {
 		t.Fatalf("expected valid=true, got %v", resp["valid"])
 	}
-	summary, ok := resp["summary"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected summary object")
-	}
-	if int(summary["hosts"].(float64)) != 1 || int(summary["services"].(float64)) != 1 || int(summary["workloads"].(float64)) != 1 {
-		t.Fatalf("unexpected summary: %#v", summary)
+	if _, has := resp["summary"]; has {
+		t.Fatalf("expected summary omitted for valid preflight response, got %#v", resp["summary"])
 	}
 	if len(store.ListFiltered(100, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)) != 0 {
 		t.Fatal("validate endpoint must not create runs")
@@ -179,8 +216,80 @@ func TestHTTPServerValidateScenario_InvalidYAML(t *testing.T) {
 	if first["code"] != "SCENARIO_PARSE_INVALID" {
 		t.Fatalf("expected parse error code, got %v", first["code"])
 	}
+	summary, ok := resp["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected summary object on parse failure")
+	}
+	if int(summary["hosts"].(float64)) != 0 || int(summary["services"].(float64)) != 0 || int(summary["workloads"].(float64)) != 0 {
+		t.Fatalf("expected zero summary on parse failure, got %#v", summary)
+	}
 	if len(store.ListFiltered(100, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)) != 0 {
 		t.Fatal("validate endpoint must not create runs")
+	}
+}
+
+func TestHTTPServerValidateScenario_EmptyScenarioYAML(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	for _, label := range []string{"missing", "empty", "whitespace"} {
+		t.Run(label, func(t *testing.T) {
+			var body map[string]any
+			switch label {
+			case "missing":
+				body = map[string]any{}
+			case "empty":
+				body = map[string]any{"scenario_yaml": ""}
+			case "whitespace":
+				body = map[string]any{"scenario_yaml": "  \t  "}
+			}
+			raw, _ := json.Marshal(body)
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(raw)))
+			req.Header.Set("Content-Type", "application/json")
+			srv.Handler().ServeHTTP(rr, req)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s: expected 400, got %d: %s", label, rr.Code, rr.Body.String())
+			}
+			var resp map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+			if resp["valid"] != false {
+				t.Fatalf("expected valid=false")
+			}
+			errs, ok := resp["errors"].([]any)
+			if !ok || len(errs) == 0 {
+				t.Fatalf("expected errors array")
+			}
+			first := errs[0].(map[string]any)
+			if first["code"] != "SCENARIO_YAML_REQUIRED" {
+				t.Fatalf("expected SCENARIO_YAML_REQUIRED, got %v", first["code"])
+			}
+			if first["path"] != "scenario_yaml" {
+				t.Fatalf("path=%v", first["path"])
+			}
+		})
+	}
+}
+
+func TestHTTPServerValidateScenario_MethodNotAllowed(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/scenarios:validate", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Allow"); got != http.MethodPost {
+		t.Fatalf("expected Allow: POST, got %q", got)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["error"] != "method not allowed" {
+		t.Fatalf("unexpected body: %#v", resp)
 	}
 }
 
@@ -197,8 +306,8 @@ func TestHTTPServerValidateScenario_PlacementInfeasibleIncludesServiceID(t *test
 
 	srv.Handler().ServeHTTP(rr, req)
 
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected status 422, got %d: %s", rr.Code, rr.Body.String())
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
@@ -223,6 +332,67 @@ func TestHTTPServerValidateScenario_PlacementInfeasibleIncludesServiceID(t *test
 	}
 	if len(store.ListFiltered(100, 0, simulationv1.RunStatus_RUN_STATUS_UNSPECIFIED)) != 0 {
 		t.Fatal("validate endpoint must not create runs")
+	}
+}
+
+func TestHTTPServerValidateScenario_WorkloadUnknownEndpoint(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{"scenario_yaml": workloadMissingEndpointYAML, "mode": "preflight"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	errs := resp["errors"].([]any)[0].(map[string]any)
+	if errs["code"] != "UNKNOWN_WORKLOAD_ENDPOINT" {
+		t.Fatalf("code=%v", errs["code"])
+	}
+	if errs["path"] != "workload[0].to" {
+		t.Fatalf("path=%v", errs["path"])
+	}
+}
+
+func TestHTTPServerValidateScenario_WorkloadUnknownService(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{"scenario_yaml": workloadMissingServiceYAML}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	errs := resp["errors"].([]any)[0].(map[string]any)
+	if errs["code"] != "UNKNOWN_WORKLOAD_SERVICE" {
+		t.Fatalf("code=%v", errs["code"])
+	}
+}
+
+func TestHTTPServerValidateScenario_ModeUnsupported(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{"scenario_yaml": testScenarioYAML, "mode": "strict"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

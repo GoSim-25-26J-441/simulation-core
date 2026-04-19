@@ -26,24 +26,39 @@ func ParseConfigYAMLString(yamlText string) (*Config, error) {
 	return ParseConfigYAML([]byte(yamlText))
 }
 
-// ParseScenarioYAML parses a Scenario from YAML bytes and validates it.
-// This is used for APIs where scenario is provided as payload (not via filesystem).
-func ParseScenarioYAML(data []byte) (*Scenario, error) {
+// UnmarshalScenarioYAML parses YAML into a Scenario without semantic validation.
+// Use [ValidateScenario] for full checks, or [ParseScenarioYAML] for parse+validate.
+func UnmarshalScenarioYAML(data []byte) (*Scenario, error) {
 	var scenario Scenario
 	if err := yaml.Unmarshal(data, &scenario); err != nil {
 		return nil, fmt.Errorf("failed to parse scenario yaml: %w", err)
 	}
+	return &scenario, nil
+}
 
-	if err := validateScenario(&scenario); err != nil {
+// ParseScenarioYAML parses a Scenario from YAML bytes and validates it.
+// This is used for APIs where scenario is provided as payload (not via filesystem).
+func ParseScenarioYAML(data []byte) (*Scenario, error) {
+	scenario, err := UnmarshalScenarioYAML(data)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ValidateScenario(scenario); err != nil {
 		return nil, fmt.Errorf("invalid scenario: %w", err)
 	}
 
-	return &scenario, nil
+	return scenario, nil
 }
 
 // ParseScenarioYAMLString parses a Scenario from a YAML string and validates it.
 func ParseScenarioYAMLString(yamlText string) (*Scenario, error) {
 	return ParseScenarioYAML([]byte(yamlText))
+}
+
+// UnmarshalScenarioYAMLString parses YAML into a Scenario without calling [ValidateScenario].
+func UnmarshalScenarioYAMLString(yamlText string) (*Scenario, error) {
+	return UnmarshalScenarioYAML([]byte(yamlText))
 }
 
 // MarshalScenarioYAML marshals a Scenario to YAML bytes.
