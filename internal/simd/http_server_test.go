@@ -638,6 +638,85 @@ func TestHTTPServerCreateRunWithInvalidID(t *testing.T) {
 	}
 }
 
+func TestHTTPServerCreateRunOptimizationAliases(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{
+		"run_id": "alias-run",
+		"input": map[string]any{
+			"scenario_yaml": testScenarioYAML,
+			"duration_ms":   100,
+			"optimization": map[string]any{
+				"online":               true,
+				"target_p95_latency_ms": 80.0,
+				"host_drain_timeout_ms": 9000.0,
+				"memory_headroom_mb":    512.0,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rec, ok := store.Get("alias-run")
+	if !ok || rec == nil || rec.Input == nil || rec.Input.Optimization == nil {
+		t.Fatalf("expected stored run input optimization for alias-run")
+	}
+	if rec.Input.Optimization.DrainTimeoutMs != 9000 {
+		t.Fatalf("expected alias host_drain_timeout_ms -> drain_timeout_ms, got %d", rec.Input.Optimization.DrainTimeoutMs)
+	}
+	if rec.Input.Optimization.MemoryDownsizeHeadroomMb != 512 {
+		t.Fatalf("expected alias memory_headroom_mb -> memory_downsize_headroom_mb, got %f", rec.Input.Optimization.MemoryDownsizeHeadroomMb)
+	}
+}
+
+func TestHTTPServerCreateRunOptimizationAliasDoesNotOverrideCanonical(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{
+		"run_id": "alias-precedence-run",
+		"input": map[string]any{
+			"scenario_yaml": testScenarioYAML,
+			"duration_ms":   100,
+			"optimization": map[string]any{
+				"online":                        true,
+				"target_p95_latency_ms":         80.0,
+				"drain_timeout_ms":              2000.0,
+				"host_drain_timeout_ms":         9000.0,
+				"memory_downsize_headroom_mb":   256.0,
+				"memory_headroom_mb":            1024.0,
+				"unknown_alias_field":           777.0,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rec, ok := store.Get("alias-precedence-run")
+	if !ok || rec == nil || rec.Input == nil || rec.Input.Optimization == nil {
+		t.Fatalf("expected stored run input optimization for alias-precedence-run")
+	}
+	if rec.Input.Optimization.DrainTimeoutMs != 2000 {
+		t.Fatalf("expected canonical drain_timeout_ms to win, got %d", rec.Input.Optimization.DrainTimeoutMs)
+	}
+	if rec.Input.Optimization.MemoryDownsizeHeadroomMb != 256 {
+		t.Fatalf("expected canonical memory_downsize_headroom_mb to win, got %f", rec.Input.Optimization.MemoryDownsizeHeadroomMb)
+	}
+}
+
 func TestHTTPServerTimeSeries(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store, nil)
@@ -2457,6 +2536,128 @@ func TestHTTPServerUpdateWorkloadPattern(t *testing.T) {
 	_, _ = executor.Stop(rec.Run.Id)
 }
 
+func TestHTTPServerUpdateWorkloadPatternSnakeCaseArrivalFields(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	rec, err := store.Create("test-run-snake-pattern", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   300,
+		RealTimeMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := executor.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	updatedRec, _ := store.Get(rec.Run.Id)
+	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Skipf("Simulation completed too quickly (status: %v) - skipping snake_case pattern update test", updatedRec.Run.Status)
+	}
+
+	reqBody := map[string]any{
+		"pattern_key": "client:svc1:/test",
+		"pattern": map[string]any{
+			"from":          "client",
+			"source_kind":   "client",
+			"traffic_class": "ingress",
+			"to":            "svc1:/test",
+			"arrival": map[string]any{
+				"type":     "BURST",
+				"rate_rps": 75.0,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/"+rec.Run.Id+"/workload", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	patternState, ok := executor.GetWorkloadPattern(rec.Run.Id, "client:svc1:/test")
+	if !ok || patternState == nil {
+		t.Fatalf("expected updated workload pattern")
+	}
+	if patternState.Pattern.Arrival.Type != "bursty" {
+		t.Fatalf("expected normalized arrival type bursty, got %q", patternState.Pattern.Arrival.Type)
+	}
+	if patternState.Pattern.Arrival.RateRPS != 75 {
+		t.Fatalf("expected updated rate_rps 75, got %f", patternState.Pattern.Arrival.RateRPS)
+	}
+
+	_, _ = executor.Stop(rec.Run.Id)
+}
+
+func TestHTTPServerUpdateWorkloadPatternSnakeCaseBurstyFields(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	rec, err := store.Create("test-run-bursty-pattern", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   300,
+		RealTimeMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := executor.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	updatedRec, _ := store.Get(rec.Run.Id)
+	if updatedRec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Skipf("Simulation completed too quickly (status: %v) - skipping bursty pattern update test", updatedRec.Run.Status)
+	}
+
+	reqBody := map[string]any{
+		"pattern_key": "client:svc1:/test",
+		"pattern": map[string]any{
+			"from": "client",
+			"to":   "svc1:/test",
+			"arrival": map[string]any{
+				"type":                   "bursty",
+				"rate_rps":               60.0,
+				"burst_rate_rps":         180.0,
+				"burst_duration_seconds": 4.5,
+				"quiet_duration_seconds": 9.0,
+			},
+		},
+	}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/"+rec.Run.Id+"/workload", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	patternState, ok := executor.GetWorkloadPattern(rec.Run.Id, "client:svc1:/test")
+	if !ok || patternState == nil {
+		t.Fatalf("expected updated workload pattern")
+	}
+	if patternState.Pattern.Arrival.BurstRateRPS != 180 {
+		t.Fatalf("expected burst_rate_rps 180, got %f", patternState.Pattern.Arrival.BurstRateRPS)
+	}
+	if patternState.Pattern.Arrival.BurstDurationSeconds != 4.5 {
+		t.Fatalf("expected burst_duration_seconds 4.5, got %f", patternState.Pattern.Arrival.BurstDurationSeconds)
+	}
+	if patternState.Pattern.Arrival.QuietDurationSeconds != 9.0 {
+		t.Fatalf("expected quiet_duration_seconds 9.0, got %f", patternState.Pattern.Arrival.QuietDurationSeconds)
+	}
+
+	_, _ = executor.Stop(rec.Run.Id)
+}
+
 func TestHTTPServerUpdateWorkloadValidation(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store, nil)
@@ -2516,6 +2717,89 @@ func TestHTTPServerUpdateWorkloadValidation(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for zero rate, got %d", rr.Code)
+	}
+
+	// Pattern validation: missing from
+	reqBody = map[string]any{
+		"pattern_key": "client:svc1:/test",
+		"pattern": map[string]any{
+			"to": "svc1:/test",
+			"arrival": map[string]any{
+				"type":     "poisson",
+				"rate_rps": 10.0,
+			},
+		},
+	}
+	bodyBytes, _ = json.Marshal(reqBody)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/v1/runs/"+rec.Run.Id+"/workload", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for missing pattern.from, got %d", rr.Code)
+	}
+
+	// Pattern validation: invalid target format
+	reqBody = map[string]any{
+		"pattern_key": "client:svc1:/test",
+		"pattern": map[string]any{
+			"from": "client",
+			"to":   "svc1:",
+			"arrival": map[string]any{
+				"type":     "poisson",
+				"rate_rps": 10.0,
+			},
+		},
+	}
+	bodyBytes, _ = json.Marshal(reqBody)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/v1/runs/"+rec.Run.Id+"/workload", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for invalid pattern.to, got %d", rr.Code)
+	}
+
+	// Pattern validation: invalid arrival type
+	reqBody = map[string]any{
+		"pattern_key": "client:svc1:/test",
+		"pattern": map[string]any{
+			"from": "client",
+			"to":   "svc1:/test",
+			"arrival": map[string]any{
+				"type":     "typo",
+				"rate_rps": 10.0,
+			},
+		},
+	}
+	bodyBytes, _ = json.Marshal(reqBody)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/v1/runs/"+rec.Run.Id+"/workload", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for invalid arrival type, got %d", rr.Code)
+	}
+
+	// Pattern validation: non-positive arrival rate
+	reqBody = map[string]any{
+		"pattern_key": "client:svc1:/test",
+		"pattern": map[string]any{
+			"from": "client",
+			"to":   "svc1:/test",
+			"arrival": map[string]any{
+				"type":     "poisson",
+				"rate_rps": 0.0,
+			},
+		},
+	}
+	bodyBytes, _ = json.Marshal(reqBody)
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPatch, "/v1/runs/"+rec.Run.Id+"/workload", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for non-positive pattern.arrival.rate_rps, got %d", rr.Code)
 	}
 
 	// Test neither rate_rps nor pattern provided
@@ -2661,6 +2945,7 @@ func TestHTTPServerRenewOnlineLeaseLeaseNotConfigured(t *testing.T) {
 }
 
 func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
+	f64 := func(v float64) *float64 { return &v }
 	pb := &simulationv1.RunMetrics{
 		TotalRequests:                  10,
 		IngressRequests:                4,
@@ -2680,6 +2965,12 @@ func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 		CrossZoneRequestFraction:       0.1,
 		CrossZoneLatencyPenaltyMsTotal: 300,
 		CrossZoneLatencyPenaltyMsMean:  100,
+		SameZoneLatencyPenaltyMsTotal:  30,
+		SameZoneLatencyPenaltyMsMean:   10,
+		ExternalLatencyMsTotal:         40,
+		ExternalLatencyMsMean:          20,
+		TopologyLatencyPenaltyMsTotal:  370,
+		TopologyLatencyPenaltyMsMean:   37,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{
 				ServiceName:             "svc1",
@@ -2691,6 +2982,18 @@ func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 		InstanceRouteStats: []*simulationv1.InstanceRouteStats{
 			{
 				ServiceName: "svc1", EndpointPath: "/x", InstanceId: "svc1-instance-0", Strategy: "least_queue", SelectionCount: 12,
+			},
+		},
+		EndpointRequestStats: []*simulationv1.EndpointRequestStats{
+			{
+				ServiceName:             "svc1",
+				EndpointPath:            "/x",
+				RequestCount:            12,
+				ErrorCount:              1,
+				LatencyP95Ms:            f64(22),
+				RootLatencyP95Ms:        f64(44),
+				QueueWaitP95Ms:          f64(6),
+				ProcessingLatencyMeanMs: f64(11),
 			},
 		},
 	}
@@ -2722,6 +3025,21 @@ func TestConvertMetricsToJSONIncludesQueueAndErrorTaxonomy(t *testing.T) {
 	}
 	if j["cross_zone_latency_penalty_ms_mean"].(float64) != 100 {
 		t.Fatalf("json cross_zone_latency_penalty_ms_mean: %v", j["cross_zone_latency_penalty_ms_mean"])
+	}
+	if j["same_zone_latency_penalty_ms_total"].(float64) != 30 {
+		t.Fatalf("json same_zone_latency_penalty_ms_total: %v", j["same_zone_latency_penalty_ms_total"])
+	}
+	if j["external_latency_ms_mean"].(float64) != 20 {
+		t.Fatalf("json external_latency_ms_mean: %v", j["external_latency_ms_mean"])
+	}
+	if j["topology_latency_penalty_ms_mean"].(float64) != 37 {
+		t.Fatalf("json topology_latency_penalty_ms_mean: %v", j["topology_latency_penalty_ms_mean"])
+	}
+	es := j["endpoint_request_stats"].([]map[string]any)
+	if len(es) != 1 || es[0]["endpoint_path"].(string) != "/x" || es[0]["latency_p95_ms"].(float64) != 22 ||
+		es[0]["root_latency_p95_ms"].(float64) != 44 || es[0]["queue_wait_p95_ms"].(float64) != 6 ||
+		es[0]["processing_latency_mean_ms"].(float64) != 11 {
+		t.Fatalf("json endpoint_request_stats: %v", es)
 	}
 	rs := j["instance_route_stats"].([]map[string]any)
 	if len(rs) != 1 || rs[0]["instance_id"].(string) != "svc1-instance-0" || rs[0]["selection_count"].(int64) != 12 {
