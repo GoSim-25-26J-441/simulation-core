@@ -572,3 +572,41 @@ services:
 		t.Fatalf("expected ErrOnlineRunConcurrencyLimit, got %v", err)
 	}
 }
+
+func TestRunStoreOnlineLimitsRoundTrip(t *testing.T) {
+	store := NewRunStore()
+	limits := OnlineRunLimits{
+		MaxConcurrentOnlineRuns: 3,
+	}
+	store.SetOnlineLimits(limits)
+	got := store.OnlineLimits()
+	if got.MaxConcurrentOnlineRuns != 3 {
+		t.Fatalf("expected MaxConcurrentOnlineRuns=3, got %d", got.MaxConcurrentOnlineRuns)
+	}
+}
+
+func TestRunStoreSetBatchRecommendation(t *testing.T) {
+	store := NewRunStore()
+	if _, err := store.Create("run-batch-summary", &simulationv1.RunInput{ScenarioYaml: "hosts: []"}); err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetBatchRecommendation("run-batch-summary", true, 0.1, 0.9, "all constraints satisfied"); err != nil {
+		t.Fatalf("SetBatchRecommendation error: %v", err)
+	}
+	rec, ok := store.Get("run-batch-summary")
+	if !ok {
+		t.Fatal("expected run to exist")
+	}
+	if !rec.Run.BatchRecommendationFeasible {
+		t.Fatalf("expected feasible recommendation")
+	}
+	if rec.Run.BatchViolationScore != 0.1 || rec.Run.BatchEfficiencyScore != 0.9 {
+		t.Fatalf("unexpected batch scores: violation=%f efficiency=%f", rec.Run.BatchViolationScore, rec.Run.BatchEfficiencyScore)
+	}
+	if rec.Run.BatchRecommendationSummary != "all constraints satisfied" {
+		t.Fatalf("unexpected recommendation summary: %q", rec.Run.BatchRecommendationSummary)
+	}
+	if err := store.SetBatchRecommendation("missing-run", false, 1, 0, "missing"); err == nil {
+		t.Fatal("expected error for unknown run")
+	}
+}

@@ -7,8 +7,8 @@ func cloneRoutingPolicy(rp *config.RoutingPolicy) *config.RoutingPolicy {
 		return nil
 	}
 	out := &config.RoutingPolicy{
-		Strategy:      rp.Strategy,
-		StickyKeyFrom: rp.StickyKeyFrom,
+		Strategy:         rp.Strategy,
+		StickyKeyFrom:    rp.StickyKeyFrom,
 		LocalityZoneFrom: rp.LocalityZoneFrom,
 	}
 	if len(rp.Weights) > 0 {
@@ -25,13 +25,13 @@ func clonePlacementPolicy(pp *config.PlacementPolicy) *config.PlacementPolicy {
 		return nil
 	}
 	out := &config.PlacementPolicy{
-		RequiredZones:       append([]string(nil), pp.RequiredZones...),
-		PreferredZones:      append([]string(nil), pp.PreferredZones...),
-		AffinityZones:       append([]string(nil), pp.AffinityZones...),
-		AntiAffinityZones:   append([]string(nil), pp.AntiAffinityZones...),
+		RequiredZones:        append([]string(nil), pp.RequiredZones...),
+		PreferredZones:       append([]string(nil), pp.PreferredZones...),
+		AffinityZones:        append([]string(nil), pp.AffinityZones...),
+		AntiAffinityZones:    append([]string(nil), pp.AntiAffinityZones...),
 		AntiAffinityServices: append([]string(nil), pp.AntiAffinityServices...),
-		SpreadAcrossZones:   pp.SpreadAcrossZones,
-		MaxReplicasPerHost:  pp.MaxReplicasPerHost,
+		SpreadAcrossZones:    pp.SpreadAcrossZones,
+		MaxReplicasPerHost:   pp.MaxReplicasPerHost,
 	}
 	if len(pp.RequiredHostLabels) > 0 {
 		out.RequiredHostLabels = make(map[string]string, len(pp.RequiredHostLabels))
@@ -98,7 +98,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 		}
 	}
 
-	for i, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		ns := config.Service{
 			ID:        svc.ID,
 			Kind:      svc.Kind,
@@ -167,7 +168,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 				ns.Behavior.Topic = nt
 			}
 		}
-		for j, ep := range svc.Endpoints {
+		for j := range svc.Endpoints {
+			ep := &svc.Endpoints[j]
 			ne := config.Endpoint{
 				Path:            ep.Path,
 				MeanCPUMs:       ep.MeanCPUMs,
@@ -181,7 +183,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 				NetLatencyMs:    ep.NetLatencyMs,
 				Downstream:      make([]config.DownstreamCall, len(ep.Downstream)),
 			}
-			for k, ds := range ep.Downstream {
+			for k := range ep.Downstream {
+				ds := &ep.Downstream[k]
 				dc := config.DownstreamCall{
 					To:                    ds.To,
 					Mode:                  ds.Mode,
@@ -206,7 +209,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 		out.Services[i] = ns
 	}
 
-	for i, wl := range scenario.Workload {
+	for i := range scenario.Workload {
+		wl := &scenario.Workload[i]
 		var wlMetadata map[string]string
 		if len(wl.Metadata) > 0 {
 			wlMetadata = make(map[string]string, len(wl.Metadata))

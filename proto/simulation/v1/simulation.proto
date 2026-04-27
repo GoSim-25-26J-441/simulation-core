@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package simulation.v1;
 
-option go_package = "github.com/GoSim-25-26J-441/simulation-core/proto/simulation/v1;simulationv1";
+option go_package = "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1;simulationv1";
 
 // SimulationService is the gRPC "CLI plane" API exposed by simd.
 //

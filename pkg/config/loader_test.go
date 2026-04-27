@@ -400,7 +400,7 @@ func TestScenarioValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateScenario(tt.scenario)
+			err := ValidateScenario(tt.scenario)
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got none")
 			}
@@ -421,8 +421,8 @@ func TestValidateScenarioBurstAliasNormalizes(t *testing.T) {
 			{From: "client", To: "svc1:/test", Arrival: ArrivalSpec{Type: "burst", RateRPS: 10}},
 		},
 	}
-	if err := validateScenario(s); err != nil {
-		t.Fatalf("validateScenario: %v", err)
+	if err := ValidateScenario(s); err != nil {
+		t.Fatalf("ValidateScenario: %v", err)
 	}
 	if s.Workload[0].Arrival.Type != "bursty" {
 		t.Fatalf("burst alias: got type %q want bursty", s.Workload[0].Arrival.Type)
@@ -488,7 +488,7 @@ func TestValidateScenarioQueueServiceWithBehavior(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err != nil {
+	if err := ValidateScenario(s); err != nil {
 		t.Fatalf("expected valid queue service: %v", err)
 	}
 }
@@ -508,7 +508,7 @@ func TestValidateScenarioQueueInvalidDropPolicy(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for invalid drop_policy")
 	}
 }
@@ -532,7 +532,7 @@ func TestValidateScenarioTopicServiceValid(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err != nil {
+	if err := ValidateScenario(s); err != nil {
 		t.Fatalf("expected valid topic service: %v", err)
 	}
 }
@@ -556,7 +556,7 @@ func TestValidateScenarioTopicInvalidDropPolicy(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for invalid topic drop_policy")
 	}
 }
@@ -581,7 +581,7 @@ func TestValidateScenarioTopicDuplicateConsumerGroup(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for duplicate consumer_group")
 	}
 }
@@ -601,7 +601,7 @@ func TestValidateScenarioQueueInvalidConcurrencyBounds(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for invalid queue consumer concurrency bounds")
 	}
 }
@@ -625,7 +625,7 @@ func TestValidateScenarioTopicInvalidConcurrencyBounds(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for invalid topic subscriber concurrency bounds")
 	}
 }
@@ -666,7 +666,7 @@ func TestValidateScenarioQueueNegativeAckTimeoutRawField(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for negative queue ack_timeout_ms")
 	}
 }
@@ -686,7 +686,7 @@ func TestValidateScenarioQueueNegativeDeliveryLatencyRawField(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "mq:/orders", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for negative queue delivery latency")
 	}
 }
@@ -709,7 +709,7 @@ func TestValidateScenarioTopicNegativeCapacityRawField(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for negative topic capacity")
 	}
 }
@@ -732,7 +732,7 @@ func TestValidateScenarioTopicNegativeDeliveryLatencyRawField(t *testing.T) {
 		},
 		Workload: []WorkloadPattern{{From: "client", To: "consumer:/handle", Arrival: ArrivalSpec{Type: "poisson", RateRPS: 1}}},
 	}
-	if err := validateScenario(s); err == nil {
+	if err := ValidateScenario(s); err == nil {
 		t.Fatal("expected error for negative topic delivery latency")
 	}
 }

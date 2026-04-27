@@ -279,7 +279,8 @@ func EvaluateInfrastructureCost(scenario *config.Scenario) float64 {
 	totalMemoryGB := 0.0
 	totalReplicas := 0.0
 
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		replicas := float64(svc.Replicas)
 		if replicas < 1 {
 			replicas = 1

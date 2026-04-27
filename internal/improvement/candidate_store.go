@@ -106,7 +106,8 @@ func (c *CandidateStore) SortedBatchCandidateRunIDs() []string {
 		return CompareBatchScores(rows[i].bs, rows[j].bs, rows[i].h, rows[j].h)
 	})
 	out := make([]string, 0, len(rows))
-	for _, r := range rows {
+	for i := range rows {
+		r := &rows[i]
 		out = append(out, r.id)
 	}
 	return out
@@ -136,7 +137,8 @@ func (c *CandidateStore) BatchCandidateRecords() []BatchCandidateRecord {
 		return CompareBatchScores(rows[i].bs, rows[j].bs, rows[i].h, rows[j].h)
 	})
 	out := make([]BatchCandidateRecord, 0, len(rows))
-	for _, r := range rows {
+	for i := range rows {
+		r := &rows[i]
 		out = append(out, BatchCandidateRecord{
 			ConfigHash:      r.h,
 			RunID:           r.id,

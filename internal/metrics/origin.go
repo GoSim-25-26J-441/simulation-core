@@ -16,18 +16,18 @@ const (
 
 // Standard error reason values for request_error_count labels.
 const (
-	ReasonTimeout             = "timeout"
-	ReasonDownstreamFailure   = "downstream_failure"
-	ReasonCPUCapacity         = "cpu_capacity"
-	ReasonMemoryCapacity      = "memory_capacity"
-	ReasonRateLimited         = "rate_limited"
-	ReasonCircuitOpen         = "circuit_open"
-	ReasonNoInstance          = "no_instance"
-	ReasonDrainEvicted        = "drain_evicted"
-	ReasonExternalFailure     = "external_failure"
-	ReasonDependencyFailure   = "dependency_failure"
-	ReasonLocalFailure        = "local_failure"
-	ReasonDBConnectionTimeout = "db_connection_timeout"
+	ReasonTimeout              = "timeout"
+	ReasonDownstreamFailure    = "downstream_failure"
+	ReasonCPUCapacity          = "cpu_capacity"
+	ReasonMemoryCapacity       = "memory_capacity"
+	ReasonRateLimited          = "rate_limited"
+	ReasonCircuitOpen          = "circuit_open"
+	ReasonNoInstance           = "no_instance"
+	ReasonDrainEvicted         = "drain_evicted"
+	ReasonExternalFailure      = "external_failure"
+	ReasonDependencyFailure    = "dependency_failure"
+	ReasonLocalFailure         = "local_failure"
+	ReasonDBConnectionTimeout  = "db_connection_timeout"
 	ReasonDBConnectionRejected = "db_connection_rejected"
 )
 

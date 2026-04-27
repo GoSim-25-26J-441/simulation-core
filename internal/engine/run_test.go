@@ -159,6 +159,21 @@ func TestRunManagerRequests(t *testing.T) {
 	}
 }
 
+func TestRunManagerListRequestsSnapshot(t *testing.T) {
+	rm := NewRunManager("run-list-requests")
+	rm.AddRequest(&models.Request{ID: "req-a", ServiceName: "svc-a"})
+	rm.AddRequest(&models.Request{ID: "req-b", ServiceName: "svc-b"})
+
+	list := rm.ListRequests()
+	if len(list) != 2 {
+		t.Fatalf("expected 2 requests in snapshot, got %d", len(list))
+	}
+	ids := map[string]bool{list[0].ID: true, list[1].ID: true}
+	if !ids["req-a"] || !ids["req-b"] {
+		t.Fatalf("expected request IDs req-a and req-b, got %#v", ids)
+	}
+}
+
 func TestRunManagerLatencies(t *testing.T) {
 	rm := NewRunManager("run-latencies")
 

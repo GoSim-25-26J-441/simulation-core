@@ -152,10 +152,10 @@ func TestOnlineRunCompletionHeartbeatExpired(t *testing.T) {
 		Optimization: &simulationv1.OptimizationConfig{
 			Online:               true,
 			TargetP95LatencyMs:   50,
-			ControlIntervalMs:    30,
+			ControlIntervalMs:    100,
 			AllowUnboundedOnline: true,
 			MaxNoopIntervals:     -1,
-			LeaseTtlMs:           40,
+			LeaseTtlMs:           300,
 			MaxOnlineDurationMs:  600000,
 		},
 	})

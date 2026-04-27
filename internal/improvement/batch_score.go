@@ -13,34 +13,34 @@ const scoreEps = 1e-9
 
 // BatchScore holds feasibility-first ranking components for a candidate.
 type BatchScore struct {
-	Feasible         bool
-	ViolationScore   float64
-	EfficiencyScore  float64
-	LatViolation     float64
-	P99Violation     float64
-	ErrViolation     float64
-	TputViolation    float64
-	QueueDepthViolation        float64
-	TopicBacklogViolation      float64
-	TopicLagViolation          float64
-	QueueOldestAgeViolation    float64
-	TopicOldestAgeViolation    float64
-	QueueDropViolation         float64
-	TopicDropViolation         float64
-	QueueDlqViolation          float64
-	TopicDlqViolation          float64
-	LocalityViolation          float64
-	CrossZoneViolation         float64
-	TopologyLatencyViolation   float64
-	InfraCost        float64
-	ServiceCPUBal    float64
-	ServiceMemBal    float64
-	HostCPUBal       float64
-	HostMemBal       float64
-	Churn            float64
-	LocalityPenalty  float64
-	CrossZonePenalty float64
-	TopologyPenalty  float64
+	Feasible                 bool
+	ViolationScore           float64
+	EfficiencyScore          float64
+	LatViolation             float64
+	P99Violation             float64
+	ErrViolation             float64
+	TputViolation            float64
+	QueueDepthViolation      float64
+	TopicBacklogViolation    float64
+	TopicLagViolation        float64
+	QueueOldestAgeViolation  float64
+	TopicOldestAgeViolation  float64
+	QueueDropViolation       float64
+	TopicDropViolation       float64
+	QueueDlqViolation        float64
+	TopicDlqViolation        float64
+	LocalityViolation        float64
+	CrossZoneViolation       float64
+	TopologyLatencyViolation float64
+	InfraCost                float64
+	ServiceCPUBal            float64
+	ServiceMemBal            float64
+	HostCPUBal               float64
+	HostMemBal               float64
+	Churn                    float64
+	LocalityPenalty          float64
+	CrossZonePenalty         float64
+	TopologyPenalty          float64
 }
 
 func bandPenalty(u, low, high float64) float64 {
@@ -122,7 +122,8 @@ func ComputeInfraCostWeighted(s *config.Scenario, w *simulationv1.BatchCostWeigh
 		return EvaluateInfrastructureCost(s)
 	}
 	var sumCPU, sumMemGB, sumRep float64
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		r := float64(svc.Replicas)
 		if r < 1 {
 			r = 1

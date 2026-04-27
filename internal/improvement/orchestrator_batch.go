@@ -3,6 +3,7 @@ package improvement
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -44,7 +45,11 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 			var seed int64
 			if spec.DeterministicCandidateSeeds {
 				h := batchspec.ConfigHash(sc)
-				seed = int64(h) ^ int64(i+1)
+				seedBase, err := strconv.ParseInt(strconv.FormatUint(h%maxInt64Uint64, 10), 10, 64)
+				if err != nil {
+					return nil, 0, err
+				}
+				seed = seedBase ^ int64(i+1)
 			}
 			m, err := o.evaluateConfigurationMetrics(ctx, sc, durationMs, cand, seed)
 			if err != nil {
@@ -100,3 +105,5 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 
 	return result, nil
 }
+
+const maxInt64Uint64 = ^uint64(0) >> 1

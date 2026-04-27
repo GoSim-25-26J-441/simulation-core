@@ -183,7 +183,9 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 			}
 			if r.Batch != nil {
 				// Structured batch fields (feasible, violation, efficiency, summary) are authoritative for UI/API.
-				_ = a.store.SetBatchRecommendation(runID, r.Batch.Feasible, r.Batch.BestScore.ViolationScore, r.Batch.BestScore.EfficiencyScore, r.Batch.Summary)
+				if err := a.store.SetBatchRecommendation(runID, r.Batch.Feasible, r.Batch.BestScore.ViolationScore, r.Batch.BestScore.EfficiencyScore, r.Batch.Summary); err != nil {
+					logger.Warn("failed to store batch recommendation", "run_id", runID, "error", err)
+				}
 			}
 			iterClamped := int32(math.Max(0, math.Min(float64(r.Iterations), float64(math.MaxInt32))))
 			candidates := buildTopCandidateRunIDs(r, getTopCandidatesN())

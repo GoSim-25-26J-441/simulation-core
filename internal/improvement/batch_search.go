@@ -112,7 +112,8 @@ func RunBatchBeamSearch(
 
 	for depth := 0; depth < depthLimit; depth++ {
 		var nextLayer []beamState
-		for _, st := range frontier {
+		for i := range frontier {
+			st := &frontier[i]
 			neighbors := GenerateBatchNeighbors(spec, baseline, st.scenario, st.metrics)
 			for _, nsc := range neighbors {
 				ns, evaluated, err := tryEval(nsc)
@@ -135,11 +136,12 @@ func RunBatchBeamSearch(
 		}
 
 		var feas, infeas []beamState
-		for _, s := range nextLayer {
+		for i := range nextLayer {
+			s := &nextLayer[i]
 			if s.score.Feasible {
-				feas = append(feas, s)
+				feas = append(feas, *s)
 			} else {
-				infeas = append(infeas, s)
+				infeas = append(infeas, *s)
 			}
 		}
 		sort.Slice(feas, func(i, j int) bool {

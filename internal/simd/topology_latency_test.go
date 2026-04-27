@@ -34,7 +34,7 @@ func TestCrossZoneNetworkPenaltyIncreasesRootLatencyVersusSameZone(t *testing.T)
 				{
 					ID: "api", Replicas: 1, Model: "cpu",
 					Placement: &config.PlacementPolicy{RequiredZones: []string{apiZone}},
-					Routing:     &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
+					Routing:   &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
 					Endpoints: []config.Endpoint{{
 						Path: "/x", MeanCPUMs: 2, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
 					}},

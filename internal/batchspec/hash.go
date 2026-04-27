@@ -21,19 +21,29 @@ func ConfigHash(s *config.Scenario) uint64 {
 	h := fnv.New64a()
 	writeStr := func(x string) {
 		_, _ = h.Write([]byte(x))
-		_ = binary.Write(h, binary.LittleEndian, byte(0))
+		if err := binary.Write(h, binary.LittleEndian, byte(0)); err != nil {
+			panic(err)
+		}
 	}
 	writeF := func(x float64) {
-		_ = binary.Write(h, binary.LittleEndian, x)
+		if err := binary.Write(h, binary.LittleEndian, x); err != nil {
+			panic(err)
+		}
 	}
 	writeI := func(x int) {
-		_ = binary.Write(h, binary.LittleEndian, int64(x))
+		if err := binary.Write(h, binary.LittleEndian, int64(x)); err != nil {
+			panic(err)
+		}
 	}
 	writeI64 := func(x int64) {
-		_ = binary.Write(h, binary.LittleEndian, x)
+		if err := binary.Write(h, binary.LittleEndian, x); err != nil {
+			panic(err)
+		}
 	}
 	writeB := func(x bool) {
-		_ = binary.Write(h, binary.LittleEndian, x)
+		if err := binary.Write(h, binary.LittleEndian, x); err != nil {
+			panic(err)
+		}
 	}
 
 	// --- metadata ---

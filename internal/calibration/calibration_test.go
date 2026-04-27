@@ -86,10 +86,10 @@ func TestCalibrateEndpointProcessingUsesEndpointPredictedBaseline(t *testing.T) 
 		},
 	}
 	out, rep, err := CalibrateScenario(base, obs, &CalibrateOptions{
-		Overwrite:        OverwriteAlways,
-		PredictedRun:     pred,
-		MinScaleFactor:   0.1,
-		MaxScaleFactor:   10,
+		Overwrite:      OverwriteAlways,
+		PredictedRun:   pred,
+		MinScaleFactor: 0.1,
+		MaxScaleFactor: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -385,8 +385,8 @@ func TestLowConfidenceNetAndCapacityRespectPolicy(t *testing.T) {
 			{
 				ID: "mq", Kind: "queue", Replicas: 1, Model: "cpu",
 				Behavior: &config.ServiceBehavior{Queue: &config.QueueBehavior{
-					Capacity:        20,
-					ConsumerTarget:  "api:/pub",
+					Capacity:          20,
+					ConsumerTarget:    "api:/pub",
 					DeliveryLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
 				}},
 				Endpoints: []config.Endpoint{{Path: "/orders"}},

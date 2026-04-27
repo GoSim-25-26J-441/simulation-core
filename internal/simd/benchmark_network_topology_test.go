@@ -103,7 +103,7 @@ func TestSameZoneDifferentHostAppliesSameZoneLatency(t *testing.T) {
 			{
 				ID: "api", Replicas: 1, Model: "cpu",
 				Placement: &config.PlacementPolicy{
-					RequiredZones:       []string{"zone-a"},
+					RequiredZones:        []string{"zone-a"},
 					AntiAffinityServices: []string{"edge"},
 				},
 				Routing: &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
@@ -157,9 +157,9 @@ func TestExternalServiceAppliesNetworkExternalLatency(t *testing.T) {
 			},
 		},
 		Workload: []config.WorkloadPattern{{
-			From:     "c",
-			To:       "edge:/in",
-			Arrival:  config.ArrivalSpec{Type: "constant", RateRPS: 15},
+			From:    "c",
+			To:      "edge:/in",
+			Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 15},
 		}},
 	}
 	rm, err := RunScenarioForMetrics(sc, benchNetDur, benchNetSeed, false)

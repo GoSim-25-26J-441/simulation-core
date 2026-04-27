@@ -271,4 +271,3 @@ func (o *Optimizer) GetIteration() int {
 	defer o.mu.RUnlock()
 	return o.iteration
 }
-

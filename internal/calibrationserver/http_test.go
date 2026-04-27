@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -41,14 +42,14 @@ workload:
 		"observed": map[string]any{
 			"window_seconds": 60,
 			"run_metrics": map[string]any{
-				"total_requests":       100,
-				"ingress_requests":     100,
-				"ingress_error_rate":   0,
-				"latency_p50_ms":       5,
-				"latency_p95_ms":       10,
-				"latency_p99_ms":       20,
-				"latency_mean_ms":      6,
-				"throughput_rps":       10,
+				"total_requests":         100,
+				"ingress_requests":       100,
+				"ingress_error_rate":     0,
+				"latency_p50_ms":         5,
+				"latency_p95_ms":         10,
+				"latency_p99_ms":         20,
+				"latency_mean_ms":        6,
+				"throughput_rps":         10,
 				"ingress_throughput_rps": 10,
 			},
 		},
@@ -116,6 +117,20 @@ func postCalibrate(t *testing.T, body map[string]any) *httptest.ResponseRecorder
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/calibrate", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func postValidate(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	Register(mux)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/validate", bytes.NewReader(raw))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
@@ -377,4 +392,110 @@ func TestCalibrateHTTP_PredictedRunUsesModelsRunMetrics(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestCalibrateOptionsFromJSONDefaultsAndOverrides(t *testing.T) {
+	def := calibrateOptionsFromJSON(nil)
+	if def == nil {
+		t.Fatal("expected defaults")
+	}
+	if def.ConfidenceFloor <= 0 || def.MinScaleFactor <= 0 || def.MaxScaleFactor <= 0 {
+		t.Fatalf("unexpected default options: %#v", def)
+	}
+
+	in := &struct {
+		Overwrite       string  `json:"overwrite,omitempty"`
+		ConfidenceFloor float64 `json:"confidence_floor,omitempty"`
+		MinScaleFactor  float64 `json:"min_scale_factor,omitempty"`
+		MaxScaleFactor  float64 `json:"max_scale_factor,omitempty"`
+	}{
+		Overwrite:       "always",
+		ConfidenceFloor: 0.4,
+		MinScaleFactor:  0.5,
+		MaxScaleFactor:  3.5,
+	}
+	got := calibrateOptionsFromJSON(in)
+	if got.Overwrite != calibration.OverwriteAlways {
+		t.Fatalf("expected overwrite always, got %v", got.Overwrite)
+	}
+	if got.ConfidenceFloor != 0.4 || got.MinScaleFactor != 0.5 || got.MaxScaleFactor != 3.5 {
+		t.Fatalf("unexpected override options: %#v", got)
+	}
+}
+
+func TestMergeCalibrationReportWarnings_DedupesAndPrefixes(t *testing.T) {
+	rep := &calibration.CalibrationReport{
+		Warnings:             []string{"w1", " w1 ", ""},
+		AmbiguousMappings:    []string{"m1"},
+		SkippedLowConfidence: []string{"s1"},
+	}
+	got := mergeCalibrationReportWarnings(rep)
+	want := []string{"w1", "ambiguous: m1", "skipped_low_confidence: s1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merge warnings = %v, want %v", got, want)
+	}
+}
+
+func TestValidateHTTPMethodNotAllowed(t *testing.T) {
+	mux := http.NewServeMux()
+	Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/v1/validate", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestValidateHTTPBadRequestPaths(t *testing.T) {
+	t.Run("bad json", func(t *testing.T) {
+		mux := http.NewServeMux()
+		Register(mux)
+		req := httptest.NewRequest(http.MethodPost, "/v1/validate", bytes.NewReader([]byte(`{`)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("missing scenario", func(t *testing.T) {
+		rec := postValidate(t, map[string]any{
+			"observed_format": calibration.FormatSimulatorExport,
+			"observed":        map[string]any{"window": "1s", "run_metrics": map[string]any{"total_requests": 1}},
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("missing observed", func(t *testing.T) {
+		rec := postValidate(t, map[string]any{
+			"scenario_yaml":   strings.TrimSpace(testScenarioYAMLRate1),
+			"observed_format": calibration.FormatSimulatorExport,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("invalid tolerance overrides", func(t *testing.T) {
+		rec := postValidate(t, map[string]any{
+			"scenario_yaml":   strings.TrimSpace(testScenarioYAMLRate1),
+			"observed_format": calibration.FormatSimulatorExport,
+			"observed": map[string]any{
+				"window":      "1s",
+				"run_metrics": map[string]any{"total_requests": 10, "ingress_requests": 10, "ingress_throughput_rps": 1},
+			},
+			"validate_options": map[string]any{
+				"tolerance_profile": "strict",
+				"tolerances": map[string]any{
+					"latency_p95_pct": "not-a-number",
+				},
+			},
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid tolerance override, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }
