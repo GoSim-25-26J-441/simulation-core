@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -376,5 +377,47 @@ func TestCalibrateHTTP_PredictedRunUsesModelsRunMetrics(t *testing.T) {
 	})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCalibrateOptionsFromJSONDefaultsAndOverrides(t *testing.T) {
+	def := calibrateOptionsFromJSON(nil)
+	if def == nil {
+		t.Fatal("expected defaults")
+	}
+	if def.ConfidenceFloor <= 0 || def.MinScaleFactor <= 0 || def.MaxScaleFactor <= 0 {
+		t.Fatalf("unexpected default options: %#v", def)
+	}
+
+	in := &struct {
+		Overwrite       string  `json:"overwrite,omitempty"`
+		ConfidenceFloor float64 `json:"confidence_floor,omitempty"`
+		MinScaleFactor  float64 `json:"min_scale_factor,omitempty"`
+		MaxScaleFactor  float64 `json:"max_scale_factor,omitempty"`
+	}{
+		Overwrite:       "always",
+		ConfidenceFloor: 0.4,
+		MinScaleFactor:  0.5,
+		MaxScaleFactor:  3.5,
+	}
+	got := calibrateOptionsFromJSON(in)
+	if got.Overwrite != calibration.OverwriteAlways {
+		t.Fatalf("expected overwrite always, got %v", got.Overwrite)
+	}
+	if got.ConfidenceFloor != 0.4 || got.MinScaleFactor != 0.5 || got.MaxScaleFactor != 3.5 {
+		t.Fatalf("unexpected override options: %#v", got)
+	}
+}
+
+func TestMergeCalibrationReportWarnings_DedupesAndPrefixes(t *testing.T) {
+	rep := &calibration.CalibrationReport{
+		Warnings:             []string{"w1", " w1 ", ""},
+		AmbiguousMappings:    []string{"m1"},
+		SkippedLowConfidence: []string{"s1"},
+	}
+	got := mergeCalibrationReportWarnings(rep)
+	want := []string{"w1", "ambiguous: m1", "skipped_low_confidence: s1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merge warnings = %v, want %v", got, want)
 	}
 }

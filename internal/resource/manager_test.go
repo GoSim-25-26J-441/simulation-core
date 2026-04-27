@@ -233,6 +233,107 @@ func TestManagerAllocateCPU(t *testing.T) {
 	m.ReleaseCPU(instanceID, 100.0, simTime)
 }
 
+func TestManagerUtilityAndBrokerAccessors(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4, MemoryGB: 8},
+			{ID: "host-2", Cores: 4, MemoryGB: 8},
+		},
+		Services: []config.Service{
+			{
+				ID:       "queue-broker",
+				Kind:     "queue",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0},
+				},
+				Behavior: &config.ServiceBehavior{
+					Queue: &config.QueueBehavior{
+						ConsumerTarget:      "worker:/w",
+						ConsumerConcurrency: 1,
+						Capacity:            8,
+					},
+				},
+			},
+			{
+				ID:       "topic-broker",
+				Kind:     "topic",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/t", MeanCPUMs: 1, CPUSigmaMs: 0},
+				},
+				Behavior: &config.ServiceBehavior{
+					Topic: &config.TopicBehavior{
+						Subscribers: []config.TopicSubscriber{
+							{Name: "sub-a", ConsumerGroup: "g1", ConsumerTarget: "worker:/w"},
+						},
+					},
+				},
+			},
+			{
+				ID:       "worker",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/w", MeanCPUMs: 1, CPUSigmaMs: 0},
+				},
+			},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+
+	m.SetScaleDownDrainTimeout(3 * time.Second)
+	now := time.Now()
+	m.NoteSimTime(now)
+	if got := m.LastSimTime(); got.IsZero() || got.Before(now) {
+		t.Fatalf("LastSimTime not updated: %v", got)
+	}
+
+	ids := m.HostIDs()
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 host IDs, got %d", len(ids))
+	}
+
+	svcIDs := m.ListServiceIDs()
+	if len(svcIDs) == 0 {
+		t.Fatal("expected non-empty service IDs")
+	}
+
+	qShard := m.GetBrokerQueue("queue-broker", "/q", &config.QueueBehavior{
+		ConsumerTarget:      "worker:/w",
+		ConsumerConcurrency: 1,
+		Capacity:            8,
+	})
+	if qShard == nil {
+		t.Fatal("expected non-nil queue shard")
+	}
+
+	sub := &config.TopicSubscriber{Name: "sub-a", ConsumerGroup: "g1", ConsumerTarget: "worker:/w"}
+	tShard := m.GetBrokerTopicSubscriberShard("topic-broker", "/t", "g1", &config.TopicBehavior{}, sub)
+	if tShard == nil {
+		t.Fatal("expected non-nil topic shard")
+	}
+	tPartShard := m.GetBrokerTopicSubscriberPartitionShard("topic-broker", "/t", 1, "g1", &config.TopicBehavior{}, sub)
+	if tPartShard == nil {
+		t.Fatal("expected non-nil topic partition shard")
+	}
+
+	if m.BrokerQueues() == nil {
+		t.Fatal("expected broker queues registry")
+	}
+	if qs := m.QueueBrokerHealthSnapshots(now); len(qs) == 0 {
+		t.Fatal("expected queue snapshots to be non-empty")
+	}
+	if ts := m.TopicBrokerHealthSnapshots(now); len(ts) == 0 {
+		t.Fatal("expected topic snapshots to be non-empty")
+	}
+}
+
 func TestManagerQueueOperations(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{

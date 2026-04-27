@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -120,5 +121,68 @@ func TestBuildTopCandidateRunIDs_EmptyRuns(t *testing.T) {
 	got0 := buildTopCandidateRunIDs(r, 0)
 	if len(got0) != 0 {
 		t.Errorf("buildTopCandidateRunIDs(nil runs, 0) = %v, want []", got0)
+	}
+}
+
+func TestGetCallbackWhitelist(t *testing.T) {
+	t.Setenv(envCallbackWhitelist, "")
+	if got := getCallbackWhitelist(); got != nil {
+		t.Fatalf("expected nil for empty env, got %v", got)
+	}
+
+	t.Setenv(envCallbackWhitelist, "  ,  ")
+	if got := getCallbackWhitelist(); got != nil {
+		t.Fatalf("expected nil for whitespace env, got %v", got)
+	}
+
+	t.Setenv(envCallbackWhitelist, "example.com, 10.0.0.1 ,localhost")
+	got := getCallbackWhitelist()
+	want := []string{"example.com", "10.0.0.1", "localhost"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("getCallbackWhitelist() = %v, want %v", got, want)
+	}
+}
+
+func TestGetTopCandidatesN(t *testing.T) {
+	_ = os.Unsetenv(envTopCandidates)
+	if got := getTopCandidatesN(); got != 0 {
+		t.Fatalf("unset env expected 0, got %d", got)
+	}
+
+	t.Setenv(envTopCandidates, "-1")
+	if got := getTopCandidatesN(); got != 0 {
+		t.Fatalf("negative env expected 0, got %d", got)
+	}
+
+	t.Setenv(envTopCandidates, "not-a-number")
+	if got := getTopCandidatesN(); got != 0 {
+		t.Fatalf("invalid env expected 0, got %d", got)
+	}
+
+	t.Setenv(envTopCandidates, "7")
+	if got := getTopCandidatesN(); got != 7 {
+		t.Fatalf("valid env expected 7, got %d", got)
+	}
+}
+
+func TestTrimTopBatchCandidates(t *testing.T) {
+	ordered := []string{"a", "b", "a", "", "c", "d"}
+
+	gotAll := trimTopBatchCandidates(ordered, "c", 0)
+	wantAll := []string{"a", "b", "c", "d"}
+	if !reflect.DeepEqual(gotAll, wantAll) {
+		t.Fatalf("trimTopBatchCandidates(all) = %v, want %v", gotAll, wantAll)
+	}
+
+	gotTop := trimTopBatchCandidates(ordered, "d", 2)
+	wantTop := []string{"a", "b", "d"}
+	if !reflect.DeepEqual(gotTop, wantTop) {
+		t.Fatalf("trimTopBatchCandidates(top) = %v, want %v", gotTop, wantTop)
+	}
+
+	gotNoDupBest := trimTopBatchCandidates([]string{"x", "y", "z"}, "y", 2)
+	wantNoDupBest := []string{"x", "y"}
+	if !reflect.DeepEqual(gotNoDupBest, wantNoDupBest) {
+		t.Fatalf("trimTopBatchCandidates(no dup best) = %v, want %v", gotNoDupBest, wantNoDupBest)
 	}
 }
