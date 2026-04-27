@@ -233,6 +233,107 @@ func TestManagerAllocateCPU(t *testing.T) {
 	m.ReleaseCPU(instanceID, 100.0, simTime)
 }
 
+func TestManagerUtilityAndBrokerAccessors(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "host-1", Cores: 4, MemoryGB: 8},
+			{ID: "host-2", Cores: 4, MemoryGB: 8},
+		},
+		Services: []config.Service{
+			{
+				ID:       "queue-broker",
+				Kind:     "queue",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0},
+				},
+				Behavior: &config.ServiceBehavior{
+					Queue: &config.QueueBehavior{
+						ConsumerTarget:      "worker:/w",
+						ConsumerConcurrency: 1,
+						Capacity:            8,
+					},
+				},
+			},
+			{
+				ID:       "topic-broker",
+				Kind:     "topic",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/t", MeanCPUMs: 1, CPUSigmaMs: 0},
+				},
+				Behavior: &config.ServiceBehavior{
+					Topic: &config.TopicBehavior{
+						Subscribers: []config.TopicSubscriber{
+							{Name: "sub-a", ConsumerGroup: "g1", ConsumerTarget: "worker:/w"},
+						},
+					},
+				},
+			},
+			{
+				ID:       "worker",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{Path: "/w", MeanCPUMs: 1, CPUSigmaMs: 0},
+				},
+			},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+
+	m.SetScaleDownDrainTimeout(3 * time.Second)
+	now := time.Now()
+	m.NoteSimTime(now)
+	if got := m.LastSimTime(); got.IsZero() || got.Before(now) {
+		t.Fatalf("LastSimTime not updated: %v", got)
+	}
+
+	ids := m.HostIDs()
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 host IDs, got %d", len(ids))
+	}
+
+	svcIDs := m.ListServiceIDs()
+	if len(svcIDs) == 0 {
+		t.Fatal("expected non-empty service IDs")
+	}
+
+	qShard := m.GetBrokerQueue("queue-broker", "/q", &config.QueueBehavior{
+		ConsumerTarget:      "worker:/w",
+		ConsumerConcurrency: 1,
+		Capacity:            8,
+	})
+	if qShard == nil {
+		t.Fatal("expected non-nil queue shard")
+	}
+
+	sub := &config.TopicSubscriber{Name: "sub-a", ConsumerGroup: "g1", ConsumerTarget: "worker:/w"}
+	tShard := m.GetBrokerTopicSubscriberShard("topic-broker", "/t", "g1", &config.TopicBehavior{}, sub)
+	if tShard == nil {
+		t.Fatal("expected non-nil topic shard")
+	}
+	tPartShard := m.GetBrokerTopicSubscriberPartitionShard("topic-broker", "/t", 1, "g1", &config.TopicBehavior{}, sub)
+	if tPartShard == nil {
+		t.Fatal("expected non-nil topic partition shard")
+	}
+
+	if m.BrokerQueues() == nil {
+		t.Fatal("expected broker queues registry")
+	}
+	if qs := m.QueueBrokerHealthSnapshots(now); len(qs) == 0 {
+		t.Fatal("expected queue snapshots to be non-empty")
+	}
+	if ts := m.TopicBrokerHealthSnapshots(now); len(ts) == 0 {
+		t.Fatal("expected topic snapshots to be non-empty")
+	}
+}
+
 func TestManagerQueueOperations(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{
@@ -988,6 +1089,66 @@ func TestManagerUpdateServiceResourcesMemoryDownsizeRejected(t *testing.T) {
 	inst.AllocateMemory(100)
 	if err := m.UpdateServiceResourcesWithHeadroom("svc1", 0, 50, 16); err == nil {
 		t.Fatal("expected error when new memory limit is below active usage plus headroom")
+	}
+}
+
+func TestManagerWorkReservationHelpersAndHostMemoryUtilization(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4, MemoryGB: 2}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, Model: "cpu"},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	instances := m.GetInstancesForService("svc1")
+	if len(instances) != 1 {
+		t.Fatalf("expected one instance, got %d", len(instances))
+	}
+	inst := instances[0]
+	now := time.Unix(1000, 0)
+
+	if _, _, err := m.ReserveCPUWork("missing", now, 20); err == nil {
+		t.Fatal("expected ReserveCPUWork to fail for unknown instance")
+	}
+	cpuStart, cpuEnd, err := m.ReserveCPUWork(inst.ID(), now, 20)
+	if err != nil {
+		t.Fatalf("ReserveCPUWork error: %v", err)
+	}
+	if !cpuEnd.After(cpuStart) {
+		t.Fatalf("expected cpuEnd after cpuStart, got start=%v end=%v", cpuStart, cpuEnd)
+	}
+
+	if _, _, _, _, err := m.ReserveDBWork("missing", cpuEnd, 25, 2); err == nil {
+		t.Fatal("expected ReserveDBWork to fail for unknown instance")
+	}
+	ioStart, ioEnd, slotIdx, waitMs, err := m.ReserveDBWork(inst.ID(), cpuEnd, 25, 2)
+	if err != nil {
+		t.Fatalf("ReserveDBWork error: %v", err)
+	}
+	if !ioEnd.After(ioStart) {
+		t.Fatalf("expected ioEnd after ioStart, got start=%v end=%v", ioStart, ioEnd)
+	}
+	if slotIdx < 0 {
+		t.Fatalf("expected non-negative slot index, got %d", slotIdx)
+	}
+	if waitMs < 0 {
+		t.Fatalf("expected non-negative waitMs, got %f", waitMs)
+	}
+
+	m.ReleaseDBConnection("missing") // no-op path
+	m.ReleaseDBConnection(inst.ID())
+	m.RollbackCPUTailReservation("missing", cpuStart, cpuEnd) // no-op path
+	m.RollbackCPUTailReservation(inst.ID(), cpuStart, cpuEnd)
+
+	if err := m.AllocateMemory(inst.ID(), 1024); err != nil {
+		t.Fatalf("AllocateMemory error: %v", err)
+	}
+	util := m.MaxHostMemoryUtilization()
+	if util <= 0 {
+		t.Fatalf("expected positive host memory utilization, got %f", util)
 	}
 }
 

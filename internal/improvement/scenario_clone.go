@@ -98,7 +98,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 		}
 	}
 
-	for i, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		ns := config.Service{
 			ID:        svc.ID,
 			Kind:      svc.Kind,
@@ -167,7 +168,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 				ns.Behavior.Topic = nt
 			}
 		}
-		for j, ep := range svc.Endpoints {
+		for j := range svc.Endpoints {
+			ep := &svc.Endpoints[j]
 			ne := config.Endpoint{
 				Path:            ep.Path,
 				MeanCPUMs:       ep.MeanCPUMs,
@@ -181,7 +183,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 				NetLatencyMs:    ep.NetLatencyMs,
 				Downstream:      make([]config.DownstreamCall, len(ep.Downstream)),
 			}
-			for k, ds := range ep.Downstream {
+			for k := range ep.Downstream {
+				ds := &ep.Downstream[k]
 				dc := config.DownstreamCall{
 					To:                    ds.To,
 					Mode:                  ds.Mode,
@@ -206,7 +209,8 @@ func cloneScenario(scenario *config.Scenario) *config.Scenario {
 		out.Services[i] = ns
 	}
 
-	for i, wl := range scenario.Workload {
+	for i := range scenario.Workload {
+		wl := &scenario.Workload[i]
 		var wlMetadata map[string]string
 		if len(wl.Metadata) > 0 {
 			wlMetadata = make(map[string]string, len(wl.Metadata))

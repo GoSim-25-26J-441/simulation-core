@@ -86,7 +86,7 @@ func resolveServiceExecutionProfile(svc *config.Service, ep *config.Endpoint, ds
 			cpu = ceiling
 		}
 		// Working-set pressure for datastores
-		mem = mem * 1.05
+		mem *= 1.05
 		if dsKind == "db" || kind == "database" {
 			net *= 1.02
 		}

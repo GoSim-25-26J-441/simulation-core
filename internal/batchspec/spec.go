@@ -3,6 +3,7 @@ package batchspec
 import (
 	"errors"
 	"fmt"
+	"math"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -193,7 +194,7 @@ func initBoundsFromBaseline(s *BatchSpec, base *config.Scenario) {
 	if base == nil {
 		return
 	}
-	nh := int32(len(base.Hosts))
+	nh := safeInt32FromInt(len(base.Hosts))
 	if nh < 1 {
 		nh = 1
 	}
@@ -209,13 +210,13 @@ func initBoundsFromBaseline(s *BatchSpec, base *config.Scenario) {
 	s.MaxMemPerInst = 65536
 
 	if len(base.Hosts) > 0 {
-		c := int32(base.Hosts[0].Cores)
+		c := safeInt32FromInt(base.Hosts[0].Cores)
 		if c < 1 {
 			c = 1
 		}
 		s.MinHostCPUCores = c
 		s.MaxHostCPUCores = c * 4
-		gb := int32(base.Hosts[0].MemoryGB)
+		gb := safeInt32FromInt(base.Hosts[0].MemoryGB)
 		if gb < 1 {
 			gb = 16
 		}
@@ -515,4 +516,14 @@ func (s *BatchSpec) RefinementSpec() *BatchSpec {
 	r.AllowedActionsOrdered = make([]simulationv1.BatchScalingAction, len(s.AllowedActionsOrdered))
 	copy(r.AllowedActionsOrdered, s.AllowedActionsOrdered)
 	return &r
+}
+
+func safeInt32FromInt(v int) int32 {
+	if v > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	if v < math.MinInt32 {
+		return math.MinInt32
+	}
+	return int32(v)
 }

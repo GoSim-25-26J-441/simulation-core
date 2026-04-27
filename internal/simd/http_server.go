@@ -16,6 +16,7 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -108,28 +109,57 @@ func (s *HTTPServer) handleRunProgress(w http.ResponseWriter, runID string) {
 // handleValidateScenario handles POST /v1/scenarios:validate.
 func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var req struct {
 		ScenarioYAML string `json:"scenario_yaml"`
+		Mode         string `json:"mode,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "preflight"
+	}
+	if mode != "preflight" {
+		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: preflight)")
+		return
+	}
 	if strings.TrimSpace(req.ScenarioYAML) == "" {
-		s.writeError(w, http.StatusBadRequest, "scenario_yaml is required")
+		z := ScenarioValidationSummary{}
+		s.writeJSON(w, http.StatusBadRequest, &ScenarioValidationResult{
+			Valid: false,
+			Errors: []ScenarioValidationIssue{{
+				Code:    "SCENARIO_YAML_REQUIRED",
+				Message: "scenario_yaml is required and must be non-empty after trimming whitespace",
+				Path:    "scenario_yaml",
+			}},
+			Warnings: []ScenarioValidationIssue{},
+			Summary:  &z,
+		})
 		return
 	}
 
 	result := ValidateScenarioPreflight(req.ScenarioYAML)
-	if !result.Valid {
-		s.writeJSON(w, http.StatusBadRequest, result)
-		return
+	status := scenarioValidateHTTPStatus(result)
+	s.writeJSON(w, status, result)
+}
+
+func scenarioValidateHTTPStatus(result *ScenarioValidationResult) int {
+	if result.Valid {
+		return http.StatusOK
 	}
-	s.writeJSON(w, http.StatusOK, result)
+	for _, e := range result.Errors {
+		if e.Code == "SCENARIO_PARSE_INVALID" {
+			return http.StatusBadRequest
+		}
+	}
+	return http.StatusUnprocessableEntity
 }
 
 func (s *HTTPServer) Handler() http.Handler {
@@ -286,12 +316,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateRun handles POST /v1/runs
 func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
+	normalizedBody, err := normalizeCreateRunAliasesJSON(r.Body)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
 	var req struct {
 		RunID string                 `json:"run_id,omitempty"`
 		Input *simulationv1.RunInput `json:"input"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(normalizedBody, &req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -481,9 +516,9 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 	// 1. Rate update: {"pattern_key": "client:svc1:/test", "rate_rps": 50.0}
 	// 2. Pattern update: {"pattern_key": "client:svc1:/test", "pattern": {...}}
 	var req struct {
-		PatternKey string                  `json:"pattern_key"`
-		RateRPS    *float64                `json:"rate_rps,omitempty"`
-		Pattern    *config.WorkloadPattern `json:"pattern,omitempty"`
+		PatternKey string                      `json:"pattern_key"`
+		RateRPS    *float64                    `json:"rate_rps,omitempty"`
+		Pattern    *httpWorkloadPatternRequest `json:"pattern,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -520,7 +555,12 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 		err = s.Executor.UpdateWorkloadRate(runID, req.PatternKey, *req.RateRPS)
 	case req.Pattern != nil:
 		// Pattern update
-		err = s.Executor.UpdateWorkloadPattern(runID, req.PatternKey, *req.Pattern)
+		pattern, validateErr := req.Pattern.toConfigWorkloadPattern()
+		if validateErr != nil {
+			s.writeError(w, http.StatusBadRequest, validateErr.Error())
+			return
+		}
+		err = s.Executor.UpdateWorkloadPattern(runID, req.PatternKey, pattern)
 	default:
 		s.writeError(w, http.StatusBadRequest, "either rate_rps or pattern must be provided")
 		return
@@ -548,6 +588,94 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 		"run_id":      runID,
 		"pattern_key": req.PatternKey,
 	})
+}
+
+type httpWorkloadPatternRequest struct {
+	From         string                          `json:"from"`
+	SourceKind   string                          `json:"source_kind,omitempty"`
+	TrafficClass string                          `json:"traffic_class,omitempty"`
+	Metadata     map[string]string               `json:"metadata,omitempty"`
+	To           string                          `json:"to"`
+	Arrival      *httpWorkloadArrivalSpecRequest `json:"arrival"`
+}
+
+type httpWorkloadArrivalSpecRequest struct {
+	Type                 string  `json:"type"`
+	RateRPS              float64 `json:"rate_rps"`
+	StdDevRPS            float64 `json:"stddev_rps,omitempty"`
+	BurstRateRPS         float64 `json:"burst_rate_rps,omitempty"`
+	BurstDurationSeconds float64 `json:"burst_duration_seconds,omitempty"`
+	QuietDurationSeconds float64 `json:"quiet_duration_seconds,omitempty"`
+}
+
+func (p *httpWorkloadPatternRequest) toConfigWorkloadPattern() (config.WorkloadPattern, error) {
+	if p == nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern is required")
+	}
+	if strings.TrimSpace(p.From) == "" {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.from is required")
+	}
+	if strings.TrimSpace(p.To) == "" {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.to is required")
+	}
+	if _, _, err := interaction.ParseDownstreamTarget(p.To); err != nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.to is invalid: %w", err)
+	}
+	if p.Arrival == nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.arrival is required")
+	}
+	arrivalType, err := config.NormalizeArrivalType(p.Arrival.Type)
+	if err != nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.arrival.type is invalid: %w", err)
+	}
+	if p.Arrival.RateRPS <= 0 {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.arrival.rate_rps must be positive")
+	}
+	return config.WorkloadPattern{
+		From:         p.From,
+		SourceKind:   p.SourceKind,
+		TrafficClass: p.TrafficClass,
+		Metadata:     p.Metadata,
+		To:           p.To,
+		Arrival: config.ArrivalSpec{
+			Type:                 arrivalType,
+			RateRPS:              p.Arrival.RateRPS,
+			StdDevRPS:            p.Arrival.StdDevRPS,
+			BurstRateRPS:         p.Arrival.BurstRateRPS,
+			BurstDurationSeconds: p.Arrival.BurstDurationSeconds,
+			QuietDurationSeconds: p.Arrival.QuietDurationSeconds,
+		},
+	}, nil
+}
+
+func normalizeCreateRunAliasesJSON(bodyReader io.Reader) ([]byte, error) {
+	var body map[string]any
+	if err := json.NewDecoder(bodyReader).Decode(&body); err != nil {
+		return nil, err
+	}
+	applyCreateRunOptimizationAliases(body)
+	return json.Marshal(body)
+}
+
+func applyCreateRunOptimizationAliases(body map[string]any) {
+	input, ok := body["input"].(map[string]any)
+	if !ok || input == nil {
+		return
+	}
+	optimization, ok := input["optimization"].(map[string]any)
+	if !ok || optimization == nil {
+		return
+	}
+	if _, hasCanonical := optimization["drain_timeout_ms"]; !hasCanonical {
+		if aliasValue, hasAlias := optimization["host_drain_timeout_ms"]; hasAlias {
+			optimization["drain_timeout_ms"] = aliasValue
+		}
+	}
+	if _, hasCanonical := optimization["memory_downsize_headroom_mb"]; !hasCanonical {
+		if aliasValue, hasAlias := optimization["memory_headroom_mb"]; hasAlias {
+			optimization["memory_downsize_headroom_mb"] = aliasValue
+		}
+	}
 }
 
 // handleUpdateRunConfiguration handles PATCH /v1/runs/{id}/configuration
@@ -1100,7 +1228,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 	return s.sendSSEEvent(w, "metrics_snapshot", payload)
 }
 
-func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, []map[string]any, bool) {
+func (s *HTTPServer) brokerShardResourcesJSON(runID string) (queues []map[string]any, topics []map[string]any, ok bool) {
 	if s == nil || s.Executor == nil || runID == "" {
 		return nil, nil, false
 	}
@@ -1116,7 +1244,7 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 	}
 	queueSnaps := rm.QueueBrokerHealthSnapshots(snapshotAt)
 	topicSnaps := rm.TopicBrokerHealthSnapshots(snapshotAt)
-	queues := make([]map[string]any, 0, len(queueSnaps))
+	queues = make([]map[string]any, 0, len(queueSnaps))
 	for _, q := range queueSnaps {
 		queues = append(queues, map[string]any{
 			"broker_service":        q.BrokerID,
@@ -1131,8 +1259,9 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 			"dlq_count":             q.DlqCount,
 		})
 	}
-	topics := make([]map[string]any, 0, len(topicSnaps))
-	for _, t := range topicSnaps {
+	topics = make([]map[string]any, 0, len(topicSnaps))
+	for i := range topicSnaps {
+		t := &topicSnaps[i]
 		topics = append(topics, map[string]any{
 			"broker_service":        t.BrokerID,
 			"topic":                 t.Topic,
@@ -1563,7 +1692,8 @@ func serviceLabelsFromInput(input *simulationv1.RunInput) []map[string]string {
 		return nil
 	}
 	out := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		out = append(out, metrics.CreateServiceLabels(svc.ID))
 	}
 	return out
@@ -1915,6 +2045,12 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		"cross_zone_request_fraction":         metrics.CrossZoneRequestFraction,
 		"cross_zone_latency_penalty_ms_total": metrics.CrossZoneLatencyPenaltyMsTotal,
 		"cross_zone_latency_penalty_ms_mean":  metrics.CrossZoneLatencyPenaltyMsMean,
+		"same_zone_latency_penalty_ms_total":  metrics.SameZoneLatencyPenaltyMsTotal,
+		"same_zone_latency_penalty_ms_mean":   metrics.SameZoneLatencyPenaltyMsMean,
+		"external_latency_ms_total":           metrics.ExternalLatencyMsTotal,
+		"external_latency_ms_mean":            metrics.ExternalLatencyMsMean,
+		"topology_latency_penalty_ms_total":   metrics.TopologyLatencyPenaltyMsTotal,
+		"topology_latency_penalty_ms_mean":    metrics.TopologyLatencyPenaltyMsMean,
 	}
 
 	if len(metrics.ServiceMetrics) > 0 {
@@ -1960,6 +2096,73 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		}
 		if len(hm) > 0 {
 			result["host_metrics"] = hm
+		}
+	}
+
+	if len(metrics.EndpointRequestStats) > 0 {
+		endpointStats := make([]map[string]any, 0, len(metrics.EndpointRequestStats))
+		for _, es := range metrics.EndpointRequestStats {
+			if es == nil {
+				continue
+			}
+			row := map[string]any{
+				"service_name":  es.ServiceName,
+				"endpoint_path": es.EndpointPath,
+				"request_count": es.RequestCount,
+				"error_count":   es.ErrorCount,
+			}
+			if es.LatencyP50Ms != nil {
+				row["latency_p50_ms"] = es.GetLatencyP50Ms()
+			}
+			if es.LatencyP95Ms != nil {
+				row["latency_p95_ms"] = es.GetLatencyP95Ms()
+			}
+			if es.LatencyP99Ms != nil {
+				row["latency_p99_ms"] = es.GetLatencyP99Ms()
+			}
+			if es.LatencyMeanMs != nil {
+				row["latency_mean_ms"] = es.GetLatencyMeanMs()
+			}
+			if es.RootLatencyP50Ms != nil {
+				row["root_latency_p50_ms"] = es.GetRootLatencyP50Ms()
+			}
+			if es.RootLatencyP95Ms != nil {
+				row["root_latency_p95_ms"] = es.GetRootLatencyP95Ms()
+			}
+			if es.RootLatencyP99Ms != nil {
+				row["root_latency_p99_ms"] = es.GetRootLatencyP99Ms()
+			}
+			if es.RootLatencyMeanMs != nil {
+				row["root_latency_mean_ms"] = es.GetRootLatencyMeanMs()
+			}
+			if es.QueueWaitP50Ms != nil {
+				row["queue_wait_p50_ms"] = es.GetQueueWaitP50Ms()
+			}
+			if es.QueueWaitP95Ms != nil {
+				row["queue_wait_p95_ms"] = es.GetQueueWaitP95Ms()
+			}
+			if es.QueueWaitP99Ms != nil {
+				row["queue_wait_p99_ms"] = es.GetQueueWaitP99Ms()
+			}
+			if es.QueueWaitMeanMs != nil {
+				row["queue_wait_mean_ms"] = es.GetQueueWaitMeanMs()
+			}
+			if es.ProcessingLatencyP50Ms != nil {
+				row["processing_latency_p50_ms"] = es.GetProcessingLatencyP50Ms()
+			}
+			if es.ProcessingLatencyP95Ms != nil {
+				row["processing_latency_p95_ms"] = es.GetProcessingLatencyP95Ms()
+			}
+			if es.ProcessingLatencyP99Ms != nil {
+				row["processing_latency_p99_ms"] = es.GetProcessingLatencyP99Ms()
+			}
+			if es.ProcessingLatencyMeanMs != nil {
+				row["processing_latency_mean_ms"] = es.GetProcessingLatencyMeanMs()
+			}
+			endpointStats = append(endpointStats, row)
+		}
+		if len(endpointStats) > 0 {
+			result["endpoint_request_stats"] = endpointStats
 		}
 	}
 

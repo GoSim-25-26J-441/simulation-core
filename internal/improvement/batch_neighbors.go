@@ -17,7 +17,8 @@ func StaticCapacityOK(s *config.Scenario) bool {
 	}
 	var needCPU float64
 	var needMemMB float64
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		r := float64(svc.Replicas)
 		if r < 1 {
 			r = 1
@@ -35,7 +36,8 @@ func StaticCapacityOK(s *config.Scenario) bool {
 	}
 	var capCPU float64
 	var capMemMB float64
-	for _, h := range s.Hosts {
+	for i := range s.Hosts {
+		h := &s.Hosts[i]
 		capCPU += float64(h.Cores)
 		gb := h.MemoryGB
 		if gb < 1 {
@@ -121,7 +123,8 @@ func capacityDelta(cur, nb *config.Scenario) float64 {
 
 func serviceIndexByID(s *config.Scenario) map[string]int {
 	out := make(map[string]int, len(s.Services))
-	for i, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		out[svc.ID] = i
 	}
 	return out
@@ -148,7 +151,8 @@ func brokerConsumerTargetServiceIndices(cur *config.Scenario, lastMetrics *simul
 	}
 	byID := serviceIndexByID(cur)
 	seen := map[int]bool{}
-	for _, svc := range cur.Services {
+	for i := range cur.Services {
+		svc := &cur.Services[i]
 		if svc.Behavior == nil {
 			continue
 		}
@@ -161,7 +165,8 @@ func brokerConsumerTargetServiceIndices(cur *config.Scenario, lastMetrics *simul
 			}
 		}
 		if svc.Behavior.Topic != nil {
-			for _, sub := range svc.Behavior.Topic.Subscribers {
+			for j := range svc.Behavior.Topic.Subscribers {
+				sub := &svc.Behavior.Topic.Subscribers[j]
 				target := strings.TrimSpace(sub.ConsumerTarget)
 				if parts := strings.SplitN(target, ":", 2); len(parts) == 2 {
 					if idx, ok := byID[strings.TrimSpace(parts[0])]; ok {
@@ -246,11 +251,11 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 					continue
 				}
 				ns := cloneScenario(cur)
-				if int32(ns.Services[i].Replicas) >= spec.MaxReplicasPerSvc {
+				if ns.Services[i].Replicas >= int(spec.MaxReplicasPerSvc) {
 					continue
 				}
 				ns.Services[i].Replicas += int(spec.ReplicaStep)
-				if int32(ns.Services[i].Replicas) > spec.MaxReplicasPerSvc {
+				if ns.Services[i].Replicas > int(spec.MaxReplicasPerSvc) {
 					ns.Services[i].Replicas = int(spec.MaxReplicasPerSvc)
 				}
 				add(ns)
@@ -357,7 +362,7 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 				break
 			}
 			ns := cloneScenario(cur)
-			if int32(len(ns.Hosts)) >= spec.MaxHosts {
+			if len(ns.Hosts) >= int(spec.MaxHosts) {
 				break
 			}
 			h0 := ns.Hosts[0]
@@ -379,7 +384,7 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			for i := range cur.Hosts {
 				ns := cloneScenario(cur)
 				ns.Hosts[i].Cores += int(spec.HostCPUStepCores)
-				if int32(ns.Hosts[i].Cores) > spec.MaxHostCPUCores {
+				if ns.Hosts[i].Cores > int(spec.MaxHostCPUCores) {
 					ns.Hosts[i].Cores = int(spec.MaxHostCPUCores)
 				}
 				add(ns)
@@ -397,7 +402,7 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			for i := range cur.Hosts {
 				ns := cloneScenario(cur)
 				ns.Hosts[i].MemoryGB += int(spec.HostMemStepGB)
-				if int32(ns.Hosts[i].MemoryGB) > spec.MaxHostMemGB {
+				if ns.Hosts[i].MemoryGB > int(spec.MaxHostMemGB) {
 					ns.Hosts[i].MemoryGB = int(spec.MaxHostMemGB)
 				}
 				add(ns)
@@ -564,11 +569,12 @@ func withinBatchBounds(spec *batchspec.BatchSpec, base, cur *config.Scenario) bo
 	if spec == nil || cur == nil {
 		return false
 	}
-	if int32(len(cur.Hosts)) < spec.MinHosts || int32(len(cur.Hosts)) > spec.MaxHosts {
+	if len(cur.Hosts) < int(spec.MinHosts) || len(cur.Hosts) > int(spec.MaxHosts) {
 		return false
 	}
-	for _, svc := range cur.Services {
-		if int32(svc.Replicas) < spec.MinReplicasPerSvc || int32(svc.Replicas) > spec.MaxReplicasPerSvc {
+	for i := range cur.Services {
+		svc := &cur.Services[i]
+		if svc.Replicas < int(spec.MinReplicasPerSvc) || svc.Replicas > int(spec.MaxReplicasPerSvc) {
 			return false
 		}
 		if svc.CPUCores < spec.MinCPUPerInst || svc.CPUCores > spec.MaxCPUPerInst {
@@ -598,14 +604,14 @@ func withinBatchBounds(spec *batchspec.BatchSpec, base, cur *config.Scenario) bo
 		}
 	}
 	for _, h := range cur.Hosts {
-		if int32(h.Cores) < spec.MinHostCPUCores || int32(h.Cores) > spec.MaxHostCPUCores {
+		if h.Cores < int(spec.MinHostCPUCores) || h.Cores > int(spec.MaxHostCPUCores) {
 			return false
 		}
 		gb := h.MemoryGB
 		if gb < 1 {
 			gb = 16
 		}
-		if int32(gb) < spec.MinHostMemGB || int32(gb) > spec.MaxHostMemGB {
+		if gb < int(spec.MinHostMemGB) || gb > int(spec.MaxHostMemGB) {
 			return false
 		}
 	}

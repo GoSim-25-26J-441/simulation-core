@@ -23,7 +23,8 @@ func (s *DefaultBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *rand.R
 
 	selected := make([]ResolvedCall, 0)
 
-	for _, call := range calls {
+	for i := range calls {
+		call := &calls[i]
 		prob := call.Call.Probability
 		if prob <= 0 {
 			prob = 1.0
@@ -51,7 +52,7 @@ func (s *DefaultBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *rand.R
 
 		// Add the call count times
 		for i := 0; i < count; i++ {
-			selected = append(selected, call)
+			selected = append(selected, *call)
 		}
 	}
 
@@ -74,7 +75,8 @@ func NewProbabilisticBranchingStrategy(probabilities map[string]float64) *Probab
 func (s *ProbabilisticBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *rand.Rand) []ResolvedCall {
 	selected := make([]ResolvedCall, 0)
 
-	for _, call := range calls {
+	for i := range calls {
+		call := &calls[i]
 		key := fmt.Sprintf("%s:%s", call.ServiceID, call.Path)
 		prob, ok := s.probabilities[key]
 		if !ok {
@@ -87,7 +89,7 @@ func (s *ProbabilisticBranchingStrategy) SelectCalls(calls []ResolvedCall, rng *
 		}
 
 		if rng.Float64() < prob {
-			selected = append(selected, call)
+			selected = append(selected, *call)
 		}
 	}
 

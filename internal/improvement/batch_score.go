@@ -122,7 +122,8 @@ func ComputeInfraCostWeighted(s *config.Scenario, w *simulationv1.BatchCostWeigh
 		return EvaluateInfrastructureCost(s)
 	}
 	var sumCPU, sumMemGB, sumRep float64
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		r := float64(svc.Replicas)
 		if r < 1 {
 			r = 1

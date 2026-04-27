@@ -263,7 +263,9 @@ func (e *RunExecutor) GetRunConfiguration(runID string) (*simulationv1.RunConfig
 	if eng := ws.Engine(); eng != nil {
 		simTime = eng.GetSimTime()
 	}
-	for _, p := range rm.GetInstancePlacements(simTime) {
+	placements := rm.GetInstancePlacements(simTime)
+	for i := range placements {
+		p := &placements[i]
 		cfg.Placements = append(cfg.Placements, &simulationv1.InstancePlacementEntry{
 			InstanceId:        p.InstanceID,
 			ServiceId:         p.ServiceID,

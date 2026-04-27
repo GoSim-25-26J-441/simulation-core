@@ -47,7 +47,7 @@ func computeDownstreamCallerCPU(state *scenarioState, downstreamCall interaction
 	return fr * referenceCPUForDownstream(state, downstreamCall)
 }
 
-func labelsDownstreamCallerCPU(state *scenarioState, parent *models.Request, callerSvc, callerEp string, downstreamCall interaction.ResolvedCall, data map[string]interface{}) map[string]string {
+func labelsDownstreamCallerCPU(_ *scenarioState, parent *models.Request, callerSvc, callerEp string, downstreamCall interaction.ResolvedCall, data map[string]interface{}) map[string]string {
 	lbl := labelsForRequestMetrics(parent, callerSvc, callerEp)
 	lbl["downstream_service"] = downstreamCall.ServiceID
 	lbl["downstream_endpoint"] = downstreamCall.Path
@@ -227,10 +227,12 @@ func execRetrySpawnImmediate(state *scenarioState, eng *engine.Engine, parent *m
 		data["caller_host_id"] = ch
 	}
 	evt := &engine.Event{Request: parent, ServiceID: downstreamCall.ServiceID, Data: data}
-	_ = execDownstreamSpawnFromEvent(state, eng, parent, evt)
+	if err := execDownstreamSpawnFromEvent(state, eng, parent, evt); err != nil {
+		return
+	}
 }
 
-func handleDownstreamCallerOverheadStart(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleDownstreamCallerOverheadStart(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in downstream caller overhead start")
@@ -271,7 +273,7 @@ func handleDownstreamCallerOverheadStart(state *scenarioState, eng *engine.Engin
 	}
 }
 
-func handleDownstreamCallerOverheadEnd(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleDownstreamCallerOverheadEnd(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in downstream caller overhead end")

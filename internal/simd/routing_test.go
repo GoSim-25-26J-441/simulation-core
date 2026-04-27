@@ -105,7 +105,7 @@ func TestRoutingMetricsRecordLocalityHitAndSameZoneCount(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := &models.Request{ServiceName: "svc", Endpoint: "/test", Metadata: map[string]interface{}{"client_zone": "zone-a"}}
-	if _, _, err := selectInstanceForRequest(state, req, time.Now()); err != nil {
+	if _, err := selectInstanceForRequest(state, req, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	hitAgg := collector.GetOrComputeAggregationForLabelSubset(metrics.MetricLocalityRouteHitCount, map[string]string{"service": "svc", "endpoint": "/test"})
@@ -151,7 +151,7 @@ func TestRoutingMetricsRecordCrossZoneForDownstreamCallerCallee(t *testing.T) {
 		Endpoint:    "/d",
 		Metadata:    map[string]interface{}{"caller_instance_id": "caller-instance-0"},
 	}
-	if _, _, err := selectInstanceForRequest(state, req, time.Now()); err != nil {
+	if _, err := selectInstanceForRequest(state, req, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	crossAgg := collector.GetOrComputeAggregationForLabelSubset(metrics.MetricCrossZoneRequestCount, map[string]string{"service": "callee", "endpoint": "/d"})
