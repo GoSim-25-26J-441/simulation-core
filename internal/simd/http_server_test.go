@@ -1773,8 +1773,9 @@ func TestHTTPServerUpdateRunConfigurationVerticalScaling(t *testing.T) {
 	srv := NewHTTPServer(store, exec)
 
 	// Create run
+	verticalScenarioYAML := strings.Replace(testScenarioYAML, "cores: 2", "cores: 8", 1)
 	input := &simulationv1.RunInput{
-		ScenarioYaml: testScenarioYAML,
+		ScenarioYaml: verticalScenarioYAML,
 		DurationMs:   1000,
 	}
 	rec, err := store.Create("run-vert", input)
