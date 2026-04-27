@@ -65,10 +65,10 @@ func TestDownstreamExternalFailureRateAlwaysFailsIngress(t *testing.T) {
 						NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
 						Downstream: []config.DownstreamCall{
 							{
-								To:          "ext:/x",
-								Kind:        "rest",
+								To:            "ext:/x",
+								Kind:          "rest",
 								CallLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
-								FailureRate: 1,
+								FailureRate:   1,
 							},
 						},
 					},

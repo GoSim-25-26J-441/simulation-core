@@ -2,6 +2,7 @@ package engine
 
 import (
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -347,4 +348,34 @@ func TestEnginePrintStats(t *testing.T) {
 	engine.ScheduleAt(EventTypeRequestArrival, engine.GetSimTime().Add(time.Millisecond), nil, "", nil)
 	// PrintStats should not panic; it logs and returns
 	engine.PrintStats()
+}
+
+func TestEngineRunFailsWhenScheduledLimitExceeded(t *testing.T) {
+	e := NewEngine("guard-scheduled")
+	e.SetRuntimeLimits(RuntimeLimits{
+		MaxEventsScheduled: 1,
+	})
+	now := e.GetSimTime()
+	e.ScheduleAt(EventTypeRequestArrival, now.Add(10*time.Millisecond), nil, "", nil)
+	e.ScheduleAt(EventTypeRequestStart, now.Add(20*time.Millisecond), nil, "", nil)
+
+	err := e.Run(100 * time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "max_events_scheduled") {
+		t.Fatalf("expected max_events_scheduled error, got %v", err)
+	}
+}
+
+func TestEngineRunFailsWhenProcessedLimitExceeded(t *testing.T) {
+	e := NewEngine("guard-processed")
+	e.SetRuntimeLimits(RuntimeLimits{
+		MaxEventsProcessed: 1,
+	})
+	e.RegisterHandler(EventTypeRequestArrival, func(_ *Engine, _ *Event) error { return nil })
+	now := e.GetSimTime()
+	e.ScheduleAt(EventTypeRequestArrival, now.Add(10*time.Millisecond), nil, "", nil)
+
+	err := e.Run(100 * time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "max_events_processed") {
+		t.Fatalf("expected max_events_processed error, got %v", err)
+	}
 }

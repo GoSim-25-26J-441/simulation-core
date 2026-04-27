@@ -124,10 +124,10 @@ func TestAggregateRunMetricsBrokerRiskSemantics(t *testing.T) {
 
 func TestAggregateRunMetricsTopologySemantics(t *testing.T) {
 	a := &simulationv1.RunMetrics{
-		LocalityHitRate:               0.90,
-		CrossZoneRequestFraction:      0.10,
-		CrossZoneRequestCountTotal:    100,
-		SameZoneRequestCountTotal:     300,
+		LocalityHitRate:                0.90,
+		CrossZoneRequestFraction:       0.10,
+		CrossZoneRequestCountTotal:     100,
+		SameZoneRequestCountTotal:      300,
 		CrossZoneLatencyPenaltyMsTotal: 1000,
 		CrossZoneLatencyPenaltyMsMean:  8,
 		SameZoneLatencyPenaltyMsTotal:  400,
@@ -138,10 +138,10 @@ func TestAggregateRunMetricsTopologySemantics(t *testing.T) {
 		TopologyLatencyPenaltyMsMean:   12,
 	}
 	b := &simulationv1.RunMetrics{
-		LocalityHitRate:               0.55,
-		CrossZoneRequestFraction:      0.40,
-		CrossZoneRequestCountTotal:    300,
-		SameZoneRequestCountTotal:     100,
+		LocalityHitRate:                0.55,
+		CrossZoneRequestFraction:       0.40,
+		CrossZoneRequestCountTotal:     300,
+		SameZoneRequestCountTotal:      100,
 		CrossZoneLatencyPenaltyMsTotal: 2500,
 		CrossZoneLatencyPenaltyMsMean:  15,
 		SameZoneLatencyPenaltyMsTotal:  900,

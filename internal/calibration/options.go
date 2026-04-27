@@ -41,9 +41,9 @@ func defaultCalibrateOptions() *CalibrateOptions {
 
 // ValidateOptions configures multi-seed validation.
 type ValidateOptions struct {
-	Seeds              []int64
-	RealTimeWorkload   bool
-	Tolerances         *ValidationTolerances
+	Seeds            []int64
+	RealTimeWorkload bool
+	Tolerances       *ValidationTolerances
 	// AllowPartialFields is retained for API compatibility. Validation only compares
 	// metrics marked Present on ObservedMetrics (missing fields are skipped).
 	AllowPartialFields bool

@@ -11,8 +11,8 @@ import (
 // simulatorExportEnvelope is the documented JSON shape for round-tripping simulator metrics into calibration.
 // All fields in run_metrics that deserialize successfully are turned into Present observations via FromRunMetrics.
 type simulatorExportEnvelope struct {
-	WindowSeconds float64          `json:"window_seconds"`
-	Window        string           `json:"window"` // alternative: Go duration string, e.g. "60s"
+	WindowSeconds float64            `json:"window_seconds"`
+	Window        string             `json:"window"` // alternative: Go duration string, e.g. "60s"
 	RunMetrics    *models.RunMetrics `json:"run_metrics"`
 }
 

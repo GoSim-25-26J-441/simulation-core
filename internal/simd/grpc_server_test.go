@@ -1055,9 +1055,9 @@ workload:
 		DurationMs:   100,
 		Optimization: &simulationv1.OptimizationConfig{
 			Online:               true,
-			TargetP95LatencyMs:     50,
-			AllowUnboundedOnline:   true,
-			MaxOnlineDurationMs:    0,
+			TargetP95LatencyMs:   50,
+			AllowUnboundedOnline: true,
+			MaxOnlineDurationMs:  0,
 		},
 	})
 	if err != nil {

@@ -84,10 +84,10 @@ func runValidateCLI(args []string) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(map[string]any{
-		"pass":               rep.Pass,
+		"pass":              rep.Pass,
 		"validation_report": rep,
-		"warnings":           rep.Warnings,
-		"largest_errors":     rep.LargestErrors,
+		"warnings":          rep.Warnings,
+		"largest_errors":    rep.LargestErrors,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -113,47 +113,47 @@ func MergeRunMetricsForCalibrationBaseline(runs []*models.RunMetrics) *models.Ru
 	}
 
 	out := &models.RunMetrics{
-		IngressThroughputRPS: sumIngress / n,
-		LatencyP50:           sumP50 / n,
-		LatencyMean:          sumMean / n,
-		LatencyP95:           maxP95,
-		LatencyP99:           maxP99,
-		IngressErrorRate:     maxIngressErr,
-		IngressRequests:      int64(float64(sumIngressReq) / n),
-		TotalRequests:        int64(float64(sumTotalReq) / n),
-		SuccessfulRequests:   int64(float64(sumSucc) / n),
-		FailedRequests:       int64(float64(sumFail) / n),
-		ThroughputRPS:        sumIngress / n,
-		QueueDepthSum:            maxQD,
-		TopicBacklogDepthSum:     maxTB,
-		TopicConsumerLagSum:      maxTL,
-		QueueDropRate:            maxDrop,
-		TopicDropRate:            maxTDrop,
-		QueueDlqCountTotal:       maxQDlq,
-		TopicDlqCountTotal:       maxTDlq,
-		QueueOldestMessageAgeMs:  maxQAge,
-		TopicOldestMessageAgeMs:  maxTAge,
-		RetryAttempts:            maxRetry,
-		TimeoutErrors:            maxTimeout,
-		ServiceMetrics:           finalizeServiceMerge(svcMerge),
-		EndpointRequestStats:     finalizeEndpointMerge(epMerge),
+		IngressThroughputRPS:    sumIngress / n,
+		LatencyP50:              sumP50 / n,
+		LatencyMean:             sumMean / n,
+		LatencyP95:              maxP95,
+		LatencyP99:              maxP99,
+		IngressErrorRate:        maxIngressErr,
+		IngressRequests:         int64(float64(sumIngressReq) / n),
+		TotalRequests:           int64(float64(sumTotalReq) / n),
+		SuccessfulRequests:      int64(float64(sumSucc) / n),
+		FailedRequests:          int64(float64(sumFail) / n),
+		ThroughputRPS:           sumIngress / n,
+		QueueDepthSum:           maxQD,
+		TopicBacklogDepthSum:    maxTB,
+		TopicConsumerLagSum:     maxTL,
+		QueueDropRate:           maxDrop,
+		TopicDropRate:           maxTDrop,
+		QueueDlqCountTotal:      maxQDlq,
+		TopicDlqCountTotal:      maxTDlq,
+		QueueOldestMessageAgeMs: maxQAge,
+		TopicOldestMessageAgeMs: maxTAge,
+		RetryAttempts:           maxRetry,
+		TimeoutErrors:           maxTimeout,
+		ServiceMetrics:          finalizeServiceMerge(svcMerge),
+		EndpointRequestStats:    finalizeEndpointMerge(epMerge),
 	}
 	return out
 }
 
 type serviceAgg struct {
-	n            int
-	sumReq, sumErr int64
-	sumP50, sumMean float64
-	maxP95, maxP99 float64
-	sumProcMean float64
+	n                      int
+	sumReq, sumErr         int64
+	sumP50, sumMean        float64
+	maxP95, maxP99         float64
+	sumProcMean            float64
 	maxProcP95, maxProcP99 float64
-	sumQWMean float64
-	maxQWP95, maxQWP99 float64
-	maxCPU, maxMem float64
-	maxQLen int
-	maxConc int
-	maxReplicas int
+	sumQWMean              float64
+	maxQWP95, maxQWP99     float64
+	maxCPU, maxMem         float64
+	maxQLen                int
+	maxConc                int
+	maxReplicas            int
 }
 
 func mergeServiceMetricsInto(dst map[string]*serviceAgg, smap map[string]*models.ServiceMetrics) {
@@ -228,8 +228,8 @@ func finalizeServiceMerge(dst map[string]*serviceAgg) map[string]*models.Service
 			LatencyP95:              a.maxP95,
 			LatencyP99:              a.maxP99,
 			ProcessingLatencyMeanMs: a.sumProcMean / div,
-			ProcessingLatencyP95Ms:    a.maxProcP95,
-			ProcessingLatencyP99Ms:    a.maxProcP99,
+			ProcessingLatencyP95Ms:  a.maxProcP95,
+			ProcessingLatencyP99Ms:  a.maxProcP99,
 			QueueWaitMeanMs:         a.sumQWMean / div,
 			QueueWaitP95Ms:          a.maxQWP95,
 			QueueWaitP99Ms:          a.maxQWP99,

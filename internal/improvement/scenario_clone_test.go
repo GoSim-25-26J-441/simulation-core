@@ -18,19 +18,19 @@ func TestCloneScenarioPreservesV2Semantics(t *testing.T) {
 			{
 				ID: "db", Kind: "database", Role: "datastore", Replicas: 1, Model: "db_latency",
 				Placement: &config.PlacementPolicy{
-					RequiredZones:       []string{"z1"},
-					PreferredZones:      []string{"z2"},
-					AffinityZones:       []string{"z1"},
-					RequiredHostLabels:  map[string]string{"rack": "r1"},
-					PreferredHostLabels: map[string]string{"disk": "ssd"},
+					RequiredZones:        []string{"z1"},
+					PreferredZones:       []string{"z2"},
+					AffinityZones:        []string{"z1"},
+					RequiredHostLabels:   map[string]string{"rack": "r1"},
+					PreferredHostLabels:  map[string]string{"disk": "ssd"},
 					AntiAffinityServices: []string{"cache"},
-					SpreadAcrossZones:   true,
-					MaxReplicasPerHost:  1,
+					SpreadAcrossZones:    true,
+					MaxReplicasPerHost:   1,
 				},
 				Routing: &config.RoutingPolicy{
-					Strategy: "weighted_round_robin",
+					Strategy:         "weighted_round_robin",
 					LocalityZoneFrom: "client_zone",
-					Weights:  map[string]float64{"db-instance-0": 0.8, "db-instance-1": 0.2},
+					Weights:          map[string]float64{"db-instance-0": 0.8, "db-instance-1": 0.2},
 				},
 				Scaling: &config.ScalingPolicy{Horizontal: false, VerticalCPU: true, VerticalMemory: true},
 				Endpoints: []config.Endpoint{

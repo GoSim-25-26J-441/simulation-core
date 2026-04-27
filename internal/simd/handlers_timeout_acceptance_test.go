@@ -65,10 +65,10 @@ func TestSyncDownstreamTimeoutFailsRootAroundDeadline(t *testing.T) {
 	RegisterHandlers(eng, state)
 
 	eng.ScheduleAt(engine.EventTypeRequestArrival, eng.GetSimTime(), nil, "svcA", map[string]interface{}{
-		"service_id":     "svcA",
-		"endpoint_path":  "/root",
-		"traffic_class":  "ingress",
-		"source_kind":    "test-client",
+		"service_id":    "svcA",
+		"endpoint_path": "/root",
+		"traffic_class": "ingress",
+		"source_kind":   "test-client",
 	})
 	if err := eng.Run(500 * time.Millisecond); err != nil {
 		t.Fatal(err)
@@ -489,10 +489,10 @@ func TestTimeoutErrorLabelsIncludeTrafficClassAndSourceKind(t *testing.T) {
 	RegisterHandlers(eng, state)
 
 	eng.ScheduleAt(engine.EventTypeRequestArrival, eng.GetSimTime(), nil, "svcA", map[string]interface{}{
-		"service_id":     "svcA",
-		"endpoint_path":  "/root",
-		"traffic_class":  "gold",
-		"source_kind":    "partner",
+		"service_id":    "svcA",
+		"endpoint_path": "/root",
+		"traffic_class": "gold",
+		"source_kind":   "partner",
 	})
 	if err := eng.Run(300 * time.Millisecond); err != nil {
 		t.Fatal(err)

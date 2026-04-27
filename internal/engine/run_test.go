@@ -333,3 +333,22 @@ func TestRunManagerContext(t *testing.T) {
 		t.Error("Context should be cancelled after Cancel()")
 	}
 }
+
+func TestRunManagerMaxRequestsTrackedLimit(t *testing.T) {
+	rm := NewRunManager("run-limit")
+	limitReached := false
+	rm.SetMaxRequestsTracked(1, func(currentCount, max int) {
+		limitReached = true
+		if currentCount <= max {
+			t.Fatalf("expected currentCount > max, got %d <= %d", currentCount, max)
+		}
+	})
+	rm.AddRequest(&models.Request{ID: "req-1"})
+	rm.AddRequest(&models.Request{ID: "req-2"})
+	if !limitReached {
+		t.Fatalf("expected limit callback")
+	}
+	if got := len(rm.ListRequests()); got != 1 {
+		t.Fatalf("expected only first request retained, got %d", got)
+	}
+}

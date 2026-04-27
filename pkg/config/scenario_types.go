@@ -6,11 +6,11 @@ type Scenario struct {
 	Metadata         *ScenarioMetadata `yaml:"metadata,omitempty"`
 	SimulationLimits *SimulationLimits `yaml:"simulation_limits,omitempty"`
 	// Network holds optional multi-zone latency overlays for downstream service calls.
-	Network *NetworkConfig `yaml:"network,omitempty"`
-	Hosts            []Host            `yaml:"hosts"`
-	Services         []Service         `yaml:"services"`
-	Workload         []WorkloadPattern `yaml:"workload"`
-	Policies         *Policies         `yaml:"policies,omitempty"`
+	Network  *NetworkConfig    `yaml:"network,omitempty"`
+	Hosts    []Host            `yaml:"hosts"`
+	Services []Service         `yaml:"services"`
+	Workload []WorkloadPattern `yaml:"workload"`
+	Policies *Policies         `yaml:"policies,omitempty"`
 }
 
 // NetworkConfig models optional topology-aware overlays on downstream hop network latency.
@@ -23,7 +23,7 @@ type NetworkConfig struct {
 	SameHostLatencyMs LatencySpec `yaml:"same_host_latency_ms,omitempty"`
 	SameZoneLatencyMs LatencySpec `yaml:"same_zone_latency_ms,omitempty"`
 
-	DefaultCrossZoneLatencyMs LatencySpec `yaml:"default_cross_zone_latency_ms,omitempty"`
+	DefaultCrossZoneLatencyMs LatencySpec                       `yaml:"default_cross_zone_latency_ms,omitempty"`
 	CrossZoneLatencyMs        map[string]map[string]LatencySpec `yaml:"cross_zone_latency_ms,omitempty"`
 
 	// ExternalLatencyMs default for downstream hops to services with kind: external (override per service via external_network_latency_ms).
@@ -44,29 +44,29 @@ type ScenarioMetadata struct {
 
 // Host represents a physical host
 type Host struct {
-	ID       string `yaml:"id"`
-	Cores    int    `yaml:"cores"`
-	MemoryGB int    `yaml:"memory_gb,omitempty"` // Optional; 0 means use simulator default (16 GB)
-	Zone     string `yaml:"zone,omitempty"`
+	ID       string            `yaml:"id"`
+	Cores    int               `yaml:"cores"`
+	MemoryGB int               `yaml:"memory_gb,omitempty"` // Optional; 0 means use simulator default (16 GB)
+	Zone     string            `yaml:"zone,omitempty"`
 	Labels   map[string]string `yaml:"labels,omitempty"`
 }
 
 // Service represents a microservice
 type Service struct {
-	ID        string           `yaml:"id"`
-	Kind      string           `yaml:"kind,omitempty"` // api_gateway, service, database, queue, cache, ...
-	Role      string           `yaml:"role,omitempty"` // ingress, internal, datastore, external
-	Replicas  int              `yaml:"replicas"`
-	Model     string           `yaml:"model"` // cpu, mixed, db_latency
-	CPUCores  float64          `yaml:"cpu_cores,omitempty"`
-	MemoryMB  float64          `yaml:"memory_mb,omitempty"`
+	ID       string  `yaml:"id"`
+	Kind     string  `yaml:"kind,omitempty"` // api_gateway, service, database, queue, cache, ...
+	Role     string  `yaml:"role,omitempty"` // ingress, internal, datastore, external
+	Replicas int     `yaml:"replicas"`
+	Model    string  `yaml:"model"` // cpu, mixed, db_latency
+	CPUCores float64 `yaml:"cpu_cores,omitempty"`
+	MemoryMB float64 `yaml:"memory_mb,omitempty"`
 	// ExternalNetworkLatencyMs (optional) overrides scenario.network.external_latency_ms for this service when kind is external.
-	ExternalNetworkLatencyMs *LatencySpec `yaml:"external_network_latency_ms,omitempty"`
-	Scaling   *ScalingPolicy   `yaml:"scaling,omitempty"`
-	Behavior  *ServiceBehavior `yaml:"behavior,omitempty"`
-	Placement *PlacementPolicy `yaml:"placement,omitempty"`
-	Routing   *RoutingPolicy   `yaml:"routing,omitempty"`
-	Endpoints []Endpoint       `yaml:"endpoints"`
+	ExternalNetworkLatencyMs *LatencySpec     `yaml:"external_network_latency_ms,omitempty"`
+	Scaling                  *ScalingPolicy   `yaml:"scaling,omitempty"`
+	Behavior                 *ServiceBehavior `yaml:"behavior,omitempty"`
+	Placement                *PlacementPolicy `yaml:"placement,omitempty"`
+	Routing                  *RoutingPolicy   `yaml:"routing,omitempty"`
+	Endpoints                []Endpoint       `yaml:"endpoints"`
 }
 
 // PlacementPolicy defines optional topology-aware placement preferences/constraints.
@@ -215,13 +215,13 @@ type LatencySpec struct {
 
 // WorkloadPattern represents a workload entry point
 type WorkloadPattern struct {
-	From         string      `yaml:"from"`
-	SourceKind   string      `yaml:"source_kind,omitempty"`   // e.g. client
-	TrafficClass string      `yaml:"traffic_class,omitempty"` // ingress, background, replay
+	From         string `yaml:"from"`
+	SourceKind   string `yaml:"source_kind,omitempty"`   // e.g. client
+	TrafficClass string `yaml:"traffic_class,omitempty"` // ingress, background, replay
 	// Metadata is copied into request metadata for arrivals generated from this workload pattern.
 	Metadata map[string]string `yaml:"metadata,omitempty"`
-	To           string      `yaml:"to"`
-	Arrival      ArrivalSpec `yaml:"arrival"`
+	To       string            `yaml:"to"`
+	Arrival  ArrivalSpec       `yaml:"arrival"`
 }
 
 // ArrivalSpec represents arrival process specification

@@ -31,9 +31,9 @@ func TestObservedFromPrometheusLikeJSON_ExpandedMetricsMatrix(t *testing.T) {
 
 func TestObservedFromPrometheusLikeJSON_LabelRequirements(t *testing.T) {
 	tests := []struct {
-		name     string
-		fixture  string
-		wantErr  string
+		name    string
+		fixture string
+		wantErr string
 	}{
 		{
 			name:    "service metric missing service label",

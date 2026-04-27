@@ -17,6 +17,8 @@ type RunManager struct {
 	requests       map[string]*models.Request
 	serviceMetrics map[string]*models.ServiceMetrics
 	latencies      []float64
+	maxRequests    int
+	onLimitReached func(currentCount, max int)
 	mu             sync.RWMutex
 	ctx            context.Context
 	cancel         context.CancelFunc
@@ -115,7 +117,22 @@ func (rm *RunManager) GetTrace(traceID string) (*models.Trace, bool) {
 func (rm *RunManager) AddRequest(request *models.Request) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
+	if rm.maxRequests > 0 && len(rm.requests) >= rm.maxRequests {
+		if rm.onLimitReached != nil {
+			rm.onLimitReached(len(rm.requests)+1, rm.maxRequests)
+		}
+		return
+	}
 	rm.requests[request.ID] = request
+}
+
+// SetMaxRequestsTracked configures an optional hard cap for tracked requests.
+// When the cap is reached, additional requests are dropped and onLimitReached is invoked.
+func (rm *RunManager) SetMaxRequestsTracked(max int, onLimitReached func(currentCount, max int)) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.maxRequests = max
+	rm.onLimitReached = onLimitReached
 }
 
 // GetRequest retrieves a request by ID

@@ -222,28 +222,28 @@ func maxFloat(a, b float64) float64 {
 }
 
 type aggRuns struct {
-	IngressMean        float64
-	LatencyP50Mean     float64
-	LatencyMeanMean    float64
-	LatencyP95Max      float64
-	LatencyP99Max      float64
-	IngressErrMax      float64
-	MaxServiceCPU      float64
-	MaxServiceMem      float64
-	QueueWaitMeanMax   float64
-	QueueDepthSumMax   float64
-	QueueDropRateMax   float64
-	TopicDropRateMax   float64
-	TopicBacklogSumMax float64
-	TopicLagSumMax     float64
-	QueueDlqMax        int64
-	TopicDlqMax        int64
-	QueueOldestAgeMax  float64
-	TopicOldestAgeMax  float64
-	RetryMax           int64
-	TimeoutMax         int64
-	LocalityHitRateMean   float64
-	CrossZoneFractionMean float64
+	IngressMean                     float64
+	LatencyP50Mean                  float64
+	LatencyMeanMean                 float64
+	LatencyP95Max                   float64
+	LatencyP99Max                   float64
+	IngressErrMax                   float64
+	MaxServiceCPU                   float64
+	MaxServiceMem                   float64
+	QueueWaitMeanMax                float64
+	QueueDepthSumMax                float64
+	QueueDropRateMax                float64
+	TopicDropRateMax                float64
+	TopicBacklogSumMax              float64
+	TopicLagSumMax                  float64
+	QueueDlqMax                     int64
+	TopicDlqMax                     int64
+	QueueOldestAgeMax               float64
+	TopicOldestAgeMax               float64
+	RetryMax                        int64
+	TimeoutMax                      int64
+	LocalityHitRateMean             float64
+	CrossZoneFractionMean           float64
 	CrossZoneLatencyPenaltyMeanMean float64
 	TopologyLatencyPenaltyMeanMean  float64
 }
@@ -331,28 +331,28 @@ func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
 	}
 	n := float64(len(runs))
 	return aggRuns{
-		IngressMean:        sumIngress / n,
-		LatencyP50Mean:     sumP50 / n,
-		LatencyMeanMean:    sumMean / n,
-		LatencyP95Max:      maxP95,
-		LatencyP99Max:      maxP99,
-		IngressErrMax:      maxErr,
-		MaxServiceCPU:      maxCPU,
-		MaxServiceMem:      maxMem,
-		QueueWaitMeanMax:   maxQW,
-		QueueDepthSumMax:   maxQD,
-		QueueDropRateMax:   maxDrop,
-		TopicDropRateMax:   maxTDrop,
-		TopicBacklogSumMax: maxTB,
-		TopicLagSumMax:     maxTL,
-		QueueDlqMax:        maxQDlq,
-		TopicDlqMax:        maxTDlq,
-		QueueOldestAgeMax:  maxQAge,
-		TopicOldestAgeMax:  maxTAge,
-		RetryMax:           maxRetry,
-		TimeoutMax:         maxTimeout,
-		LocalityHitRateMean:   sumLocalityHit / n,
-		CrossZoneFractionMean: sumCrossZoneFrac / n,
+		IngressMean:                     sumIngress / n,
+		LatencyP50Mean:                  sumP50 / n,
+		LatencyMeanMean:                 sumMean / n,
+		LatencyP95Max:                   maxP95,
+		LatencyP99Max:                   maxP99,
+		IngressErrMax:                   maxErr,
+		MaxServiceCPU:                   maxCPU,
+		MaxServiceMem:                   maxMem,
+		QueueWaitMeanMax:                maxQW,
+		QueueDepthSumMax:                maxQD,
+		QueueDropRateMax:                maxDrop,
+		TopicDropRateMax:                maxTDrop,
+		TopicBacklogSumMax:              maxTB,
+		TopicLagSumMax:                  maxTL,
+		QueueDlqMax:                     maxQDlq,
+		TopicDlqMax:                     maxTDlq,
+		QueueOldestAgeMax:               maxQAge,
+		TopicOldestAgeMax:               maxTAge,
+		RetryMax:                        maxRetry,
+		TimeoutMax:                      maxTimeout,
+		LocalityHitRateMean:             sumLocalityHit / n,
+		CrossZoneFractionMean:           sumCrossZoneFrac / n,
 		CrossZoneLatencyPenaltyMeanMean: sumCrossZonePenMean / n,
 		TopologyLatencyPenaltyMeanMean:  sumTopoPenMean / n,
 	}

@@ -20,6 +20,9 @@ type Collector struct {
 
 	// Aggregated data: metric name -> labels -> Aggregation
 	aggregations map[string]map[string]*models.Aggregation
+	totalPoints  int
+	maxPoints    int
+	onLimit      func(currentCount, max int)
 }
 
 // NewCollector creates a new metrics collector
@@ -49,6 +52,12 @@ func (c *Collector) Stop() {
 func (c *Collector) Record(name string, value float64, timestamp time.Time, labels map[string]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.maxPoints > 0 && c.totalPoints >= c.maxPoints {
+		if c.onLimit != nil {
+			c.onLimit(c.totalPoints+1, c.maxPoints)
+		}
+		return
+	}
 
 	labelKey := labelKey(labels)
 	if c.timeSeries[name] == nil {
@@ -66,6 +75,7 @@ func (c *Collector) Record(name string, value float64, timestamp time.Time, labe
 	}
 
 	c.timeSeries[name][labelKey] = append(c.timeSeries[name][labelKey], point)
+	c.totalPoints++
 }
 
 // RecordNow records a metric value at the current time
@@ -265,8 +275,18 @@ func (c *Collector) Clear() {
 
 	c.timeSeries = make(map[string]map[string][]*models.MetricPoint)
 	c.aggregations = make(map[string]map[string]*models.Aggregation)
+	c.totalPoints = 0
 	c.startTime = time.Now()
 	c.endTime = time.Time{}
+}
+
+// SetMaxPoints configures an optional hard cap on retained metric points.
+// When the cap is reached, additional points are dropped and onLimit is invoked.
+func (c *Collector) SetMaxPoints(max int, onLimit func(currentCount, max int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.maxPoints = max
+	c.onLimit = onLimit
 }
 
 // getPointsUnsafe returns points without locking (caller must hold lock)

@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,8 +20,32 @@ type Engine struct {
 	handlers      map[EventType]EventHandler
 	logger        *slog.Logger
 	eventCounter  int64
+	processed     int64
+	limits        RuntimeLimits
+	guardMu       sync.Mutex
+	guardErr      error
 	realTimeStart time.Time // Real-time start for throttling
 	realTimeMode  bool      // If true, throttle simulation to run in real-time
+}
+
+// RuntimeLimits are optional guardrails for simulation execution.
+// Any non-positive value disables that specific limit.
+type RuntimeLimits struct {
+	MaxEventsScheduled int64
+	MaxEventsProcessed int64
+	MaxEventQueueSize  int64
+	MaxWallClockRun    time.Duration
+}
+
+// LimitExceededError describes a guardrail failure.
+type LimitExceededError struct {
+	Limit string
+	Value int64
+	Max   int64
+}
+
+func (e *LimitExceededError) Error() string {
+	return fmt.Sprintf("limit exceeded: %s (%d > %d)", e.Limit, e.Value, e.Max)
 }
 
 // EventHandler is a function that handles a specific event type
@@ -68,6 +93,25 @@ func (e *Engine) ScheduleEvent(event *Event) {
 	if event.Sequence == 0 {
 		event.Sequence = counter
 	}
+	if e.limits.MaxEventsScheduled > 0 && counter > e.limits.MaxEventsScheduled {
+		e.triggerGuardFailure(&LimitExceededError{
+			Limit: "max_events_scheduled",
+			Value: counter,
+			Max:   e.limits.MaxEventsScheduled,
+		})
+		return
+	}
+	if e.limits.MaxEventQueueSize > 0 {
+		nextQueueSize := int64(e.eventQueue.Size()) + 1
+		if nextQueueSize > e.limits.MaxEventQueueSize {
+			e.triggerGuardFailure(&LimitExceededError{
+				Limit: "max_event_queue_size",
+				Value: nextQueueSize,
+				Max:   e.limits.MaxEventQueueSize,
+			})
+			return
+		}
+	}
 	e.eventQueue.Schedule(event)
 
 	e.logger.Debug("Event scheduled",
@@ -75,6 +119,16 @@ func (e *Engine) ScheduleEvent(event *Event) {
 		"type", event.Type,
 		"time", event.Time,
 		"queue_size", e.eventQueue.Size())
+}
+
+// SetRuntimeLimits applies runtime guardrails.
+func (e *Engine) SetRuntimeLimits(limits RuntimeLimits) {
+	e.limits = limits
+}
+
+// TriggerLimitExceeded fails and cancels the run from outside the engine loop.
+func (e *Engine) TriggerLimitExceeded(err error) {
+	e.triggerGuardFailure(err)
 }
 
 // ScheduleAt schedules an event at a specific simulation time
@@ -121,6 +175,7 @@ func (e *Engine) Run(duration time.Duration) error {
 	startTime := e.simTime.Now()
 	endTime := startTime.Add(duration)
 	e.realTimeStart = time.Now() // Track real-time start for throttling
+	wallStart := time.Now()
 
 	// Schedule simulation end event
 	e.ScheduleAt(EventTypeSimulationEnd, endTime, nil, "", nil)
@@ -131,10 +186,26 @@ func (e *Engine) Run(duration time.Duration) error {
 
 	// Event loop - continue until simulation end event is processed
 	for {
+		if e.limits.MaxWallClockRun > 0 {
+			elapsed := time.Since(wallStart)
+			if elapsed > e.limits.MaxWallClockRun {
+				e.triggerGuardFailure(&LimitExceededError{
+					Limit: "max_wall_clock_runtime",
+					Value: elapsed.Milliseconds(),
+					Max:   e.limits.MaxWallClockRun.Milliseconds(),
+				})
+			}
+		}
+		if err := e.guardrailErr(); err != nil {
+			return err
+		}
 		// Check if context is cancelled
 		select {
 		case <-e.runManager.Context().Done():
 			e.logger.Info("Simulation cancelled")
+			if err := e.guardrailErr(); err != nil {
+				return err
+			}
 			return fmt.Errorf("simulation cancelled")
 		default:
 		}
@@ -187,6 +258,15 @@ func (e *Engine) Run(duration time.Duration) error {
 		// Advance simulation time to event time
 		// This is the key: simulation time only advances when processing events
 		previousSimTime := e.simTime.Now()
+		processed := atomic.AddInt64(&e.processed, 1)
+		if e.limits.MaxEventsProcessed > 0 && processed > e.limits.MaxEventsProcessed {
+			e.triggerGuardFailure(&LimitExceededError{
+				Limit: "max_events_processed",
+				Value: processed,
+				Max:   e.limits.MaxEventsProcessed,
+			})
+			return e.guardrailErr()
+		}
 
 		// For simulation end event, ensure we don't process it before we should
 		if event.Type == EventTypeSimulationEnd {
@@ -343,6 +423,27 @@ func (e *Engine) Stop() {
 	e.runManager.Cancel()
 	e.eventQueue.Clear()
 	e.logger.Debug("Engine stopped (cleanup)")
+}
+
+func (e *Engine) triggerGuardFailure(err error) {
+	if err == nil {
+		return
+	}
+	e.guardMu.Lock()
+	alreadySet := e.guardErr != nil
+	if !alreadySet {
+		e.guardErr = err
+	}
+	e.guardMu.Unlock()
+	if !alreadySet {
+		e.runManager.Cancel()
+	}
+}
+
+func (e *Engine) guardrailErr() error {
+	e.guardMu.Lock()
+	defer e.guardMu.Unlock()
+	return e.guardErr
 }
 
 // GetStats returns current simulation statistics

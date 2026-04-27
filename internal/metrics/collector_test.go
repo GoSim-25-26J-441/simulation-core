@@ -617,3 +617,25 @@ func TestConvertToRunMetricsQueueLengthSumsLatestPerInstanceWithInventory(t *tes
 		t.Fatalf("expected QueueLength 3+1+0 = 4, got %+v", sm)
 	}
 }
+
+func TestCollectorMaxPointsLimit(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	hit := false
+	c.SetMaxPoints(1, func(currentCount, max int) {
+		hit = true
+		if currentCount <= max {
+			t.Fatalf("expected currentCount > max, got %d <= %d", currentCount, max)
+		}
+	})
+	now := time.Now()
+	c.Record("m", 1, now, nil)
+	c.Record("m", 2, now.Add(time.Millisecond), nil)
+	if !hit {
+		t.Fatalf("expected max points callback")
+	}
+	points := c.GetTimeSeries("m", nil)
+	if len(points) != 1 {
+		t.Fatalf("expected only first point retained, got %d", len(points))
+	}
+}

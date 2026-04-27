@@ -46,8 +46,10 @@ func effectiveRunSeed(input *simulationv1.RunInput) int64 {
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
-	store    *RunStore
-	notifier *Notifier
+	store     *RunStore
+	notifier  *Notifier
+	limits    SimulationLimits
+	limitsErr error
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
 
@@ -93,9 +95,12 @@ var (
 )
 
 func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
+	limits, limitsErr := simulationLimitsFromEnv()
 	return &RunExecutor{
 		store:                  store,
 		notifier:               NewNotifierWithWhitelist(callbackWhitelist),
+		limits:                 limits,
+		limitsErr:              limitsErr,
 		cancels:                make(map[string]context.CancelFunc),
 		workloadStates:         make(map[string]*WorkloadState),
 		resourceManagers:       make(map[string]*resource.Manager),
@@ -115,6 +120,19 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 
 	updated, err := e.store.SetStatusRunningWithOnlineConcurrencyGuard(runID)
 	if err != nil {
+		return nil, err
+	}
+	if e.limitsErr != nil {
+		err := fmt.Errorf("invalid SIMD guardrail configuration: %w", e.limitsErr)
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after limits config error", "run_id", runID, "error", serr)
+		}
+		return nil, err
+	}
+	if err := e.limits.validatePreStart(updated.Input); err != nil {
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after prestart guardrail rejection", "run_id", runID, "error", serr)
+		}
 		return nil, err
 	}
 	if opt := updated.Input.GetOptimization(); opt != nil && opt.Online {
@@ -557,6 +575,14 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Create engine
 	eng := engine.NewEngine(runID)
+	eng.SetRuntimeLimits(e.limits.toEngineRuntimeLimits())
+	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested
 	if rec.Input.RealTimeMode {
@@ -587,6 +613,13 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_metric_points",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.Start()
 
 	// Store collector reference for later access
@@ -781,6 +814,14 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Create engine
 	eng := engine.NewEngine(runID)
+	eng.SetRuntimeLimits(e.limits.toEngineRuntimeLimits())
+	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested (for real-time dashboards/monitoring)
 	if rec.Input.RealTimeMode {
@@ -808,6 +849,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_metric_points",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.Start()
 
 	// Store collector reference for later access

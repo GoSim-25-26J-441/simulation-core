@@ -20,21 +20,21 @@ type BatchSpec struct {
 	FreezeWorkload bool
 	FreezePolicies bool
 
-	MaxP95Ms                   float64
-	MaxP99Ms                   float64
-	MaxErrorRate               float64
-	MinThroughput              float64
-	MaxQueueDepthSum           float64
-	MaxTopicBacklogDepthSum    float64
-	MaxTopicConsumerLagSum     float64
-	MaxQueueOldestMessageAgeMs float64
-	MaxTopicOldestMessageAgeMs float64
-	MaxQueueDropCount          float64
-	MaxTopicDropCount          float64
-	MaxQueueDlqCount           float64
-	MaxTopicDlqCount           float64
-	MinLocalityHitRate         float64
-	MaxCrossZoneRequestFraction float64
+	MaxP95Ms                        float64
+	MaxP99Ms                        float64
+	MaxErrorRate                    float64
+	MinThroughput                   float64
+	MaxQueueDepthSum                float64
+	MaxTopicBacklogDepthSum         float64
+	MaxTopicConsumerLagSum          float64
+	MaxQueueOldestMessageAgeMs      float64
+	MaxTopicOldestMessageAgeMs      float64
+	MaxQueueDropCount               float64
+	MaxTopicDropCount               float64
+	MaxQueueDlqCount                float64
+	MaxTopicDlqCount                float64
+	MinLocalityHitRate              float64
+	MaxCrossZoneRequestFraction     float64
 	MaxTopologyLatencyPenaltyMeanMs float64
 
 	ServiceCPUBandLow  float64
