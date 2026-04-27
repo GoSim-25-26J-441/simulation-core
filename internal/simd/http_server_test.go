@@ -1842,6 +1842,145 @@ func TestHTTPServerUpdateRunConfigurationVerticalScaling(t *testing.T) {
 	}
 }
 
+func TestHTTPServerUpdateRunConfigurationRejectsInvalidBody(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-unknown/configuration", strings.NewReader("{"))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for invalid JSON, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "invalid request body") {
+		t.Fatalf("expected invalid request body error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationRequiresPayloadFields(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-unknown/configuration", strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for empty payload, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "at least one of services, workload, or policies must be provided") {
+		t.Fatalf("expected empty payload validation error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationRejectsMissingServiceID(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: strings.Replace(testScenarioYAML, "cores: 2", "cores: 8", 1),
+		DurationMs:   5000,
+	}
+	rec, err := store.Create("run-missing-svc-id", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	body := `{"services":[{"replicas":2}]}`
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-missing-svc-id/configuration", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for missing service id, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "service id is required") {
+		t.Fatalf("expected service id validation error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerGetRunConfigurationNotFound(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/not-found/configuration", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 for unknown run, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "run not found") {
+		t.Fatalf("expected run not found error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerGetRunConfigurationRequiresRunningStatus(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	}
+	rec, err := store.Create("run-get-config-status", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/run-get-config-status/configuration", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected status 412 for non-running run, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), rec.Run.Status.String()) {
+		t.Fatalf("expected response to include current run status, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerGetRunConfigurationReturnsInternalErrorWhenConfigUnavailable(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	}
+	rec, err := store.Create("run-get-config-success", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/run-get-config-success/configuration", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 for unavailable config, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "run configuration not available") {
+		t.Fatalf("expected run configuration unavailable error, got: %s", rr.Body.String())
+	}
+}
+
 func TestHTTPServerMetricsStreamMultipleTimePoints(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store, nil)

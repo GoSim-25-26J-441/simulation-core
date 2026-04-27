@@ -17,6 +17,9 @@ try {
     $testArgs = @('-coverprofile=coverage.out', '-covermode=atomic') + $pkgs
     if (-not $SkipRace) { $testArgs = @('-race') + $testArgs }
     & go test @testArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "go test failed with exit code $LASTEXITCODE"
+    }
 
     if (-not (Test-Path coverage.out)) {
         Write-Error "coverage.out was not created"
