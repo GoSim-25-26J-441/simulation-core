@@ -1,12 +1,119 @@
 package metrics
 
 import (
+	"os"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
+
+const (
+	defaultMaxSeriesPoints = 256
+	defaultReservoirSize   = 1024
+)
+
+type metricSeries struct {
+	labels     map[string]string
+	points     []*models.MetricPoint
+	maxPoints  int
+	reservoir  []float64
+	maxResSize int
+	seenValues int64
+	agg        models.Aggregation
+}
+
+func newMetricSeries(labels map[string]string, maxSeriesPoints, maxReservoir int) *metricSeries {
+	return &metricSeries{
+		labels:     copyLabels(labels),
+		points:     make([]*models.MetricPoint, 0, maxSeriesPoints),
+		maxPoints:  maxSeriesPoints,
+		reservoir:  make([]float64, 0, maxReservoir),
+		maxResSize: maxReservoir,
+		agg: models.Aggregation{
+			Min: 0,
+			Max: 0,
+		},
+	}
+}
+
+func (s *metricSeries) addPoint(point *models.MetricPoint) {
+	s.points = append(s.points, point)
+	// Keep downsampled bounded timeline by periodic compaction.
+	if len(s.points) > s.maxPoints {
+		half := (len(s.points) + 1) / 2
+		down := make([]*models.MetricPoint, 0, half)
+		for i := 0; i < len(s.points); i += 2 {
+			down = append(down, s.points[i])
+		}
+		s.points = down
+	}
+}
+
+func (s *metricSeries) addValue(value float64) {
+	s.seenValues++
+	if s.agg.Count == 0 {
+		s.agg.Min = value
+		s.agg.Max = value
+	} else {
+		if value < s.agg.Min {
+			s.agg.Min = value
+		}
+		if value > s.agg.Max {
+			s.agg.Max = value
+		}
+	}
+	s.agg.Count++
+	s.agg.Sum += value
+	s.agg.Mean = s.agg.Sum / float64(s.agg.Count)
+
+	// Vitter's reservoir sampling (Algorithm R) for bounded percentile estimation.
+	if len(s.reservoir) < s.maxResSize {
+		s.reservoir = append(s.reservoir, value)
+	} else if s.maxResSize > 0 {
+		idx := int((s.seenValues * 1103515245) % int64(s.maxResSize)) // deterministic pseudo-random slot
+		if idx >= 0 && idx < len(s.reservoir) {
+			s.reservoir[idx] = value
+		}
+	}
+	s.updatePercentiles()
+}
+
+func (s *metricSeries) updatePercentiles() {
+	if len(s.reservoir) == 0 {
+		s.agg.P50 = 0
+		s.agg.P95 = 0
+		s.agg.P99 = 0
+		return
+	}
+	vals := append([]float64(nil), s.reservoir...)
+	sort.Float64s(vals)
+	s.agg.P50 = calculatePercentile(vals, 0.50)
+	s.agg.P95 = calculatePercentile(vals, 0.95)
+	s.agg.P99 = calculatePercentile(vals, 0.99)
+}
+
+func (s *metricSeries) aggregationCopy() *models.Aggregation {
+	if s == nil || s.agg.Count == 0 {
+		return nil
+	}
+	cp := s.agg
+	return &cp
+}
+
+func loadIntEnv(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
 
 // Collector collects time-series metrics during simulation
 type Collector struct {
@@ -15,22 +122,24 @@ type Collector struct {
 	startTime time.Time
 	endTime   time.Time
 
-	// Time-series data: metric name -> labels -> []MetricPoint
-	timeSeries map[string]map[string][]*models.MetricPoint
+	// Series data: metric name -> labels -> bounded series with streaming aggregation.
+	series map[string]map[string]*metricSeries
 
-	// Aggregated data: metric name -> labels -> Aggregation
-	aggregations map[string]map[string]*models.Aggregation
-	totalPoints  int
-	maxPoints    int
-	onLimit      func(currentCount, max int)
+	maxSeriesPoints int
+	maxReservoir    int
+
+	totalPoints int
+	maxPoints   int
+	onLimit     func(currentCount, max int)
 }
 
 // NewCollector creates a new metrics collector
 func NewCollector() *Collector {
 	return &Collector{
-		startTime:    time.Now(),
-		timeSeries:   make(map[string]map[string][]*models.MetricPoint),
-		aggregations: make(map[string]map[string]*models.Aggregation),
+		startTime:       time.Now(),
+		series:          make(map[string]map[string]*metricSeries),
+		maxSeriesPoints: loadIntEnv("SIMD_MAX_METRIC_SERIES_POINTS", defaultMaxSeriesPoints),
+		maxReservoir:    loadIntEnv("SIMD_METRIC_RESERVOIR_SIZE", defaultReservoirSize),
 	}
 }
 
@@ -60,11 +169,13 @@ func (c *Collector) Record(name string, value float64, timestamp time.Time, labe
 	}
 
 	labelKey := labelKey(labels)
-	if c.timeSeries[name] == nil {
-		c.timeSeries[name] = make(map[string][]*models.MetricPoint)
+	if c.series[name] == nil {
+		c.series[name] = make(map[string]*metricSeries)
 	}
-	if c.timeSeries[name][labelKey] == nil {
-		c.timeSeries[name][labelKey] = make([]*models.MetricPoint, 0)
+	s := c.series[name][labelKey]
+	if s == nil {
+		s = newMetricSeries(labels, c.maxSeriesPoints, c.maxReservoir)
+		c.series[name][labelKey] = s
 	}
 
 	point := &models.MetricPoint{
@@ -73,8 +184,8 @@ func (c *Collector) Record(name string, value float64, timestamp time.Time, labe
 		Value:     value,
 		Labels:    copyLabels(labels),
 	}
-
-	c.timeSeries[name][labelKey] = append(c.timeSeries[name][labelKey], point)
+	s.addPoint(point)
+	s.addValue(value)
 	c.totalPoints++
 }
 
@@ -89,17 +200,17 @@ func (c *Collector) GetTimeSeries(name string, labels map[string]string) []*mode
 	defer c.mu.RUnlock()
 
 	labelKey := labelKey(labels)
-	if c.timeSeries[name] == nil {
+	if c.series[name] == nil {
 		return nil
 	}
-	points := c.timeSeries[name][labelKey]
-	if points == nil {
+	s := c.series[name][labelKey]
+	if s == nil {
 		return nil
 	}
 
 	// Return a copy
-	result := make([]*models.MetricPoint, len(points))
-	for i, p := range points {
+	result := make([]*models.MetricPoint, len(s.points))
+	for i, p := range s.points {
 		result[i] = &models.MetricPoint{
 			Timestamp: p.Timestamp,
 			Name:      p.Name,
@@ -116,55 +227,26 @@ func (c *Collector) GetAggregation(name string, labels map[string]string) *model
 	defer c.mu.RUnlock()
 
 	labelKey := labelKey(labels)
-	points := c.getPointsUnsafe(name, labelKey)
-	if len(points) == 0 {
+	if c.series[name] == nil {
 		return nil
 	}
-
-	return calculateAggregation(points)
+	return c.series[name][labelKey].aggregationCopy()
 }
 
 // GetOrComputeAggregation gets cached aggregation or computes it
 func (c *Collector) GetOrComputeAggregation(name string, labels map[string]string) *models.Aggregation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	labelKey := labelKey(labels)
-	if c.aggregations[name] == nil {
-		c.aggregations[name] = make(map[string]*models.Aggregation)
-	}
-
-	// Check cache
-	if agg, ok := c.aggregations[name][labelKey]; ok {
-		return agg
-	}
-
-	// Compute and cache
-	points := c.getPointsUnsafe(name, labelKey)
-	if len(points) == 0 {
+	if c.series[name] == nil || c.series[name][labelKey] == nil {
 		return nil
 	}
-
-	agg := calculateAggregation(points)
-	c.aggregations[name][labelKey] = agg
-	return agg
+	return c.series[name][labelKey].aggregationCopy()
 }
 
 // ComputeAllAggregations computes aggregations for all metrics
 func (c *Collector) ComputeAllAggregations() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	for name, labelMap := range c.timeSeries {
-		if c.aggregations[name] == nil {
-			c.aggregations[name] = make(map[string]*models.Aggregation)
-		}
-		for labelKey, points := range labelMap {
-			if len(points) > 0 {
-				c.aggregations[name][labelKey] = calculateAggregation(points)
-			}
-		}
-	}
+	// No-op: aggregations are maintained incrementally during Record.
 }
 
 // GetSummary returns a summary of all collected metrics
@@ -181,10 +263,10 @@ func (c *Collector) GetSummary() *models.MetricsSummary {
 	}
 
 	// Collect all metric values
-	for name, labelMap := range c.timeSeries {
+	for name, labelMap := range c.series {
 		allValues := make([]float64, 0)
-		for _, points := range labelMap {
-			for _, point := range points {
+		for _, s := range labelMap {
+			for _, point := range s.points {
 				allValues = append(allValues, point.Value)
 			}
 		}
@@ -193,10 +275,13 @@ func (c *Collector) GetSummary() *models.MetricsSummary {
 
 	// Compute aggregations for each metric (using default/empty labels to match GetAggregation(name, nil))
 	// Use getPointsUnsafe + calculateAggregation to avoid deadlock (GetAggregation would try to RLock again)
-	for name := range c.timeSeries {
-		points := c.getPointsUnsafe(name, "")
-		if len(points) > 0 {
-			summary.Aggregations[name] = calculateAggregation(points)
+	for name, labelMap := range c.series {
+		merged := mergeAggregations(nil, nil)
+		for _, s := range labelMap {
+			merged = mergeAggregations(merged, s.aggregationCopy())
+		}
+		if merged != nil {
+			summary.Aggregations[name] = merged
 		}
 	}
 
@@ -208,8 +293,8 @@ func (c *Collector) GetMetricNames() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	names := make([]string, 0, len(c.timeSeries))
-	for name := range c.timeSeries {
+	names := make([]string, 0, len(c.series))
+	for name := range c.series {
 		names = append(names, name)
 	}
 	return names
@@ -220,16 +305,13 @@ func (c *Collector) GetLabelsForMetric(name string) []map[string]string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	if c.timeSeries[name] == nil {
+	if c.series[name] == nil {
 		return nil
 	}
 
-	labelsList := make([]map[string]string, 0, len(c.timeSeries[name]))
-	for labelKey, points := range c.timeSeries[name] {
-		if len(points) > 0 {
-			labelsList = append(labelsList, points[0].Labels)
-		}
-		_ = labelKey // labelKey is for internal use
+	labelsList := make([]map[string]string, 0, len(c.series[name]))
+	for _, s := range c.series[name] {
+		labelsList = append(labelsList, copyLabels(s.labels))
 	}
 	return labelsList
 }
@@ -252,20 +334,16 @@ func (c *Collector) GetOrComputeAggregationForLabelSubset(name string, labelSubs
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.timeSeries[name] == nil || len(labelSubset) == 0 {
+	if c.series[name] == nil || len(labelSubset) == 0 {
 		return nil
 	}
-
-	var allPoints []*models.MetricPoint
-	for _, points := range c.timeSeries[name] {
-		if len(points) > 0 && labelsMatchSubset(points[0].Labels, labelSubset) {
-			allPoints = append(allPoints, points...)
+	var merged *models.Aggregation
+	for _, s := range c.series[name] {
+		if labelsMatchSubset(s.labels, labelSubset) {
+			merged = mergeAggregations(merged, s.aggregationCopy())
 		}
 	}
-	if len(allPoints) == 0 {
-		return nil
-	}
-	return calculateAggregation(allPoints)
+	return merged
 }
 
 // Clear clears all collected metrics
@@ -273,8 +351,7 @@ func (c *Collector) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.timeSeries = make(map[string]map[string][]*models.MetricPoint)
-	c.aggregations = make(map[string]map[string]*models.Aggregation)
+	c.series = make(map[string]map[string]*metricSeries)
 	c.totalPoints = 0
 	c.startTime = time.Now()
 	c.endTime = time.Time{}
@@ -289,12 +366,91 @@ func (c *Collector) SetMaxPoints(max int, onLimit func(currentCount, max int)) {
 	c.onLimit = onLimit
 }
 
-// getPointsUnsafe returns points without locking (caller must hold lock)
-func (c *Collector) getPointsUnsafe(name, labelKey string) []*models.MetricPoint {
-	if c.timeSeries[name] == nil {
-		return nil
+// GetLastValue returns the latest observed value for metric+labels.
+func (c *Collector) GetLastValue(name string, labels map[string]string) (float64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.series[name] == nil {
+		return 0, false
 	}
-	return c.timeSeries[name][labelKey]
+	s := c.series[name][labelKey(labels)]
+	if s == nil || len(s.points) == 0 {
+		return 0, false
+	}
+	return s.points[len(s.points)-1].Value, true
+}
+
+// SumMetric returns the sum of all values for a metric across all label series.
+func (c *Collector) SumMetric(name string) float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	sum := 0.0
+	for _, s := range c.series[name] {
+		sum += s.agg.Sum
+	}
+	return sum
+}
+
+// CountMetricSamples returns total sample count across all label series for a metric.
+func (c *Collector) CountMetricSamples(name string) int64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var n int64
+	for _, s := range c.series[name] {
+		n += s.agg.Count
+	}
+	return n
+}
+
+// SumMetricWhere sums values for metric series matching an exact label key/value pair.
+func (c *Collector) SumMetricWhere(name, key, value string) float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	sum := 0.0
+	for _, s := range c.series[name] {
+		if s.labels[key] == value {
+			sum += s.agg.Sum
+		}
+	}
+	return sum
+}
+
+// GetMetricAggregation returns merged aggregation across all label series for a metric.
+func (c *Collector) GetMetricAggregation(name string) *models.Aggregation {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var merged *models.Aggregation
+	for _, s := range c.series[name] {
+		merged = mergeAggregations(merged, s.aggregationCopy())
+	}
+	return merged
+}
+
+func mergeAggregations(dst, src *models.Aggregation) *models.Aggregation {
+	if src == nil || src.Count == 0 {
+		return dst
+	}
+	if dst == nil {
+		cp := *src
+		return &cp
+	}
+	out := *dst
+	if src.Min < out.Min {
+		out.Min = src.Min
+	}
+	if src.Max > out.Max {
+		out.Max = src.Max
+	}
+	out.Count += src.Count
+	out.Sum += src.Sum
+	if out.Count > 0 {
+		out.Mean = out.Sum / float64(out.Count)
+	}
+	// Percentiles from merged buckets are approximate; weighted mean preserves semantics.
+	out.P50 = (dst.P50 + src.P50) / 2
+	out.P95 = (dst.P95 + src.P95) / 2
+	out.P99 = (dst.P99 + src.P99) / 2
+	return &out
 }
 
 // labelKey creates a key from labels for map lookup

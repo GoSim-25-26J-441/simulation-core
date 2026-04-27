@@ -348,25 +348,11 @@ func optsInstanceIDs(opts *RunMetricsOptions, serviceName string) []string {
 
 // sumSampleValuesForMetric sums all recorded samples for a counter-like metric across label combinations.
 func sumSampleValuesForMetric(collector *Collector, metricName string) float64 {
-	var sum float64
-	for _, labels := range collector.GetLabelsForMetric(metricName) {
-		for _, p := range collector.GetTimeSeries(metricName, labels) {
-			sum += p.Value
-		}
-	}
-	for _, p := range collector.GetTimeSeries(metricName, nil) {
-		sum += p.Value
-	}
-	return sum
+	return collector.SumMetric(metricName)
 }
 
 func countSamplesForMetric(collector *Collector, metricName string) int64 {
-	var n int64
-	for _, labels := range collector.GetLabelsForMetric(metricName) {
-		n += int64(len(collector.GetTimeSeries(metricName, labels)))
-	}
-	n += int64(len(collector.GetTimeSeries(metricName, nil)))
-	return n
+	return collector.CountMetricSamples(metricName)
 }
 
 // sumLatestGaugeAcrossLabels sums the latest sample per label combination (for broker queue_depth gauges).
@@ -395,30 +381,12 @@ func maxLatestGaugeAcrossLabels(collector *Collector, metricName string) float64
 
 // sumRequestCountWithLabel sums request_count samples where labels[key] == value.
 func sumRequestCountWithLabel(collector *Collector, key, value string) int64 {
-	var sum float64
-	for _, labels := range collector.GetLabelsForMetric(MetricRequestCount) {
-		if labels[key] != value {
-			continue
-		}
-		for _, p := range collector.GetTimeSeries(MetricRequestCount, labels) {
-			sum += p.Value
-		}
-	}
-	return int64(sum)
+	return int64(collector.SumMetricWhere(MetricRequestCount, key, value))
 }
 
 // sumErrorCountWithReason sums request_error_count samples for a given reason label.
 func sumErrorCountWithReason(collector *Collector, reason string) int64 {
-	var sum float64
-	for _, labels := range collector.GetLabelsForMetric(MetricRequestErrorCount) {
-		if labels[LabelReason] != reason {
-			continue
-		}
-		for _, p := range collector.GetTimeSeries(MetricRequestErrorCount, labels) {
-			sum += p.Value
-		}
-	}
-	return int64(sum)
+	return int64(collector.SumMetricWhere(MetricRequestErrorCount, LabelReason, reason))
 }
 
 // meanLatestGaugePerInstanceWithInventory averages the latest sample per instance ID;
@@ -430,11 +398,11 @@ func meanLatestGaugePerInstanceWithInventory(collector *Collector, metricName, s
 	sum := 0.0
 	for _, id := range instanceIDs {
 		labels := CreateInstanceLabels(serviceName, id)
-		points := collector.GetTimeSeries(metricName, labels)
-		if len(points) == 0 {
+		v, ok := collector.GetLastValue(metricName, labels)
+		if !ok {
 			continue
 		}
-		sum += points[len(points)-1].Value
+		sum += v
 	}
 	return sum / float64(len(instanceIDs))
 }
@@ -449,11 +417,11 @@ func meanLatestGaugePerInstance(collector *Collector, metricName, serviceName st
 		if l["service"] != serviceName || l["instance"] == "" {
 			continue
 		}
-		points := collector.GetTimeSeries(metricName, l)
-		if len(points) == 0 {
+		v, ok := collector.GetLastValue(metricName, l)
+		if !ok {
 			continue
 		}
-		latest = append(latest, points[len(points)-1].Value)
+		latest = append(latest, v)
 	}
 	if len(latest) == 0 {
 		return 0, false
@@ -473,9 +441,9 @@ func sumLatestGaugePerInstance(collector *Collector, metricName, serviceName str
 		if l["service"] != serviceName || l["instance"] == "" {
 			continue
 		}
-		points := collector.GetTimeSeries(metricName, l)
-		if len(points) > 0 {
-			sum += int(points[len(points)-1].Value)
+		v, ok := collector.GetLastValue(metricName, l)
+		if ok {
+			sum += int(v)
 		}
 	}
 	return sum
@@ -486,9 +454,9 @@ func sumLatestGaugePerInstanceWithInventory(collector *Collector, metricName, se
 	sum := 0
 	for _, instID := range instanceIDs {
 		lbl := CreateInstanceLabels(serviceName, instID)
-		points := collector.GetTimeSeries(metricName, lbl)
-		if len(points) > 0 {
-			sum += int(points[len(points)-1].Value)
+		v, ok := collector.GetLastValue(metricName, lbl)
+		if ok {
+			sum += int(v)
 		}
 	}
 	return sum
@@ -500,75 +468,24 @@ func sumLatestGaugePerInstanceWithInventory(collector *Collector, metricName, se
 func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string, opts *RunMetricsOptions) *models.RunMetrics {
 	collector.ComputeAllAggregations()
 
-	// Aggregate across all label combinations for global metrics
-	// Collect latency: prefer ingress/root samples when present (SLO-aligned), else hop totals.
-	allLatencyValues := make([]float64, 0)
-	allRootLatencyValues := make([]float64, 0)
-	allRequestCountValues := make([]float64, 0)
-	allErrorCountValues := make([]float64, 0)
-
-	// Get all metric names and aggregate across all labels
-	metricNames := collector.GetMetricNames()
-	for _, name := range metricNames {
-		labelCombos := collector.GetLabelsForMetric(name)
-		for _, labels := range labelCombos {
-			points := collector.GetTimeSeries(name, labels)
-			for _, point := range points {
-				switch name {
-				case MetricRequestLatency:
-					allLatencyValues = append(allLatencyValues, point.Value)
-				case MetricRootRequestLatency:
-					allRootLatencyValues = append(allRootLatencyValues, point.Value)
-				case MetricRequestCount:
-					allRequestCountValues = append(allRequestCountValues, point.Value)
-				case MetricRequestErrorCount:
-					allErrorCountValues = append(allErrorCountValues, point.Value)
-				}
-			}
-		}
-		// Also check for points with no labels
-		points := collector.GetTimeSeries(name, nil)
-		for _, point := range points {
-			switch name {
-			case MetricRequestLatency:
-				allLatencyValues = append(allLatencyValues, point.Value)
-			case MetricRootRequestLatency:
-				allRootLatencyValues = append(allRootLatencyValues, point.Value)
-			case MetricRequestCount:
-				allRequestCountValues = append(allRequestCountValues, point.Value)
-			case MetricRequestErrorCount:
-				allErrorCountValues = append(allErrorCountValues, point.Value)
-			}
-		}
-	}
-
 	ingressReq, internalReq := splitRequestCountByOrigin(collector)
 
 	// Latency percentiles: use root_request_latency_ms when emitted (ingress traces), else request_latency_ms.
-	latencyPool := allLatencyValues
-	if len(allRootLatencyValues) > 0 {
-		latencyPool = allRootLatencyValues
-	}
 	var latencyP50, latencyP95, latencyP99, latencyMean float64
-	if len(latencyPool) > 0 {
-		sort.Float64s(latencyPool)
-		latencyP50 = calculatePercentile(latencyPool, 0.50)
-		latencyP95 = calculatePercentile(latencyPool, 0.95)
-		latencyP99 = calculatePercentile(latencyPool, 0.99)
-		latencyMean = mean(latencyPool)
+	latAgg := collector.GetMetricAggregation(MetricRequestLatency)
+	rootAgg := collector.GetMetricAggregation(MetricRootRequestLatency)
+	if rootAgg != nil && rootAgg.Count > 0 {
+		latAgg = rootAgg
+	}
+	if latAgg != nil {
+		latencyP50 = latAgg.P50
+		latencyP95 = latAgg.P95
+		latencyP99 = latAgg.P99
+		latencyMean = latAgg.Mean
 	}
 
-	// Sum request counts (all label series; should match ingress+internal when origin labels are present)
-	totalRequests := int64(0)
-	for _, v := range allRequestCountValues {
-		totalRequests += int64(v)
-	}
-
-	// Sum error counts (attempt-level: includes downstream retries and internal failures).
-	failedRequests := int64(0)
-	for _, v := range allErrorCountValues {
-		failedRequests += int64(v)
-	}
+	totalRequests := int64(sumSampleValuesForMetric(collector, MetricRequestCount))
+	failedRequests := int64(sumSampleValuesForMetric(collector, MetricRequestErrorCount))
 
 	ingressFailed := int64(sumSampleValuesForMetric(collector, MetricIngressLogicalFailure))
 	retryAttempts := sumRequestCountWithLabel(collector, LabelIsRetry, "true")
@@ -816,12 +733,11 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 func splitRequestCountByOrigin(collector *Collector) (ingress, internal int64) {
 	labelCombos := collector.GetLabelsForMetric(MetricRequestCount)
 	for _, labels := range labelCombos {
-		points := collector.GetTimeSeries(MetricRequestCount, labels)
-		var sum float64
-		for _, p := range points {
-			sum += p.Value
+		agg := collector.GetOrComputeAggregation(MetricRequestCount, labels)
+		if agg == nil {
+			continue
 		}
-		n := int64(sum)
+		n := int64(agg.Sum)
 		switch labels[LabelOrigin] {
 		case OriginDownstream:
 			internal += n
@@ -887,8 +803,8 @@ func AttachEndpointRequestStats(collector *Collector, rm *models.RunMetrics) {
 			continue
 		}
 		k := epKey{svc, ep}
-		for _, p := range collector.GetTimeSeries(MetricRequestCount, labels) {
-			req[k] += p.Value
+		if agg := collector.GetOrComputeAggregation(MetricRequestCount, labels); agg != nil {
+			req[k] += agg.Sum
 		}
 	}
 	for _, labels := range collector.GetLabelsForMetric(MetricRequestErrorCount) {
@@ -901,8 +817,8 @@ func AttachEndpointRequestStats(collector *Collector, rm *models.RunMetrics) {
 			continue
 		}
 		k := epKey{svc, ep}
-		for _, p := range collector.GetTimeSeries(MetricRequestErrorCount, labels) {
-			err[k] += p.Value
+		if agg := collector.GetOrComputeAggregation(MetricRequestErrorCount, labels); agg != nil {
+			err[k] += agg.Sum
 		}
 	}
 

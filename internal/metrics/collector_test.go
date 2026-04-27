@@ -600,6 +600,70 @@ func TestAttachHostUtilizationScaledOutHostNoSamplesIsZero(t *testing.T) {
 	}
 }
 
+func TestCollectorDownsampledSeriesIsBounded(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "8")
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	for i := 0; i < 100; i++ {
+		c.Record("bounded_metric", float64(i), now.Add(time.Duration(i)*time.Millisecond), map[string]string{"service": "s1"})
+	}
+	points := c.GetTimeSeries("bounded_metric", map[string]string{"service": "s1"})
+	if len(points) > 8 {
+		t.Fatalf("expected downsampled points <= 8, got %d", len(points))
+	}
+	agg := c.GetOrComputeAggregation("bounded_metric", map[string]string{"service": "s1"})
+	if agg == nil || agg.Count != 100 {
+		t.Fatalf("expected streaming aggregate count=100, got %+v", agg)
+	}
+}
+
+func TestCollectorGetTimeSeriesReturnsBoundedData(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "5")
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	for i := 0; i < 30; i++ {
+		c.Record("m", float64(i), now.Add(time.Duration(i)*time.Millisecond), nil)
+	}
+	if got := len(c.GetTimeSeries("m", nil)); got > 5 {
+		t.Fatalf("expected bounded series length <= 5, got %d", got)
+	}
+}
+
+func TestCollectorStreamingAggregationFields(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	for _, v := range []float64{2, 4, 6, 8} {
+		c.Record("agg", v, now, map[string]string{"service": "svc1"})
+	}
+	agg := c.GetOrComputeAggregation("agg", map[string]string{"service": "svc1"})
+	if agg == nil {
+		t.Fatalf("expected aggregation")
+	}
+	if agg.Count != 4 || agg.Sum != 20 || agg.Min != 2 || agg.Max != 8 || agg.Mean != 5 {
+		t.Fatalf("unexpected aggregation values: %+v", agg)
+	}
+}
+
+func TestCollectorLabelSeparationAndMergedAggregation(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	ts := time.Now()
+	c.Record("req", 1, ts, map[string]string{"service": "a"})
+	c.Record("req", 2, ts, map[string]string{"service": "b"})
+	aggA := c.GetOrComputeAggregation("req", map[string]string{"service": "a"})
+	aggB := c.GetOrComputeAggregation("req", map[string]string{"service": "b"})
+	if aggA == nil || aggA.Sum != 1 || aggB == nil || aggB.Sum != 2 {
+		t.Fatalf("unexpected per-label agg values: a=%+v b=%+v", aggA, aggB)
+	}
+	merged := c.GetMetricAggregation("req")
+	if merged == nil || merged.Sum != 3 || merged.Count != 2 {
+		t.Fatalf("unexpected merged agg: %+v", merged)
+	}
+}
+
 func TestConvertToRunMetricsQueueLengthSumsLatestPerInstanceWithInventory(t *testing.T) {
 	c := NewCollector()
 	c.Start()
