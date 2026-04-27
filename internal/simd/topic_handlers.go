@@ -470,7 +470,7 @@ func handleTopicDequeue(state *scenarioState, _ *engine.Engine) engine.EventHand
 			child.Metadata["caller_host_id"] = v
 		}
 
-		inst, _, err := selectInstanceForRequest(state, child, simTime)
+		inst, err := selectInstanceForRequest(state, child, simTime)
 		if err != nil {
 			shard.RequeueFront(msg)
 			scheduleTopicShardRetention(state, eng, brokerID, topic, partition, g, effectiveTopicForBroker(state, brokerID))

@@ -151,11 +151,13 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 
 	// Initialize service instances with per-host reservation feasibility
 	instanceID := 0
-	for _, serviceConfig := range scenario.Services {
+	for i := range scenario.Services {
+		serviceConfig := &scenario.Services[i]
 		if serviceConfig.Routing != nil {
 			m.serviceRouting[serviceConfig.ID] = serviceConfig.Routing
 		}
-		for _, ep := range serviceConfig.Endpoints {
+		for j := range serviceConfig.Endpoints {
+			ep := &serviceConfig.Endpoints[j]
 			if ep.Routing != nil {
 				m.endpointRouting[serviceConfig.ID+":"+ep.Path] = ep.Routing
 			}

@@ -150,9 +150,9 @@ const drainSweepInterval = 100 * time.Millisecond
 
 // CPU scheduler metadata (DES): deferred RequestStart until cpu_service_start simulation time.
 const (
-	metaCpuDeferredStart = "cpu_deferred_start"
-	metaCpuServiceStart  = "cpu_service_start"
-	metaCpuServiceEnd    = "cpu_service_end"
+	metaCPUDeferredStart = "cpu_deferred_start"
+	metaCPUServiceStart  = "cpu_service_start"
+	metaCPUServiceEnd    = "cpu_service_end"
 )
 
 func metadataInt(m map[string]interface{}, key string) int {
@@ -245,16 +245,16 @@ func metadataInt64(m map[string]interface{}, key string) int64 {
 	}
 }
 
-func selectInstanceForRequest(state *scenarioState, request *models.Request, simTime time.Time) (*resource.ServiceInstance, string, error) {
+func selectInstanceForRequest(state *scenarioState, request *models.Request, simTime time.Time) (*resource.ServiceInstance, error) {
 	if state == nil || state.rm == nil {
-		return nil, "", fmt.Errorf("resource manager not initialized")
+		return nil, fmt.Errorf("resource manager not initialized")
 	}
 	if request == nil {
-		return nil, "", fmt.Errorf("request is nil")
+		return nil, fmt.Errorf("request is nil")
 	}
 	inst, strategy, err := state.rm.SelectInstanceForRequest(request.ServiceName, request, simTime)
 	if err != nil {
-		return nil, strategy, err
+		return nil, err
 	}
 	if state.collector != nil {
 		labels := labelsForRequestMetrics(request, request.ServiceName, request.Endpoint)
@@ -267,7 +267,8 @@ func selectInstanceForRequest(state *scenarioState, request *models.Request, sim
 		// Determine locality preference key from endpoint override first, then service routing.
 		localityKey := ""
 		if svc, ok := state.services[request.ServiceName]; ok && svc != nil {
-			for _, ep := range svc.Endpoints {
+			for i := range svc.Endpoints {
+				ep := &svc.Endpoints[i]
 				if ep.Path == request.Endpoint && ep.Routing != nil && strings.TrimSpace(ep.Routing.LocalityZoneFrom) != "" {
 					localityKey = strings.TrimSpace(ep.Routing.LocalityZoneFrom)
 					break
@@ -322,7 +323,7 @@ func selectInstanceForRequest(state *scenarioState, request *models.Request, sim
 			}
 		}
 	}
-	return inst, strategy, nil
+	return inst, nil
 }
 
 func labelsForRequestMetrics(req *models.Request, serviceID, endpointPath string) map[string]string {
@@ -372,9 +373,10 @@ func localServiceProcessingLatencyMs(request *models.Request, simTime time.Time)
 
 func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interaction.ResolvedCall, td, ad int) (asyncCalls, syncCalls []interaction.ResolvedCall) {
 	lim := state.scenario.SimulationLimits
-	for _, downstreamCall := range downstreamCalls {
+	for i := range downstreamCalls {
+		downstreamCall := &downstreamCalls[i]
 		nextTD := td + 1
-		isAsync := downstreamCall.Call.IsAsync() || usesAsyncBroker(state, downstreamCall)
+		isAsync := downstreamCall.Call.IsAsync() || usesAsyncBroker(state, *downstreamCall)
 		nextAD := ad
 		if isAsync {
 			nextAD++
@@ -387,14 +389,14 @@ func partitionDownstreamFiltered(state *scenarioState, downstreamCalls []interac
 				continue
 			}
 		}
-		if usesAsyncBroker(state, downstreamCall) {
-			asyncCalls = append(asyncCalls, downstreamCall)
+		if usesAsyncBroker(state, *downstreamCall) {
+			asyncCalls = append(asyncCalls, *downstreamCall)
 			continue
 		}
 		if downstreamCall.Call.IsAsync() {
-			asyncCalls = append(asyncCalls, downstreamCall)
+			asyncCalls = append(asyncCalls, *downstreamCall)
 		} else {
-			syncCalls = append(syncCalls, downstreamCall)
+			syncCalls = append(syncCalls, *downstreamCall)
 		}
 	}
 	return asyncCalls, syncCalls
@@ -556,7 +558,7 @@ func handleRequestArrival(state *scenarioState) engine.EventHandler {
 		}
 
 		// Select an instance for this service and emit routing/locality metrics.
-		instance, _, err := selectInstanceForRequest(state, request, simTime)
+		instance, err := selectInstanceForRequest(state, request, simTime)
 		if err != nil {
 			request.Status = models.RequestStatusFailed
 			el := metrics.EndpointErrorLabels(ingressLabels, metrics.ReasonNoInstance)
@@ -614,7 +616,7 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 				instanceID = id
 			} else {
 				// Select instance if not already assigned
-				instance, _, err := selectInstanceForRequest(state, request, simTime)
+				instance, err := selectInstanceForRequest(state, request, simTime)
 				if err != nil {
 					return fmt.Errorf("no instances available for service %s: %w", serviceID, err)
 				}
@@ -695,15 +697,15 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 
 		var cpuStart, cpuEnd time.Time
 		deferredExec := false
-		if b, ok := request.Metadata[metaCpuDeferredStart].(bool); ok && b {
-			t0, ok0 := metadataTime(request.Metadata, metaCpuServiceStart)
-			t1, ok1 := metadataTime(request.Metadata, metaCpuServiceEnd)
+		if b, ok := request.Metadata[metaCPUDeferredStart].(bool); ok && b {
+			t0, ok0 := metadataTime(request.Metadata, metaCPUServiceStart)
+			t1, ok1 := metadataTime(request.Metadata, metaCPUServiceEnd)
 			if ok0 && ok1 {
 				cpuStart, cpuEnd = t0, t1
 				deferredExec = true
-				delete(request.Metadata, metaCpuDeferredStart)
-				delete(request.Metadata, metaCpuServiceStart)
-				delete(request.Metadata, metaCpuServiceEnd)
+				delete(request.Metadata, metaCPUDeferredStart)
+				delete(request.Metadata, metaCPUServiceStart)
+				delete(request.Metadata, metaCPUServiceEnd)
 			}
 		}
 		if !deferredExec {
@@ -731,9 +733,9 @@ func handleRequestStart(state *scenarioState) engine.EventHandler {
 				return nil
 			}
 			if cpuStart.After(simTime) {
-				request.Metadata[metaCpuDeferredStart] = true
-				request.Metadata[metaCpuServiceStart] = cpuStart
-				request.Metadata[metaCpuServiceEnd] = cpuEnd
+				request.Metadata[metaCPUDeferredStart] = true
+				request.Metadata[metaCPUServiceStart] = cpuStart
+				request.Metadata[metaCPUServiceEnd] = cpuEnd
 				eng.ScheduleAt(engine.EventTypeRequestStart, cpuStart, request, serviceID, map[string]interface{}{
 					"endpoint_path": endpointPath,
 					"instance_id":   instanceID,
@@ -982,13 +984,14 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		asyncCalls, syncCalls := partitionDownstreamFiltered(state, downstreamCalls, td, ad)
 
 		deferQueueFinalize := false
-		for _, dc := range asyncCalls {
-			if usesTopicBroker(state, dc) {
+		for i := range asyncCalls {
+			dc := &asyncCalls[i]
+			if usesTopicBroker(state, *dc) {
 				eff := effectiveTopicForBroker(state, dc.ServiceID)
 				if !eff.AsyncFireAndForget {
 					deferQueueFinalize = true
 				}
-			} else if usesQueueBroker(state, dc) {
+			} else if usesQueueBroker(state, *dc) {
 				eff := effectiveQueueForBroker(state, dc.ServiceID)
 				if !eff.AsyncFireAndForget {
 					deferQueueFinalize = true
@@ -997,11 +1000,13 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 		}
 
 		callerExtraMs := 0.0
-		for _, dc := range asyncCalls {
-			callerExtraMs += computeDownstreamCallerCPU(state, dc)
+		for i := range asyncCalls {
+			dc := &asyncCalls[i]
+			callerExtraMs += computeDownstreamCallerCPU(state, *dc)
 		}
-		for _, dc := range syncCalls {
-			callerExtraMs += computeDownstreamCallerCPU(state, dc)
+		for i := range syncCalls {
+			dc := &syncCalls[i]
+			callerExtraMs += computeDownstreamCallerCPU(state, *dc)
 		}
 
 		if !deferQueueFinalize {
@@ -1022,10 +1027,11 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			CallerHostZone:   metadataString(request.Metadata, "caller_host_zone"),
 			CallerHostID:     metadataString(request.Metadata, "caller_host_id"),
 		}
-		for _, downstreamCall := range asyncCalls {
+		for i := range asyncCalls {
+			downstreamCall := &asyncCalls[i]
 			nextTD := td + 1
 			nextAD := ad + 1
-			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "", callerTopology)
+			ackT := scheduleDownstreamWithCallerOverhead(state, eng, request, *downstreamCall, tAfter, nextTD, nextAD, true, false, 0, "", callerTopology)
 			if ackT.After(maxAck) {
 				maxAck = ackT
 			}
@@ -1071,10 +1077,11 @@ func handleRequestComplete(state *scenarioState, eng *engine.Engine) engine.Even
 			})
 		}
 
-		for _, downstreamCall := range syncCalls {
+		for i := range syncCalls {
+			downstreamCall := &syncCalls[i]
 			nextTD := td + 1
 			nextAD := ad
-			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "", callerTopology)
+			tAfter = scheduleDownstreamWithCallerOverhead(state, eng, request, *downstreamCall, tAfter, nextTD, nextAD, false, false, 0, "", callerTopology)
 		}
 		if hasInstance {
 			dequeueAt := tAfter
@@ -1118,7 +1125,8 @@ func ScheduleWorkload(eng *engine.Engine, scenario *config.Scenario, duration ti
 	endTime := startTime.Add(duration)
 	generator := workload.NewGenerator(time.Now().UnixNano())
 
-	for _, workloadPattern := range scenario.Workload {
+	for i := range scenario.Workload {
+		workloadPattern := &scenario.Workload[i]
 		// Parse target: "serviceID:path" using interaction resolver
 		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {

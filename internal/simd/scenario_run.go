@@ -82,14 +82,16 @@ func RunScenarioForMetrics(scenario *config.Scenario, simDuration time.Duration,
 	}
 	simDur := eng.GetSimTime().Sub(startTime)
 	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
 	opts := RunMetricsOptionsFromResourceManager(rm)
 	rmOut := metrics.ConvertToRunMetrics(collector, serviceLabels, opts)
 	attachHostMetrics(scenario, rm, rmOut, collector)
 	applyThroughputFromSimDuration(rmOut, simDur)
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		if sm := rmOut.ServiceMetrics[svc.ID]; sm != nil {
 			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 		}

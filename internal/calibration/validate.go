@@ -422,7 +422,8 @@ func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics,
 		warns = append(warns, "endpoint error rates: RunMetrics.EndpointRequestStats is empty; predictions use service-level max error rate only")
 	}
 	var usedStarPath bool
-	for _, eo := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		eo := &obs.Endpoints[i]
 		if eo.ServiceID == "" {
 			continue
 		}
@@ -513,7 +514,8 @@ func meanQueueWaitPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var sum float64
 	var n float64
-	for _, e := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		e := &obs.Endpoints[i]
 		if !e.QueueWaitMeanMs.Present {
 			continue
 		}
@@ -532,7 +534,8 @@ func sumQueueDepthPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var s float64
 	var any bool
-	for _, q := range obs.QueueBrokers {
+	for i := range obs.QueueBrokers {
+		q := &obs.QueueBrokers[i]
 		if !q.DepthMean.Present {
 			continue
 		}
@@ -548,7 +551,8 @@ func sumTopicBacklogPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var s float64
 	var any bool
-	for _, t := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		t := &obs.TopicBrokers[i]
 		if !t.BacklogDepth.Present {
 			continue
 		}
@@ -564,7 +568,8 @@ func sumTopicLagPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var s float64
 	var any bool
-	for _, t := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		t := &obs.TopicBrokers[i]
 		if !t.ConsumerLag.Present {
 			continue
 		}
@@ -583,7 +588,8 @@ func aggregateQueueDropRateObserved(obs *ObservedMetrics) (rate float64, ok bool
 	var dropSum, attemptSum int64
 	approx := false
 	sawDrop := false
-	for _, q := range obs.QueueBrokers {
+	for i := range obs.QueueBrokers {
+		q := &obs.QueueBrokers[i]
 		if !q.DropCount.Present {
 			continue
 		}
@@ -620,7 +626,8 @@ func aggregateTopicDropRateObserved(obs *ObservedMetrics) (rate float64, ok bool
 	}
 	var dropSum, attemptSum int64
 	sawDrop := false
-	for _, t := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		t := &obs.TopicBrokers[i]
 		if !t.DropCount.Present {
 			continue
 		}
@@ -645,7 +652,8 @@ func aggregateTopicDropRateObserved(obs *ObservedMetrics) (rate float64, ok bool
 func sumPresentIntQueue(rows []QueueBrokerObservation, pick func(QueueBrokerObservation) ObservedValue[int64]) (int64, bool) {
 	var s int64
 	var any bool
-	for _, q := range rows {
+	for i := range rows {
+		q := rows[i]
 		ov := pick(q)
 		if !ov.Present {
 			continue
@@ -659,7 +667,8 @@ func sumPresentIntQueue(rows []QueueBrokerObservation, pick func(QueueBrokerObse
 func sumPresentIntTopic(rows []TopicBrokerObservation, pick func(TopicBrokerObservation) ObservedValue[int64]) (int64, bool) {
 	var s int64
 	var any bool
-	for _, t := range rows {
+	for i := range rows {
+		t := rows[i]
 		ov := pick(t)
 		if !ov.Present {
 			continue
@@ -673,7 +682,8 @@ func sumPresentIntTopic(rows []TopicBrokerObservation, pick func(TopicBrokerObse
 func maxPresentFloatQueue(rows []QueueBrokerObservation, pick func(QueueBrokerObservation) ObservedValue[float64]) (float64, bool) {
 	var m float64
 	var any bool
-	for _, q := range rows {
+	for i := range rows {
+		q := rows[i]
 		ov := pick(q)
 		if !ov.Present {
 			continue
@@ -689,7 +699,8 @@ func maxPresentFloatQueue(rows []QueueBrokerObservation, pick func(QueueBrokerOb
 func maxPresentFloatTopicOldest(rows []TopicBrokerObservation) (float64, bool) {
 	var m float64
 	var any bool
-	for _, t := range rows {
+	for i := range rows {
+		t := rows[i]
 		if !t.OldestAgeMs.Present {
 			continue
 		}

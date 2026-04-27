@@ -134,11 +134,12 @@ func CalibrateScenario(base *config.Scenario, obs *ObservedMetrics, opts *Calibr
 
 	// --- Processing latency target: scale endpoint CPU using observed vs predicted processing mean ---
 	if pred != nil {
-		for _, eo := range obs.Endpoints {
+		for i := range obs.Endpoints {
+			eo := &obs.Endpoints[i]
 			if eo.ServiceID == "" || !eo.ProcessingLatencyMeanMs.Present {
 				continue
 			}
-			denom := resolveProcessingDenom(pred, eo, out, report)
+			denom := resolveProcessingDenom(pred, *eo, out, report)
 			if denom < 1e-6 {
 				continue
 			}
@@ -180,7 +181,8 @@ func CalibrateScenario(base *config.Scenario, obs *ObservedMetrics, opts *Calibr
 	}
 
 	// --- Net + IO residual: split using queue wait vs processing (crude) ---
-	for _, eo := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		eo := &obs.Endpoints[i]
 		if eo.ServiceID == "" || eo.EndpointPath == "" || eo.EndpointPath == "*" {
 			continue
 		}
@@ -216,7 +218,8 @@ func CalibrateScenario(base *config.Scenario, obs *ObservedMetrics, opts *Calibr
 	}
 
 	// --- Failure / timeout from observed counts ---
-	for _, eo := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		eo := &obs.Endpoints[i]
 		ep := findEndpoint(out, eo.ServiceID, eo.EndpointPath)
 		if ep == nil {
 			continue
@@ -267,7 +270,8 @@ func CalibrateScenario(base *config.Scenario, obs *ObservedMetrics, opts *Calibr
 	}
 
 	// --- Queue / topic capacity hints ---
-	for _, qb := range obs.QueueBrokers {
+	for i := range obs.QueueBrokers {
+		qb := &obs.QueueBrokers[i]
 		svc := findServiceByKind(out, "queue", qb.BrokerService)
 		if svc == nil || svc.Behavior == nil || svc.Behavior.Queue == nil {
 			report.Skipped = append(report.Skipped, fmt.Sprintf("queue broker %s not found", qb.BrokerService))
@@ -290,7 +294,8 @@ func CalibrateScenario(base *config.Scenario, obs *ObservedMetrics, opts *Calibr
 		}
 	}
 
-	for _, tb := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		tb := &obs.TopicBrokers[i]
 		svc := findServiceByKind(out, "topic", tb.BrokerService)
 		if svc == nil || svc.Behavior == nil || svc.Behavior.Topic == nil {
 			continue
@@ -351,7 +356,8 @@ func predictedIngressRPS(pred *models.RunMetrics, obs *ObservedMetrics, out *con
 		}
 	}
 	if predIngress < 1e-9 {
-		for _, wl := range out.Workload {
+		for i := range out.Workload {
+			wl := &out.Workload[i]
 			if wl.Arrival.RateRPS > 1e-9 {
 				// Sum ingress-like only for hint
 				if isIngressLikeWorkload(wl.TrafficClass) {
@@ -360,7 +366,8 @@ func predictedIngressRPS(pred *models.RunMetrics, obs *ObservedMetrics, out *con
 			}
 		}
 		if predIngress < 1e-9 {
-			for _, wl := range out.Workload {
+			for i := range out.Workload {
+				wl := &out.Workload[i]
 				if wl.Arrival.RateRPS > 1e-9 {
 					predIngress = wl.Arrival.RateRPS
 					report.warnf("predicted run had no request throughput; using configured workload rate_rps=%v as baseline", predIngress)

@@ -114,7 +114,8 @@ func ObservedFromPartialJSON(data []byte) (*ObservedMetrics, error) {
 			IngressFailedRequests:         optI64(g.IngressFailedRequests),
 		}
 	}
-	for _, e := range f.Endpoints {
+	for i := range f.Endpoints {
+		e := &f.Endpoints[i]
 		out.Endpoints = append(out.Endpoints, EndpointObservation{
 			ServiceID:               e.ServiceID,
 			EndpointPath:            e.EndpointPath,

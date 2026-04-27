@@ -258,7 +258,8 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 	})
 
 	var usedStar bool
-	for _, eo := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		eo := &obs.Endpoints[i]
 		if eo.ServiceID == "" {
 			continue
 		}
@@ -268,7 +269,7 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 			usedStar = true
 		}
 
-		if anyHopLatencyPresent(eo) {
+		if anyHopLatencyPresent(*eo) {
 			ph := predictHop(eo.ServiceID, path, star, hop, runs, rollup, &warns, "endpoint_hop_latency")
 			p50, ok50 := ph.meanP50()
 			pMean, okMean := ph.meanMean()
@@ -282,7 +283,7 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 			out = appendEpCompare(out, eo.LatencyP99Ms, nbase+":p99_ms", p99, ok99, tol.LatencyP99Rel)
 		}
 
-		if anyQueueWaitPresent(eo) {
+		if anyQueueWaitPresent(*eo) {
 			pq := predictQueue(eo.ServiceID, path, star, qw, runs, rollup, &warns, "endpoint_queue_wait")
 			q50, qok50 := pq.meanP50()
 			qMean, qokMean := pq.meanMean()
@@ -295,7 +296,7 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 			out = appendEpCompare(out, eo.QueueWaitP99Ms, qbase+":p99_ms", q99, qok99, tol.LatencyP99Rel)
 		}
 
-		if anyProcessingLatencyPresent(eo) {
+		if anyProcessingLatencyPresent(*eo) {
 			pp := predictProc(eo.ServiceID, path, star, proc, runs, rollup, &warns, "endpoint_processing_latency")
 			pr50, pok50 := pp.meanP50()
 			prMean, pokMean := pp.meanMean()

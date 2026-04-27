@@ -252,7 +252,8 @@ func ValidateScenario(s *Scenario) error {
 	serviceIDs := make(map[string]bool)
 
 	// First pass: collect service IDs and validate basic properties
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		if svc.ID == "" {
 			return fmt.Errorf("service id cannot be empty")
 		}
@@ -311,7 +312,8 @@ func ValidateScenario(s *Scenario) error {
 			}
 		}
 
-		for _, ep := range svc.Endpoints {
+		for j := range svc.Endpoints {
+			ep := &svc.Endpoints[j]
 			if ep.Path == "" {
 				return fmt.Errorf("service %s: endpoint path cannot be empty", svc.ID)
 			}
@@ -344,14 +346,17 @@ func ValidateScenario(s *Scenario) error {
 
 	endpointRef := make(map[string]bool)
 	serviceKindByID := make(map[string]string)
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		serviceKindByID[svc.ID] = strings.ToLower(strings.TrimSpace(svc.Kind))
-		for _, ep := range svc.Endpoints {
+		for j := range svc.Endpoints {
+			ep := &svc.Endpoints[j]
 			endpointRef[svc.ID+":"+ep.Path] = true
 		}
 	}
 
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		if strings.ToLower(strings.TrimSpace(svc.Kind)) != "queue" {
 			continue
 		}
@@ -364,7 +369,8 @@ func ValidateScenario(s *Scenario) error {
 		}
 	}
 
-	for _, svc := range s.Services {
+	for i := range s.Services {
+		svc := &s.Services[i]
 		if strings.ToLower(strings.TrimSpace(svc.Kind)) != "topic" {
 			continue
 		}
@@ -385,9 +391,12 @@ func ValidateScenario(s *Scenario) error {
 	}
 
 	// Second pass: validate downstream calls now that all service IDs are known
-	for _, svc := range s.Services {
-		for _, ep := range svc.Endpoints {
-			for _, ds := range ep.Downstream {
+	for i := range s.Services {
+		svc := &s.Services[i]
+		for j := range svc.Endpoints {
+			ep := &svc.Endpoints[j]
+			for k := range ep.Downstream {
+				ds := &ep.Downstream[k]
 				if ds.To == "" {
 					return fmt.Errorf("service %s, endpoint %s: downstream 'to' cannot be empty", svc.ID, ep.Path)
 				}

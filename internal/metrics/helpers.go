@@ -709,7 +709,8 @@ func ConvertToRunMetrics(collector *Collector, serviceLabels []map[string]string
 				maxQueueDepth = float64(s.Depth)
 			}
 		}
-		for _, s := range opts.TopicBrokerSnapshots {
+		for i := range opts.TopicBrokerSnapshots {
+			s := &opts.TopicBrokerSnapshots[i]
 			if s.OldestMessageAgeMs > topicOldestAge {
 				topicOldestAge = s.OldestMessageAgeMs
 			}

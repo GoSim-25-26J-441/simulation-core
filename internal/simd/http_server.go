@@ -1184,7 +1184,8 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) (queues []map[string
 		})
 	}
 	topics = make([]map[string]any, 0, len(topicSnaps))
-	for _, t := range topicSnaps {
+	for i := range topicSnaps {
+		t := &topicSnaps[i]
 		topics = append(topics, map[string]any{
 			"broker_service":        t.BrokerID,
 			"topic":                 t.Topic,
@@ -1568,7 +1569,8 @@ func serviceLabelsFromInput(input *simulationv1.RunInput) []map[string]string {
 		return nil
 	}
 	out := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		out = append(out, metrics.CreateServiceLabels(svc.ID))
 	}
 	return out

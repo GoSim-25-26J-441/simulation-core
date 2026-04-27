@@ -22,6 +22,16 @@ type InstancePlacement struct {
 	QueueLength       int32
 }
 
+func safeInt32FromInt(v int) int32 {
+	if v > int(^uint32(0)>>1) {
+		return int32(^uint32(0) >> 1)
+	}
+	if v < -int(^uint32(0)>>1)-1 {
+		return -int32(^uint32(0)>>1) - 1
+	}
+	return int32(v)
+}
+
 // GetInstancePlacements returns a stable-ordered snapshot of all instances (host_id, then instance_id).
 // CPU utilization is evaluated at simTime; zero simTime uses wall-clock now (avoid in DES paths).
 func (m *Manager) GetInstancePlacements(simTime time.Time) []InstancePlacement {
@@ -72,8 +82,8 @@ func (m *Manager) GetInstancePlacements(simTime time.Time) []InstancePlacement {
 			MemoryMB:          inst.MemoryMB(),
 			CPUUtilization:    inst.CPUUtilizationAt(simTime),
 			MemoryUtilization: inst.MemoryUtilization(),
-			ActiveRequests:    int32(inst.ActiveRequests()),
-			QueueLength:       int32(inst.QueueLength()),
+			ActiveRequests:    safeInt32FromInt(inst.ActiveRequests()),
+			QueueLength:       safeInt32FromInt(inst.QueueLength()),
 		})
 	}
 	return out

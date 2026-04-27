@@ -90,7 +90,8 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 	ws.realTimeMode = realTime
 
 	// Initialize patterns from scenario
-	for _, workloadPattern := range scenario.Workload {
+	for i := range scenario.Workload {
+		workloadPattern := &scenario.Workload[i]
 		// Parse target: "serviceID:path"
 		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {
@@ -120,7 +121,7 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 			firstEventTime = ws.calculateNextArrivalTime(arrival, startTime, startTime)
 		}
 		ps := &WorkloadPatternState{
-			Pattern:                workloadPattern,
+			Pattern:                *workloadPattern,
 			ServiceID:              serviceID,
 			EndpointPath:           endpointPath,
 			Epoch:                  startTime,
@@ -721,14 +722,15 @@ func newWorkloadStateWithPatternsStub(runID string, scenario *config.Scenario, s
 	ws := NewWorkloadState(runID, nil, startTime.Add(24*time.Hour), 0)
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-	for _, workloadPattern := range scenario.Workload {
+	for i := range scenario.Workload {
+		workloadPattern := &scenario.Workload[i]
 		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {
 			return nil, err
 		}
 		key := patternKey(workloadPattern.From, workloadPattern.To)
 		ws.patterns[key] = &WorkloadPatternState{
-			Pattern:       workloadPattern,
+			Pattern:       *workloadPattern,
 			ServiceID:     serviceID,
 			EndpointPath:  endpointPath,
 			Epoch:         startTime,

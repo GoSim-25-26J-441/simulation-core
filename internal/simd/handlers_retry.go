@@ -115,7 +115,8 @@ func resolveDownstreamCallSpec(state *scenarioState, parent *models.Request, chi
 		return config.DownstreamCall{}, false
 	}
 	edges := state.interact.GetGraph().GetDownstreamEdges(parent.ServiceName, parent.Endpoint)
-	for _, e := range edges {
+	for i := range edges {
+		e := &edges[i]
 		if e.ToServiceID == childSvc && e.ToPath == childPath {
 			return e.Call, true
 		}
@@ -228,7 +229,7 @@ func execDownstreamSpawn(state *scenarioState, eng *engine.Engine, parentRequest
 	dsLabels := labelsForRequestMetricsWithRetry(downstreamRequest, downstreamServiceID, endpointPath)
 	metrics.RecordRequestCount(state.collector, 1.0, simTime, dsLabels)
 
-	inst, _, err := selectInstanceForRequest(state, downstreamRequest, simTime)
+	inst, err := selectInstanceForRequest(state, downstreamRequest, simTime)
 	if err != nil {
 		downstreamRequest.Status = models.RequestStatusFailed
 		el := metrics.EndpointErrorLabels(dsLabels, metrics.ReasonNoInstance)
