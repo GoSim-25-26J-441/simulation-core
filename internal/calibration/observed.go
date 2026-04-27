@@ -64,7 +64,7 @@ type QueueBrokerObservation struct {
 	DequeueCount ObservedValue[int64]
 	// QueuePublishAttemptCount is producer publish attempts (accepted + rejected), matching RunMetrics queue_drop_rate denominator.
 	QueuePublishAttemptCount ObservedValue[int64]
-	OldestAgeMs ObservedValue[float64]
+	OldestAgeMs              ObservedValue[float64]
 }
 
 // TopicBrokerObservation is topic consumer-group level observations.
@@ -99,9 +99,9 @@ type GlobalObservation struct {
 	RootLatencyMeanMs ObservedValue[float64]
 
 	IngressThroughputRPS ObservedValue[float64]
-	IngressErrorRate       ObservedValue[float64]
-	LocalityHitRate        ObservedValue[float64]
-	CrossZoneFraction      ObservedValue[float64]
+	IngressErrorRate     ObservedValue[float64]
+	LocalityHitRate      ObservedValue[float64]
+	CrossZoneFraction    ObservedValue[float64]
 	// Mean cross-zone network penalty per hop (ms); optional topology validation.
 	CrossZoneLatencyPenaltyMeanMs ObservedValue[float64]
 	// Mean aggregate topology network penalty per hop (ms); optional when comparing full topology overlays.

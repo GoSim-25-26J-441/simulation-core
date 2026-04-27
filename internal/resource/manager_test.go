@@ -1461,7 +1461,7 @@ func TestSelectInstanceForRequest_LeastQueue(t *testing.T) {
 		Hosts: []config.Host{{ID: "h1", Cores: 8}},
 		Services: []config.Service{{
 			ID: "svc", Replicas: 2, Model: "cpu",
-			Routing: &config.RoutingPolicy{Strategy: RoutingLeastQueue},
+			Routing:   &config.RoutingPolicy{Strategy: RoutingLeastQueue},
 			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
 		}},
 	}
@@ -1491,7 +1491,7 @@ func TestSelectInstanceForRequest_LeastConnections(t *testing.T) {
 		Hosts: []config.Host{{ID: "h1", Cores: 8}},
 		Services: []config.Service{{
 			ID: "svc", Replicas: 2, Model: "cpu",
-			Routing: &config.RoutingPolicy{Strategy: RoutingLeastConnections},
+			Routing:   &config.RoutingPolicy{Strategy: RoutingLeastConnections},
 			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
 		}},
 	}
@@ -1517,7 +1517,7 @@ func TestSelectInstanceForRequest_Sticky(t *testing.T) {
 		Hosts: []config.Host{{ID: "h1", Cores: 8}},
 		Services: []config.Service{{
 			ID: "svc", Replicas: 3, Model: "cpu",
-			Routing: &config.RoutingPolicy{Strategy: RoutingSticky, StickyKeyFrom: "session_id"},
+			Routing:   &config.RoutingPolicy{Strategy: RoutingSticky, StickyKeyFrom: "session_id"},
 			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
 		}},
 	}
@@ -1589,7 +1589,7 @@ func TestSelectInstanceForRequest_RandomDeterministicWithSeed(t *testing.T) {
 			Hosts: []config.Host{{ID: "h1", Cores: 8}},
 			Services: []config.Service{{
 				ID: "svc", Replicas: 3, Model: "cpu",
-				Routing: &config.RoutingPolicy{Strategy: RoutingRandom},
+				Routing:   &config.RoutingPolicy{Strategy: RoutingRandom},
 				Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
 			}},
 		}
@@ -1832,7 +1832,7 @@ func TestSelectInstanceForRequest_UnknownStrategyErrors(t *testing.T) {
 		Hosts: []config.Host{{ID: "h1", Cores: 8}},
 		Services: []config.Service{{
 			ID: "svc", Replicas: 1, Model: "cpu",
-			Routing: &config.RoutingPolicy{Strategy: "unknown"},
+			Routing:   &config.RoutingPolicy{Strategy: "unknown"},
 			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
 		}},
 	}

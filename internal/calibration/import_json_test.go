@@ -184,14 +184,14 @@ func TestDecodeObservedMetricsRoundTripJSON(t *testing.T) {
 	m := map[string]any{
 		"window_seconds": 30.0,
 		"run_metrics": map[string]any{
-			"total_requests": 100.0,
-			"ingress_requests": 50.0,
+			"total_requests":     100.0,
+			"ingress_requests":   50.0,
 			"ingress_error_rate": 0.01,
-			"latency_p50_ms": 5.0,
-			"latency_p95_ms": 10.0,
-			"latency_p99_ms": 20.0,
-			"latency_mean_ms": 6.0,
-			"throughput_rps": 10.0,
+			"latency_p50_ms":     5.0,
+			"latency_p95_ms":     10.0,
+			"latency_p99_ms":     20.0,
+			"latency_mean_ms":    6.0,
+			"throughput_rps":     10.0,
 		},
 	}
 	b, _ := json.Marshal(m)

@@ -53,7 +53,7 @@ func parseConsumerTarget(target string) (svcID, path string, err error) {
 	return parseWorkloadTarget(strings.TrimSpace(target))
 }
 
-func queueBrokerLabels(state *scenarioState, brokerID, topic, producerSvc, producerEp string) map[string]string {
+func queueBrokerLabels(_ *scenarioState, brokerID, topic, producerSvc, producerEp string) map[string]string {
 	lbl := metrics.EndpointLabelsWithOrigin(producerSvc, producerEp, metrics.OriginDownstream)
 	if producerSvc == "" {
 		lbl = metrics.EndpointLabelsWithOrigin(brokerID, topic, metrics.OriginDownstream)
@@ -148,7 +148,7 @@ func scheduleQueuePublishFromOverhead(state *scenarioState, eng *engine.Engine, 
 	return ackTime
 }
 
-func handleQueueEnqueue(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleQueueEnqueue(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in queue enqueue")
@@ -240,7 +240,7 @@ func withReason(lbl map[string]string, reason string) map[string]string {
 	return out
 }
 
-func handleQueueDequeue(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleQueueDequeue(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
@@ -346,7 +346,7 @@ func handleQueueDequeue(state *scenarioState, eng *engine.Engine) engine.EventHa
 	}
 }
 
-func handleQueueAckTimeout(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleQueueAckTimeout(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
@@ -414,7 +414,7 @@ func handleQueueAckTimeout(state *scenarioState, eng *engine.Engine) engine.Even
 	}
 }
 
-func handleAsyncParentFinalize(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleAsyncParentFinalize(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in async parent finalize")
@@ -448,14 +448,16 @@ func handleAsyncParentFinalize(state *scenarioState, eng *engine.Engine) engine.
 		metrics.RecordServiceProcessingLatency(state.collector, procMs, simTime, labels)
 		finalizeRequestCompletion(state, eng, rm, parent, simTime, labels)
 		if inst, ok := parent.Metadata["instance_id"].(string); ok {
-			_ = dequeueNextRequestForInstance(state, eng, rm, inst, parent.ServiceName, parent.Endpoint, simTime)
+			if err := dequeueNextRequestForInstance(state, eng, rm, inst, parent.ServiceName, parent.Endpoint, simTime); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 }
 
 // handleQueueDLQ is reserved for explicit DLQ emission events.
-func handleQueueDLQ(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleQueueDLQ(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
@@ -471,7 +473,7 @@ func handleQueueDLQ(state *scenarioState, eng *engine.Engine) engine.EventHandle
 }
 
 // handleQueueRedelivery is reserved for explicit redelivery bookkeeping.
-func handleQueueRedelivery(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleQueueRedelivery(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)

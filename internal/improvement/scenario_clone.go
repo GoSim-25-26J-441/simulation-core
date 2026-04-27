@@ -7,8 +7,8 @@ func cloneRoutingPolicy(rp *config.RoutingPolicy) *config.RoutingPolicy {
 		return nil
 	}
 	out := &config.RoutingPolicy{
-		Strategy:      rp.Strategy,
-		StickyKeyFrom: rp.StickyKeyFrom,
+		Strategy:         rp.Strategy,
+		StickyKeyFrom:    rp.StickyKeyFrom,
 		LocalityZoneFrom: rp.LocalityZoneFrom,
 	}
 	if len(rp.Weights) > 0 {
@@ -25,13 +25,13 @@ func clonePlacementPolicy(pp *config.PlacementPolicy) *config.PlacementPolicy {
 		return nil
 	}
 	out := &config.PlacementPolicy{
-		RequiredZones:       append([]string(nil), pp.RequiredZones...),
-		PreferredZones:      append([]string(nil), pp.PreferredZones...),
-		AffinityZones:       append([]string(nil), pp.AffinityZones...),
-		AntiAffinityZones:   append([]string(nil), pp.AntiAffinityZones...),
+		RequiredZones:        append([]string(nil), pp.RequiredZones...),
+		PreferredZones:       append([]string(nil), pp.PreferredZones...),
+		AffinityZones:        append([]string(nil), pp.AffinityZones...),
+		AntiAffinityZones:    append([]string(nil), pp.AntiAffinityZones...),
 		AntiAffinityServices: append([]string(nil), pp.AntiAffinityServices...),
-		SpreadAcrossZones:   pp.SpreadAcrossZones,
-		MaxReplicasPerHost:  pp.MaxReplicasPerHost,
+		SpreadAcrossZones:    pp.SpreadAcrossZones,
+		MaxReplicasPerHost:   pp.MaxReplicasPerHost,
 	}
 	if len(pp.RequiredHostLabels) > 0 {
 		out.RequiredHostLabels = make(map[string]string, len(pp.RequiredHostLabels))

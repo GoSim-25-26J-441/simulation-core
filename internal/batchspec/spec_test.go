@@ -98,8 +98,8 @@ func TestParseBatchSpecTopologyGuardrails(t *testing.T) {
 		},
 	}
 	pb := &simulationv1.BatchOptimizationConfig{
-		MinLocalityHitRate:             0.85,
-		MaxCrossZoneRequestFraction:    0.2,
+		MinLocalityHitRate:              0.85,
+		MaxCrossZoneRequestFraction:     0.2,
 		MaxTopologyLatencyPenaltyMeanMs: 25,
 	}
 	spec, err := ParseBatchSpec(pb, base)

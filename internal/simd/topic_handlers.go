@@ -66,7 +66,7 @@ func sampleTopicDeliveryMs(state *scenarioState, brokerID string) float64 {
 	return delivery
 }
 
-func topicBrokerLabels(state *scenarioState, brokerID, topicPath, producerSvc, producerEp, subName, consumerGroup, consumerSvc, consumerEp string) map[string]string {
+func topicBrokerLabels(_ *scenarioState, brokerID, topicPath, producerSvc, producerEp, subName, consumerGroup, consumerSvc, consumerEp string) map[string]string {
 	lbl := metrics.EndpointLabelsWithOrigin(producerSvc, producerEp, metrics.OriginDownstream)
 	if producerSvc == "" {
 		lbl = metrics.EndpointLabelsWithOrigin(brokerID, topicPath, metrics.OriginDownstream)
@@ -186,7 +186,7 @@ func scheduleTopicShardRetention(state *scenarioState, eng *engine.Engine, broke
 	shard.NoteRetentionScheduled(deadline)
 }
 
-func handleTopicRetentionExpire(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleTopicRetentionExpire(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
@@ -272,7 +272,7 @@ func scheduleTopicPublishFromOverhead(state *scenarioState, eng *engine.Engine, 
 	return ackTime
 }
 
-func handleTopicPublish(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleTopicPublish(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in topic publish")
@@ -392,7 +392,7 @@ func handleTopicPublish(state *scenarioState, eng *engine.Engine) engine.EventHa
 	}
 }
 
-func handleTopicDequeue(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleTopicDequeue(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
@@ -510,7 +510,7 @@ func handleTopicDequeue(state *scenarioState, eng *engine.Engine) engine.EventHa
 	}
 }
 
-func handleTopicAckTimeout(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleTopicAckTimeout(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)
@@ -588,7 +588,7 @@ func handleTopicAckTimeout(state *scenarioState, eng *engine.Engine) engine.Even
 	}
 }
 
-func handleTopicDLQ(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleTopicDLQ(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)

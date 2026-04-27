@@ -22,9 +22,9 @@ import (
 type prometheusLikeFile struct {
 	WindowSeconds float64 `json:"window_seconds"`
 	Samples       []struct {
-		Metric  string            `json:"metric"`
-		Labels  map[string]string `json:"labels"`
-		Value   json.RawMessage   `json:"value"` // number or string
+		Metric string            `json:"metric"`
+		Labels map[string]string `json:"labels"`
+		Value  json.RawMessage   `json:"value"` // number or string
 	} `json:"samples"`
 }
 

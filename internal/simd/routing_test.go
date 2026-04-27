@@ -91,7 +91,7 @@ func TestRoutingMetricsRecordLocalityHitAndSameZoneCount(t *testing.T) {
 		},
 		Services: []config.Service{{
 			ID: "svc", Replicas: 1, Model: "cpu", Placement: &config.PlacementPolicy{RequiredZones: []string{"zone-a"}},
-			Routing: &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
+			Routing:   &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
 			Endpoints: []config.Endpoint{{Path: "/test", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 		}},
 	}
@@ -128,13 +128,11 @@ func TestRoutingMetricsRecordCrossZoneForDownstreamCallerCallee(t *testing.T) {
 		Services: []config.Service{
 			{
 				ID: "caller", Replicas: 1, Model: "cpu", Placement: &config.PlacementPolicy{RequiredZones: []string{"zone-a"}},
-				Endpoints: []config.Endpoint{{Path: "/c", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
-				},
+				Endpoints: []config.Endpoint{{Path: "/c", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 			},
 			{
 				ID: "callee", Replicas: 1, Model: "cpu", Placement: &config.PlacementPolicy{RequiredZones: []string{"zone-b"}},
-				Endpoints: []config.Endpoint{{Path: "/d", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
-				},
+				Endpoints: []config.Endpoint{{Path: "/d", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 			},
 		},
 	}
@@ -148,10 +146,10 @@ func TestRoutingMetricsRecordCrossZoneForDownstreamCallerCallee(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := &models.Request{
-		ParentID:     "p1",
-		ServiceName:  "callee",
-		Endpoint:     "/d",
-		Metadata:     map[string]interface{}{"caller_instance_id": "caller-instance-0"},
+		ParentID:    "p1",
+		ServiceName: "callee",
+		Endpoint:    "/d",
+		Metadata:    map[string]interface{}{"caller_instance_id": "caller-instance-0"},
 	}
 	if _, _, err := selectInstanceForRequest(state, req, time.Now()); err != nil {
 		t.Fatal(err)
@@ -171,7 +169,7 @@ func TestWorkloadMetadataDrivesLocalityRoutingMetrics(t *testing.T) {
 		},
 		Services: []config.Service{{
 			ID: "svc", Replicas: 1, Model: "cpu", CPUCores: 1, MemoryMB: 256,
-			Routing: &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
+			Routing:   &config.RoutingPolicy{Strategy: "round_robin", LocalityZoneFrom: "client_zone"},
 			Endpoints: []config.Endpoint{{Path: "/x", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 		}},
 		Workload: []config.WorkloadPattern{

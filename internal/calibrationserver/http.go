@@ -31,21 +31,21 @@ type calibrateHTTPRequest struct {
 	Seeds         []int64 `json:"seeds,omitempty"`
 	// AutoPredict defaults to true when predicted_run is omitted. Set false to calibrate without a baseline run
 	// (scenario-only heuristics; lower confidence for throughput ratios).
-	AutoPredict *bool `json:"auto_predict,omitempty"`
+	AutoPredict      *bool `json:"auto_predict,omitempty"`
 	CalibrateOptions *struct {
 		Overwrite       string  `json:"overwrite,omitempty"`
 		ConfidenceFloor float64 `json:"confidence_floor,omitempty"`
-		MinScaleFactor    float64 `json:"min_scale_factor,omitempty"`
-		MaxScaleFactor    float64 `json:"max_scale_factor,omitempty"`
+		MinScaleFactor  float64 `json:"min_scale_factor,omitempty"`
+		MaxScaleFactor  float64 `json:"max_scale_factor,omitempty"`
 	} `json:"calibrate_options,omitempty"`
 }
 
 type validateHTTPRequest struct {
-	ScenarioYAML   string          `json:"scenario_yaml"`
-	ObservedFormat string          `json:"observed_format"`
-	Observed       json.RawMessage `json:"observed"`
-	SimDurationMs  int64           `json:"sim_duration_ms"`
-	Seeds          []int64         `json:"seeds,omitempty"`
+	ScenarioYAML    string          `json:"scenario_yaml"`
+	ObservedFormat  string          `json:"observed_format"`
+	Observed        json.RawMessage `json:"observed"`
+	SimDurationMs   int64           `json:"sim_duration_ms"`
+	Seeds           []int64         `json:"seeds,omitempty"`
 	ValidateOptions *struct {
 		RealTimeWorkload bool `json:"real_time_workload,omitempty"`
 		// ToleranceProfile: default | strict | loose (defaults to default).
@@ -230,8 +230,8 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 func calibrateOptionsFromJSON(j *struct {
 	Overwrite       string  `json:"overwrite,omitempty"`
 	ConfidenceFloor float64 `json:"confidence_floor,omitempty"`
-	MinScaleFactor    float64 `json:"min_scale_factor,omitempty"`
-	MaxScaleFactor    float64 `json:"max_scale_factor,omitempty"`
+	MinScaleFactor  float64 `json:"min_scale_factor,omitempty"`
+	MaxScaleFactor  float64 `json:"max_scale_factor,omitempty"`
 }) *calibration.CalibrateOptions {
 	o := calibration.CalibrateOptions{
 		Overwrite:       calibration.OverwriteWhenHigherConfidence,

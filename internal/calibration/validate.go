@@ -222,28 +222,28 @@ func maxFloat(a, b float64) float64 {
 }
 
 type aggRuns struct {
-	IngressMean        float64
-	LatencyP50Mean     float64
-	LatencyMeanMean    float64
-	LatencyP95Max      float64
-	LatencyP99Max      float64
-	IngressErrMax      float64
-	MaxServiceCPU      float64
-	MaxServiceMem      float64
-	QueueWaitMeanMax   float64
-	QueueDepthSumMax   float64
-	QueueDropRateMax   float64
-	TopicDropRateMax   float64
-	TopicBacklogSumMax float64
-	TopicLagSumMax     float64
-	QueueDlqMax        int64
-	TopicDlqMax        int64
-	QueueOldestAgeMax  float64
-	TopicOldestAgeMax  float64
-	RetryMax           int64
-	TimeoutMax         int64
-	LocalityHitRateMean   float64
-	CrossZoneFractionMean float64
+	IngressMean                     float64
+	LatencyP50Mean                  float64
+	LatencyMeanMean                 float64
+	LatencyP95Max                   float64
+	LatencyP99Max                   float64
+	IngressErrMax                   float64
+	MaxServiceCPU                   float64
+	MaxServiceMem                   float64
+	QueueWaitMeanMax                float64
+	QueueDepthSumMax                float64
+	QueueDropRateMax                float64
+	TopicDropRateMax                float64
+	TopicBacklogSumMax              float64
+	TopicLagSumMax                  float64
+	QueueDlqMax                     int64
+	TopicDlqMax                     int64
+	QueueOldestAgeMax               float64
+	TopicOldestAgeMax               float64
+	RetryMax                        int64
+	TimeoutMax                      int64
+	LocalityHitRateMean             float64
+	CrossZoneFractionMean           float64
 	CrossZoneLatencyPenaltyMeanMean float64
 	TopologyLatencyPenaltyMeanMean  float64
 }
@@ -331,28 +331,28 @@ func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
 	}
 	n := float64(len(runs))
 	return aggRuns{
-		IngressMean:        sumIngress / n,
-		LatencyP50Mean:     sumP50 / n,
-		LatencyMeanMean:    sumMean / n,
-		LatencyP95Max:      maxP95,
-		LatencyP99Max:      maxP99,
-		IngressErrMax:      maxErr,
-		MaxServiceCPU:      maxCPU,
-		MaxServiceMem:      maxMem,
-		QueueWaitMeanMax:   maxQW,
-		QueueDepthSumMax:   maxQD,
-		QueueDropRateMax:   maxDrop,
-		TopicDropRateMax:   maxTDrop,
-		TopicBacklogSumMax: maxTB,
-		TopicLagSumMax:     maxTL,
-		QueueDlqMax:        maxQDlq,
-		TopicDlqMax:        maxTDlq,
-		QueueOldestAgeMax:  maxQAge,
-		TopicOldestAgeMax:  maxTAge,
-		RetryMax:           maxRetry,
-		TimeoutMax:         maxTimeout,
-		LocalityHitRateMean:   sumLocalityHit / n,
-		CrossZoneFractionMean: sumCrossZoneFrac / n,
+		IngressMean:                     sumIngress / n,
+		LatencyP50Mean:                  sumP50 / n,
+		LatencyMeanMean:                 sumMean / n,
+		LatencyP95Max:                   maxP95,
+		LatencyP99Max:                   maxP99,
+		IngressErrMax:                   maxErr,
+		MaxServiceCPU:                   maxCPU,
+		MaxServiceMem:                   maxMem,
+		QueueWaitMeanMax:                maxQW,
+		QueueDepthSumMax:                maxQD,
+		QueueDropRateMax:                maxDrop,
+		TopicDropRateMax:                maxTDrop,
+		TopicBacklogSumMax:              maxTB,
+		TopicLagSumMax:                  maxTL,
+		QueueDlqMax:                     maxQDlq,
+		TopicDlqMax:                     maxTDlq,
+		QueueOldestAgeMax:               maxQAge,
+		TopicOldestAgeMax:               maxTAge,
+		RetryMax:                        maxRetry,
+		TimeoutMax:                      maxTimeout,
+		LocalityHitRateMean:             sumLocalityHit / n,
+		CrossZoneFractionMean:           sumCrossZoneFrac / n,
 		CrossZoneLatencyPenaltyMeanMean: sumCrossZonePenMean / n,
 		TopologyLatencyPenaltyMeanMean:  sumTopoPenMean / n,
 	}
@@ -411,7 +411,7 @@ func endpointRollupAvailable(runs []*models.RunMetrics) bool {
 	return false
 }
 
-func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics, svcErr, endpErr map[string]float64, tol *ValidationTolerances) ([]MetricCheckResult, []string) {
+func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics, svcErr, endpErr map[string]float64, tol *ValidationTolerances) (results []MetricCheckResult, warnings []string) {
 	var out []MetricCheckResult
 	var warns []string
 	if obs == nil {
@@ -455,7 +455,9 @@ func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics,
 	if usedStarPath {
 		warns = append(warns, "endpoint error rates: at least one observation uses endpoint path \"*\" (service rollup) compared to service-level max predicted error rate")
 	}
-	return out, dedupeStrings(warns)
+	results = out
+	warnings = dedupeStrings(warns)
+	return results, warnings
 }
 
 func dedupeStrings(in []string) []string {
@@ -704,12 +706,10 @@ type routeSkewAgg struct {
 	total           float64
 }
 
-func validateInstanceRoutingSkew(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) ([]MetricCheckResult, []string) {
+func validateInstanceRoutingSkew(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) (checks []MetricCheckResult, warnings []string) {
 	if obs == nil || len(obs.InstanceRouting) == 0 {
 		return nil, nil
 	}
-	var checks []MetricCheckResult
-	var warnings []string
 	byRoute := aggregatePredictedRouteDistributions(runs)
 	for _, r := range obs.InstanceRouting {
 		if strings.TrimSpace(r.ServiceID) == "" || strings.TrimSpace(r.EndpointPath) == "" || strings.TrimSpace(r.InstanceID) == "" {
@@ -785,7 +785,7 @@ func aggregatePredictedRouteDistributions(runs []*models.RunMetrics) map[string]
 		for inst, c := range agg.countByInstance {
 			agg.countByInstance[inst] = c / nRuns
 		}
-		agg.total = agg.total / nRuns
+		agg.total /= nRuns
 		byRoute[k] = agg
 	}
 	return byRoute

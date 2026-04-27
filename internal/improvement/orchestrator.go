@@ -26,7 +26,7 @@ type Orchestrator struct {
 	maxParallelRuns int // Maximum number of parallel runs
 
 	// batchCandidateStore is set only during RunBatchExperiment for hash→runID resolution.
-	batchCandMu       sync.Mutex
+	batchCandMu         sync.Mutex
 	batchCandidateStore *CandidateStore
 }
 

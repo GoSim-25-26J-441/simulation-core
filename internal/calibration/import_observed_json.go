@@ -13,22 +13,22 @@ type partialObservedFile struct {
 		Source   string `json:"source"`
 	} `json:"window,omitempty"`
 	Global *struct {
-		RootLatencyP50Ms      *float64 `json:"root_latency_p50_ms,omitempty"`
-		RootLatencyP95Ms      *float64 `json:"root_latency_p95_ms,omitempty"`
-		RootLatencyP99Ms      *float64 `json:"root_latency_p99_ms,omitempty"`
-		RootLatencyMeanMs     *float64 `json:"root_latency_mean_ms,omitempty"`
-		IngressThroughputRPS  *float64 `json:"ingress_throughput_rps,omitempty"`
-		IngressErrorRate      *float64 `json:"ingress_error_rate,omitempty"`
-		LocalityHitRate       *float64 `json:"locality_hit_rate,omitempty"`
-		CrossZoneFraction     *float64 `json:"cross_zone_fraction,omitempty"`
+		RootLatencyP50Ms              *float64 `json:"root_latency_p50_ms,omitempty"`
+		RootLatencyP95Ms              *float64 `json:"root_latency_p95_ms,omitempty"`
+		RootLatencyP99Ms              *float64 `json:"root_latency_p99_ms,omitempty"`
+		RootLatencyMeanMs             *float64 `json:"root_latency_mean_ms,omitempty"`
+		IngressThroughputRPS          *float64 `json:"ingress_throughput_rps,omitempty"`
+		IngressErrorRate              *float64 `json:"ingress_error_rate,omitempty"`
+		LocalityHitRate               *float64 `json:"locality_hit_rate,omitempty"`
+		CrossZoneFraction             *float64 `json:"cross_zone_fraction,omitempty"`
 		CrossZoneLatencyPenaltyMeanMs *float64 `json:"cross_zone_latency_penalty_mean_ms,omitempty"`
 		TopologyLatencyPenaltyMeanMs  *float64 `json:"topology_latency_penalty_mean_ms,omitempty"`
-		TotalRequests         *int64   `json:"total_requests,omitempty"`
-		IngressRequests       *int64   `json:"ingress_requests,omitempty"`
-		FailedRequests        *int64   `json:"failed_requests,omitempty"`
-		RetryAttempts         *int64   `json:"retry_attempts,omitempty"`
-		TimeoutErrors         *int64   `json:"timeout_errors,omitempty"`
-		IngressFailedRequests *int64   `json:"ingress_failed_requests,omitempty"`
+		TotalRequests                 *int64   `json:"total_requests,omitempty"`
+		IngressRequests               *int64   `json:"ingress_requests,omitempty"`
+		FailedRequests                *int64   `json:"failed_requests,omitempty"`
+		RetryAttempts                 *int64   `json:"retry_attempts,omitempty"`
+		TimeoutErrors                 *int64   `json:"timeout_errors,omitempty"`
+		IngressFailedRequests         *int64   `json:"ingress_failed_requests,omitempty"`
 	} `json:"global,omitempty"`
 	Endpoints []struct {
 		ServiceID    string `json:"service_id"`
@@ -96,22 +96,22 @@ func ObservedFromPartialJSON(data []byte) (*ObservedMetrics, error) {
 	if f.Global != nil {
 		g := f.Global
 		out.Global = GlobalObservation{
-			RootLatencyP50Ms:      optF64(g.RootLatencyP50Ms),
-			RootLatencyP95Ms:      optF64(g.RootLatencyP95Ms),
-			RootLatencyP99Ms:      optF64(g.RootLatencyP99Ms),
-			RootLatencyMeanMs:     optF64(g.RootLatencyMeanMs),
-			IngressThroughputRPS:  optF64(g.IngressThroughputRPS),
-			IngressErrorRate:      optF64(g.IngressErrorRate),
-			LocalityHitRate:       optF64(g.LocalityHitRate),
-			CrossZoneFraction:     optF64(g.CrossZoneFraction),
+			RootLatencyP50Ms:              optF64(g.RootLatencyP50Ms),
+			RootLatencyP95Ms:              optF64(g.RootLatencyP95Ms),
+			RootLatencyP99Ms:              optF64(g.RootLatencyP99Ms),
+			RootLatencyMeanMs:             optF64(g.RootLatencyMeanMs),
+			IngressThroughputRPS:          optF64(g.IngressThroughputRPS),
+			IngressErrorRate:              optF64(g.IngressErrorRate),
+			LocalityHitRate:               optF64(g.LocalityHitRate),
+			CrossZoneFraction:             optF64(g.CrossZoneFraction),
 			CrossZoneLatencyPenaltyMeanMs: optF64(g.CrossZoneLatencyPenaltyMeanMs),
 			TopologyLatencyPenaltyMeanMs:  optF64(g.TopologyLatencyPenaltyMeanMs),
-			TotalRequests:         optI64(g.TotalRequests),
-			IngressRequests:       optI64(g.IngressRequests),
-			FailedRequests:        optI64(g.FailedRequests),
-			RetryAttempts:         optI64(g.RetryAttempts),
-			TimeoutErrors:         optI64(g.TimeoutErrors),
-			IngressFailedRequests: optI64(g.IngressFailedRequests),
+			TotalRequests:                 optI64(g.TotalRequests),
+			IngressRequests:               optI64(g.IngressRequests),
+			FailedRequests:                optI64(g.FailedRequests),
+			RetryAttempts:                 optI64(g.RetryAttempts),
+			TimeoutErrors:                 optI64(g.TimeoutErrors),
+			IngressFailedRequests:         optI64(g.IngressFailedRequests),
 		}
 	}
 	for _, e := range f.Endpoints {
@@ -130,8 +130,8 @@ func ObservedFromPartialJSON(data []byte) (*ObservedMetrics, error) {
 			QueueWaitP95Ms:          optF64(e.QwP95Ms),
 			QueueWaitP99Ms:          optF64(e.QwP99Ms),
 			QueueWaitMeanMs:         optF64(e.QwMeanMs),
-			RequestCount:          optI64(e.RequestCount),
-			ErrorCount:            optI64(e.ErrorCount),
+			RequestCount:            optI64(e.RequestCount),
+			ErrorCount:              optI64(e.ErrorCount),
 		})
 	}
 	for _, t := range f.TopicBrokers {

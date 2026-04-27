@@ -531,10 +531,10 @@ func TestTimeoutErrorLabelsPreserveMetadataWithRetry(t *testing.T) {
 	}
 	RegisterHandlers(eng, state)
 	eng.ScheduleAt(engine.EventTypeRequestArrival, eng.GetSimTime(), nil, "svcA", map[string]interface{}{
-		"service_id":     "svcA",
-		"endpoint_path":  "/root",
-		"traffic_class":  "gold",
-		"source_kind":    "partner",
+		"service_id":    "svcA",
+		"endpoint_path": "/root",
+		"traffic_class": "gold",
+		"source_kind":   "partner",
 	})
 	if err := eng.Run(400 * time.Millisecond); err != nil {
 		t.Fatal(err)
@@ -593,8 +593,8 @@ func TestSyncRetryPreservesSameZonePenaltyAfterCallerRemoval(t *testing.T) {
 				Replicas: 1,
 				Model:    "cpu",
 				Placement: &config.PlacementPolicy{
-					RequiredZones:         []string{"zone-a"},
-					AntiAffinityServices:  []string{"svcA"},
+					RequiredZones:        []string{"zone-a"},
+					AntiAffinityServices: []string{"svcA"},
 				},
 				Endpoints: []config.Endpoint{
 					{Path: "/slow", MeanCPUMs: 100, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}},
@@ -784,16 +784,16 @@ func TestQueueRetryPublishPreservesSameZonePenaltyAfterCallerRemoval(t *testing.
 				Endpoints: []config.Endpoint{{Path: "/consume", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 			},
 			{
-				ID:       "queue",
-				Kind:     "queue",
-				Replicas: 1,
-				Model:    "cpu",
+				ID:        "queue",
+				Kind:      "queue",
+				Replicas:  1,
+				Model:     "cpu",
 				Endpoints: []config.Endpoint{{Path: "/q", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 				Behavior: &config.ServiceBehavior{
 					Queue: &config.QueueBehavior{
-						ConsumerTarget:  "consumer:/consume",
+						ConsumerTarget:      "consumer:/consume",
 						ConsumerConcurrency: 1,
-						DeliveryLatencyMs: config.LatencySpec{Mean: 50, Sigma: 0},
+						DeliveryLatencyMs:   config.LatencySpec{Mean: 50, Sigma: 0},
 					},
 				},
 			},
@@ -866,10 +866,10 @@ func TestTopicRetryPublishPreservesSameZonePenaltyAfterCallerRemoval(t *testing.
 				Endpoints: []config.Endpoint{{Path: "/consume", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 			},
 			{
-				ID:       "topic",
-				Kind:     "topic",
-				Replicas: 1,
-				Model:    "cpu",
+				ID:        "topic",
+				Kind:      "topic",
+				Replicas:  1,
+				Model:     "cpu",
 				Endpoints: []config.Endpoint{{Path: "/events", MeanCPUMs: 1, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0}}},
 				Behavior: &config.ServiceBehavior{
 					Topic: &config.TopicBehavior{

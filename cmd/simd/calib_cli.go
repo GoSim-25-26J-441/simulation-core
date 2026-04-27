@@ -23,7 +23,10 @@ func runValidateCLI(args []string) int {
 	toleranceProfile := fs.String("tolerance-profile", "", "optional: default | strict | loose")
 	tolerancesPath := fs.String("tolerances", "", "optional path to JSON file with partial tolerance overrides (merged on top of profile/default)")
 	realtimeWorkload := fs.Bool("realtime-workload", false, "use realtime workload generation (lazy arrivals)")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 
 	if *scenarioPath == "" || *observedPath == "" {
 		fmt.Fprintln(os.Stderr, "validate: -scenario and -observed are required")
@@ -84,10 +87,10 @@ func runValidateCLI(args []string) int {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(map[string]any{
-		"pass":               rep.Pass,
+		"pass":              rep.Pass,
 		"validation_report": rep,
-		"warnings":           rep.Warnings,
-		"largest_errors":     rep.LargestErrors,
+		"warnings":          rep.Warnings,
+		"largest_errors":    rep.LargestErrors,
 	}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -108,7 +111,10 @@ func runCalibrateCLI(args []string) int {
 	simMs := fs.Int64("sim-duration-ms", 10_000, "when -predicted-run is omitted and -auto-predict=true, baseline sim duration (ms) per seed")
 	seeds := fs.String("seeds", "1,2,3", "comma-separated seeds for baseline prediction when -predicted-run is omitted")
 	autoPredict := fs.Bool("auto-predict", true, "when -predicted-run is omitted, run baseline simulator per seed and merge for ratio calibration")
-	_ = fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
 
 	if *scenarioPath == "" || *observedPath == "" || *outPath == "" {
 		fmt.Fprintln(os.Stderr, "calibrate: -scenario, -observed, and -out are required")
@@ -182,17 +188,20 @@ func runCalibrateCLI(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	if err := os.WriteFile(*outPath, []byte(outYAML), 0o644); err != nil {
+	if err := os.WriteFile(*outPath, []byte(outYAML), 0o600); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	_ = enc.Encode(map[string]any{
+	if err := enc.Encode(map[string]any{
 		"calibration_report": rep,
 		"warnings":           mergeCalibCLIWarnings(rep),
 		"output":             *outPath,
-	})
+	}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 	return 0
 }
 

@@ -13,10 +13,10 @@ type adapterMatrixExpect struct {
 	retryAttempts     int64
 	timeoutErrors     int64
 
-	serviceID   string
-	cpuUtil     float64
-	memoryUtil  float64
-	hasService  bool
+	serviceID  string
+	cpuUtil    float64
+	memoryUtil float64
+	hasService bool
 
 	endpointService string
 	endpointPath    string
@@ -31,13 +31,13 @@ type adapterMatrixExpect struct {
 	queueDepth  float64
 	hasQueue    bool
 
-	topicBroker string
-	topicName   string
-	partition   int
-	consumerGrp string
-	topicLag    float64
+	topicBroker  string
+	topicName    string
+	partition    int
+	consumerGrp  string
+	topicLag     float64
 	topicBacklog float64
-	hasTopic    bool
+	hasTopic     bool
 }
 
 func assertAdapterMatrix(t *testing.T, obs *ObservedMetrics, exp adapterMatrixExpect) {
@@ -171,13 +171,12 @@ func observedMatrixExpectation() adapterMatrixExpect {
 		queueDepth:  3,
 		hasQueue:    true,
 
-		topicBroker: "t",
-		topicName:   "/ev",
-		partition:   2,
-		consumerGrp: "g1",
-		topicLag:    7,
+		topicBroker:  "t",
+		topicName:    "/ev",
+		partition:    2,
+		consumerGrp:  "g1",
+		topicLag:     7,
 		topicBacklog: 9,
-		hasTopic:    true,
+		hasTopic:     true,
 	}
 }
-

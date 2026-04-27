@@ -279,7 +279,7 @@ func execDownstreamSpawnFromEvent(state *scenarioState, eng *engine.Engine, pare
 	return execDownstreamSpawn(state, eng, parentRequest, downstreamServiceID, endpointPath, traceDepth, asyncDepth, isAsync, timeoutMs, retryAttempt, logicalID, ct)
 }
 
-func scheduleDownstreamRetryEvent(state *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, nextRetryAttempt int, logicalCallID, callerInstanceID, callerHostZone, callerHostID string, delay time.Duration) {
+func scheduleDownstreamRetryEvent(_ *scenarioState, eng *engine.Engine, parentRequest *models.Request, downstreamServiceID, endpointPath string, traceDepth, asyncDepth int, isAsync bool, timeoutMs float64, nextRetryAttempt int, logicalCallID, callerInstanceID, callerHostZone, callerHostID string, delay time.Duration) {
 	t := eng.GetSimTime().Add(delay)
 	data := map[string]interface{}{
 		"endpoint_path":         endpointPath,
@@ -297,7 +297,7 @@ func scheduleDownstreamRetryEvent(state *scenarioState, eng *engine.Engine, pare
 	eng.ScheduleAt(engine.EventTypeDownstreamRetry, t, parentRequest, downstreamServiceID, data)
 }
 
-func handleDownstreamRetry(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleDownstreamRetry(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		if evt.Request == nil {
 			return fmt.Errorf("request is nil in downstream retry event")
@@ -325,7 +325,7 @@ func handleDownstreamRetry(state *scenarioState, eng *engine.Engine) engine.Even
 }
 
 // maybeRetrySyncTimeout handles sync downstream timeout when retries may apply.
-func maybeRetrySyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, parentID string, simTime time.Time) bool {
+func maybeRetrySyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, parentID string, _ time.Time) bool {
 	rp := getRetryPolicy(state.policies)
 	if rp == nil {
 		return false
@@ -364,7 +364,7 @@ func maybeRetrySyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.
 }
 
 // maybeRetryAsyncTimeout schedules a downstream retry for async children without blocking parents.
-func maybeRetryAsyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, parentID string, simTime time.Time) bool {
+func maybeRetryAsyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, parentID string, _ time.Time) bool {
 	rp := getRetryPolicy(state.policies)
 	if rp == nil {
 		return false
@@ -408,7 +408,7 @@ func maybeRetryAsyncTimeout(state *scenarioState, eng *engine.Engine, rm *engine
 // maybeRetrySyncStartFailure schedules a downstream retry after CPU/memory allocation failure on a sync child.
 // maybeRetrySyncCallerOverheadFailure schedules a downstream retry after CPU reservation failure on caller-side
 // downstream overhead (no child request exists yet).
-func maybeRetrySyncCallerOverheadFailure(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, parent *models.Request, evt *engine.Event, simTime time.Time, reason string) bool {
+func maybeRetrySyncCallerOverheadFailure(state *scenarioState, eng *engine.Engine, _ *engine.RunManager, parent *models.Request, evt *engine.Event, _ time.Time, reason string) bool {
 	rp := getRetryPolicy(state.policies)
 	if rp == nil || evt == nil || evt.Data == nil {
 		return false
@@ -458,7 +458,7 @@ func maybeRetrySyncCallerOverheadFailure(state *scenarioState, eng *engine.Engin
 	return true
 }
 
-func maybeRetrySyncStartFailure(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, simTime time.Time, reason string) bool {
+func maybeRetrySyncStartFailure(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, _ time.Time, reason string) bool {
 	rp := getRetryPolicy(state.policies)
 	if rp == nil {
 		return false

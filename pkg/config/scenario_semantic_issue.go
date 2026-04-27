@@ -32,8 +32,6 @@ func SemanticIssueFromValidateError(err error) (code, path, message string) {
 	}
 	raw := err.Error()
 	raw = strings.TrimPrefix(raw, "invalid scenario: ")
-	message = raw
-
 	if m := reWorkloadMissingEndpoint.FindStringSubmatch(raw); len(m) == 4 {
 		svc, ep := m[2], m[3]
 		return "UNKNOWN_WORKLOAD_ENDPOINT",
@@ -54,61 +52,61 @@ func SemanticIssueFromValidateError(err error) (code, path, message string) {
 
 	if m := reDownstreamMissingEP.FindStringSubmatch(raw); len(m) == 5 {
 		return "UNKNOWN_DOWNSTREAM_ENDPOINT",
-			fmt.Sprintf(`services["%s"].endpoints["%s"].downstream`, m[1], m[2]),
+			fmt.Sprintf(`services[%q].endpoints[%q].downstream`, m[1], m[2]),
 			fmt.Sprintf("downstream target references missing endpoint %s on service %s", m[4], m[3])
 	}
 	if m := reDownstreamMissingSvc.FindStringSubmatch(raw); len(m) == 4 {
 		return "UNKNOWN_DOWNSTREAM_SERVICE",
-			fmt.Sprintf(`services["%s"].endpoints["%s"].downstream`, m[1], m[2]),
+			fmt.Sprintf(`services[%q].endpoints[%q].downstream`, m[1], m[2]),
 			fmt.Sprintf("downstream target references unknown service %s", m[3])
 	}
 
 	if m := reQueueConsumerEP.FindStringSubmatch(raw); len(m) == 4 {
 		return "UNKNOWN_QUEUE_CONSUMER_TARGET",
-			fmt.Sprintf(`services["%s"].behavior.queue.consumer_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.queue.consumer_target`, m[1]),
 			fmt.Sprintf("queue consumer_target references missing endpoint %s on service %s", m[3], m[2])
 	}
 	if m := reQueueConsumerSvc.FindStringSubmatch(raw); len(m) == 3 {
 		return "UNKNOWN_QUEUE_CONSUMER_TARGET",
-			fmt.Sprintf(`services["%s"].behavior.queue.consumer_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.queue.consumer_target`, m[1]),
 			fmt.Sprintf("queue consumer_target references unknown service %s", m[2])
 	}
 
 	if m := reQueueDLQEP.FindStringSubmatch(raw); len(m) == 4 {
 		return "UNKNOWN_QUEUE_CONSUMER_TARGET",
-			fmt.Sprintf(`services["%s"].behavior.queue.dlq_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.queue.dlq_target`, m[1]),
 			fmt.Sprintf("queue dlq_target references missing endpoint %s on service %s", m[3], m[2])
 	}
 	if m := reQueueDLQSvc.FindStringSubmatch(raw); len(m) == 3 {
 		return "UNKNOWN_QUEUE_CONSUMER_TARGET",
-			fmt.Sprintf(`services["%s"].behavior.queue.dlq_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.queue.dlq_target`, m[1]),
 			fmt.Sprintf("queue dlq_target references unknown service %s", m[2])
 	}
 
 	if m := reTopicConsumerEP.FindStringSubmatch(raw); len(m) == 4 {
 		return "UNKNOWN_QUEUE_CONSUMER_TARGET",
-			fmt.Sprintf(`services["%s"].behavior.topic.subscribers.consumer_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.topic.subscribers.consumer_target`, m[1]),
 			fmt.Sprintf("topic subscriber consumer_target references missing endpoint %s on service %s", m[3], m[2])
 	}
 	if m := reTopicConsumerSvc.FindStringSubmatch(raw); len(m) == 3 {
 		return "UNKNOWN_QUEUE_CONSUMER_TARGET",
-			fmt.Sprintf(`services["%s"].behavior.topic.subscribers.consumer_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.topic.subscribers.consumer_target`, m[1]),
 			fmt.Sprintf("topic subscriber consumer_target references unknown service %s", m[2])
 	}
 	if m := reTopicConsumerTargetErr.FindStringSubmatch(raw); len(m) == 3 {
 		return "INVALID_SCENARIO_SCHEMA",
-			fmt.Sprintf(`services["%s"].behavior.topic.subscribers[%s].consumer_target`, m[1], m[2]),
+			fmt.Sprintf(`services[%q].behavior.topic.subscribers[%s].consumer_target`, m[1], m[2]),
 			raw
 	}
 	if m := reTopicConsumerRequired.FindStringSubmatch(raw); len(m) == 3 {
 		return "INVALID_SCENARIO_SCHEMA",
-			fmt.Sprintf(`services["%s"].behavior.topic.subscribers[%s].consumer_target`, m[1], m[2]),
+			fmt.Sprintf(`services[%q].behavior.topic.subscribers[%s].consumer_target`, m[1], m[2]),
 			raw
 	}
 
 	if m := reQueueConsumerTargetErr.FindStringSubmatch(raw); len(m) == 2 {
 		return "INVALID_SCENARIO_SCHEMA",
-			fmt.Sprintf(`services["%s"].behavior.queue.consumer_target`, m[1]),
+			fmt.Sprintf(`services[%q].behavior.queue.consumer_target`, m[1]),
 			raw
 	}
 

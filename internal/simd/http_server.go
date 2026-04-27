@@ -515,12 +515,12 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 }
 
 type httpWorkloadPatternRequest struct {
-	From         string                             `json:"from"`
-	SourceKind   string                             `json:"source_kind,omitempty"`
-	TrafficClass string                             `json:"traffic_class,omitempty"`
-	Metadata     map[string]string                  `json:"metadata,omitempty"`
-	To           string                             `json:"to"`
-	Arrival      *httpWorkloadArrivalSpecRequest    `json:"arrival"`
+	From         string                          `json:"from"`
+	SourceKind   string                          `json:"source_kind,omitempty"`
+	TrafficClass string                          `json:"traffic_class,omitempty"`
+	Metadata     map[string]string               `json:"metadata,omitempty"`
+	To           string                          `json:"to"`
+	Arrival      *httpWorkloadArrivalSpecRequest `json:"arrival"`
 }
 
 type httpWorkloadArrivalSpecRequest struct {
@@ -1152,7 +1152,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 	s.sendSSEEvent(w, "metrics_snapshot", payload)
 }
 
-func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, []map[string]any, bool) {
+func (s *HTTPServer) brokerShardResourcesJSON(runID string) (queues []map[string]any, topics []map[string]any, ok bool) {
 	if s == nil || s.Executor == nil || runID == "" {
 		return nil, nil, false
 	}
@@ -1168,7 +1168,7 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 	}
 	queueSnaps := rm.QueueBrokerHealthSnapshots(snapshotAt)
 	topicSnaps := rm.TopicBrokerHealthSnapshots(snapshotAt)
-	queues := make([]map[string]any, 0, len(queueSnaps))
+	queues = make([]map[string]any, 0, len(queueSnaps))
 	for _, q := range queueSnaps {
 		queues = append(queues, map[string]any{
 			"broker_service":        q.BrokerID,
@@ -1183,7 +1183,7 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 			"dlq_count":             q.DlqCount,
 		})
 	}
-	topics := make([]map[string]any, 0, len(topicSnaps))
+	topics = make([]map[string]any, 0, len(topicSnaps))
 	for _, t := range topicSnaps {
 		topics = append(topics, map[string]any{
 			"broker_service":        t.BrokerID,

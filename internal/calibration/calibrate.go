@@ -388,7 +388,7 @@ func matchingWorkloadIndices(out *config.Scenario, wt WorkloadTargetObservation)
 		if wt.To != "" && strings.TrimSpace(wt.To) != strings.TrimSpace(w.To) {
 			continue
 		}
-		if wt.TrafficClass != "" && strings.ToLower(strings.TrimSpace(wt.TrafficClass)) != strings.ToLower(strings.TrimSpace(w.TrafficClass)) {
+		if wt.TrafficClass != "" && !strings.EqualFold(strings.TrimSpace(wt.TrafficClass), strings.TrimSpace(w.TrafficClass)) {
 			continue
 		}
 		if wt.SourceKind != "" && strings.TrimSpace(wt.SourceKind) != strings.TrimSpace(w.SourceKind) {
@@ -483,7 +483,7 @@ func findServiceByKind(sc *config.Scenario, kind, id string) *config.Service {
 		if sc.Services[i].ID != id {
 			continue
 		}
-		if kind != "" && strings.ToLower(strings.TrimSpace(sc.Services[i].Kind)) != strings.ToLower(kind) {
+		if kind != "" && !strings.EqualFold(strings.TrimSpace(sc.Services[i].Kind), strings.TrimSpace(kind)) {
 			continue
 		}
 		return &sc.Services[i]
