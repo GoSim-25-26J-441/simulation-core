@@ -41,6 +41,14 @@ func (m *mockOptimizationRunner) RunExperiment(ctx context.Context, runID string
 	return "best", 0.0, 0, nil, nil
 }
 
+type configurableOptimizationRunner struct {
+	runFn func(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *OptimizationParams) (string, float64, int32, []string, error)
+}
+
+func (m *configurableOptimizationRunner) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *OptimizationParams) (string, float64, int32, []string, error) {
+	return m.runFn(ctx, runID, scenario, durationMs, params)
+}
+
 func TestRunExecutorStartTransitionsToRunning(t *testing.T) {
 	store := NewRunStore()
 	validScenario := `
@@ -291,6 +299,145 @@ workload:
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("expected run to fail with optimization not configured")
+}
+
+func TestRunExecutorOptimizationRunnerSuccessCopiesBestMetrics(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	optScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	_, err := store.Create("best-candidate", &simulationv1.RunInput{
+		ScenarioYaml: optScenario,
+		DurationMs:   1000,
+	})
+	if err != nil {
+		t.Fatalf("Create best-candidate error: %v", err)
+	}
+	bestMetrics := &simulationv1.RunMetrics{TotalRequests: 777}
+	if err := store.SetMetrics("best-candidate", bestMetrics); err != nil {
+		t.Fatalf("SetMetrics best-candidate: %v", err)
+	}
+
+	_, err = store.Create("opt-success", &simulationv1.RunInput{
+		ScenarioYaml: optScenario,
+		Optimization: &simulationv1.OptimizationConfig{
+			Objective:            "p95_latency_ms",
+			MaxIterations:        3,
+			EvaluationDurationMs: 2500,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create opt-success error: %v", err)
+	}
+
+	exec.SetOptimizationRunner(&configurableOptimizationRunner{
+		runFn: func(_ context.Context, runID string, _ *config.Scenario, durationMs int64, _ *OptimizationParams) (string, float64, int32, []string, error) {
+			if runID != "opt-success" {
+				t.Fatalf("unexpected run id passed to runner: %s", runID)
+			}
+			if durationMs != 2500 {
+				t.Fatalf("expected evaluation duration 2500ms, got %d", durationMs)
+			}
+			return "best-candidate", 12.5, 4, []string{"cand-a", "cand-b"}, nil
+		},
+	})
+
+	if _, err := exec.Start("opt-success"); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("opt-success")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			if rec.Run.BestRunId != "best-candidate" || rec.Run.BestScore != 12.5 || rec.Run.Iterations != 4 {
+				t.Fatalf("unexpected optimization result fields: best_run_id=%q best_score=%f iterations=%d",
+					rec.Run.BestRunId, rec.Run.BestScore, rec.Run.Iterations)
+			}
+			if len(rec.Run.CandidateRunIds) != 2 {
+				t.Fatalf("expected candidate IDs to be set, got %v", rec.Run.CandidateRunIds)
+			}
+			if rec.Metrics == nil || rec.Metrics.TotalRequests != 777 {
+				t.Fatalf("expected parent run metrics copied from best run, got %+v", rec.Metrics)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected optimization run to complete")
+}
+
+func TestRunExecutorOptimizationRunnerFailureMarksRunFailed(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	optScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	_, err := store.Create("opt-fail", &simulationv1.RunInput{
+		ScenarioYaml: optScenario,
+		Optimization: &simulationv1.OptimizationConfig{
+			Objective: "p95_latency_ms",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create opt-fail error: %v", err)
+	}
+
+	exec.SetOptimizationRunner(&configurableOptimizationRunner{
+		runFn: func(_ context.Context, _ string, _ *config.Scenario, _ int64, _ *OptimizationParams) (string, float64, int32, []string, error) {
+			return "", 0, 0, nil, errors.New("runner exploded")
+		},
+	})
+
+	if _, err := exec.Start("opt-fail"); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get("opt-fail")
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED {
+			if !strings.Contains(rec.Run.Error, "runner exploded") {
+				t.Fatalf("expected failure reason from runner error, got %q", rec.Run.Error)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected optimization run to fail")
 }
 
 // Test that online optimization mode selects the online path without panicking.

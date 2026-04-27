@@ -1910,6 +1910,258 @@ func TestHTTPServerUpdateRunConfigurationRejectsMissingServiceID(t *testing.T) {
 	}
 }
 
+func TestHTTPServerUpdateRunConfigurationRunNotFound(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/missing/configuration", strings.NewReader(`{"services":[{"id":"svc1","replicas":2}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 for unknown run, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "run not found") {
+		t.Fatalf("expected run not found error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationRejectsNonRunningRun(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	}
+	if _, err := store.Create("run-not-running", input); err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-not-running/configuration", strings.NewReader(`{"services":[{"id":"svc1","replicas":2}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for non-running run, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "run is not running") {
+		t.Fatalf("expected non-running run error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationRejectsInvalidReplicas(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	}
+	rec, err := store.Create("run-invalid-replicas", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-invalid-replicas/configuration", strings.NewReader(`{"services":[{"id":"svc1","replicas":0}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for replicas<1, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "replicas must be at least 1") {
+		t.Fatalf("expected replicas validation error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationRejectsWorkloadEntryValidation(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+	}
+	rec, err := store.Create("run-workload-validation", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	rrMissingPattern := httptest.NewRecorder()
+	reqMissingPattern := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-workload-validation/configuration", strings.NewReader(`{"workload":[{"rate_rps":10}]}`))
+	reqMissingPattern.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rrMissingPattern, reqMissingPattern)
+	if rrMissingPattern.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for missing pattern key, got %d: %s", rrMissingPattern.Code, rrMissingPattern.Body.String())
+	}
+	if !strings.Contains(rrMissingPattern.Body.String(), "pattern_key is required") {
+		t.Fatalf("expected pattern_key validation error, got: %s", rrMissingPattern.Body.String())
+	}
+
+	rrBadRate := httptest.NewRecorder()
+	reqBadRate := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-workload-validation/configuration", strings.NewReader(`{"workload":[{"pattern_key":"client:svc1:/test","rate_rps":0}]}`))
+	reqBadRate.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rrBadRate, reqBadRate)
+	if rrBadRate.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for non-positive workload rate, got %d: %s", rrBadRate.Code, rrBadRate.Body.String())
+	}
+	if !strings.Contains(rrBadRate.Body.String(), "rate_rps must be positive") {
+		t.Fatalf("expected rate_rps validation error, got: %s", rrBadRate.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationUnknownServiceReturnsError(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: strings.Replace(testScenarioYAML, "cores: 2", "cores: 8", 1),
+		DurationMs:   5000,
+	}
+	rec, err := store.Create("run-unknown-service", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	latest, ok := store.Get(rec.Run.Id)
+	if !ok || latest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping unknown service update test", latest.Run.Status)
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		if _, cfgOK := exec.GetRunConfiguration(rec.Run.Id); cfgOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("run configuration not initialized in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-unknown-service/configuration", strings.NewReader(`{"services":[{"id":"svc-does-not-exist","replicas":2}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 for unknown service update, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "service not found") {
+		t.Fatalf("expected unknown service error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationUnknownWorkloadPatternReturnsError(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   5000,
+	}
+	rec, err := store.Create("run-unknown-pattern", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	latest, ok := store.Get(rec.Run.Id)
+	if !ok || latest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping unknown workload pattern test", latest.Run.Status)
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		if _, cfgOK := exec.GetRunConfiguration(rec.Run.Id); cfgOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("run configuration not initialized in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-unknown-pattern/configuration", strings.NewReader(`{"workload":[{"pattern_key":"client:svc1:/missing","rate_rps":15}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected status 500 for unknown workload pattern, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "pattern not found") {
+		t.Fatalf("expected unknown workload pattern error, got: %s", rr.Body.String())
+	}
+}
+
+func TestHTTPServerUpdateRunConfigurationPoliciesOnlySuccess(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   5000,
+	}
+	rec, err := store.Create("run-policies-only", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	latest, ok := store.Get(rec.Run.Id)
+	if !ok || latest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping policies-only update test", latest.Run.Status)
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for {
+		if _, cfgOK := exec.GetRunConfiguration(rec.Run.Id); cfgOK {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Skip("run configuration not initialized in time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-policies-only/configuration", strings.NewReader(`{"policies":{"autoscaling":{"enabled":true,"target_cpu_util":0,"scale_step":0}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200 for policies-only update, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "configuration updated successfully") {
+		t.Fatalf("expected success message in response, got: %s", rr.Body.String())
+	}
+}
+
 func TestHTTPServerGetRunConfigurationNotFound(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store, nil)

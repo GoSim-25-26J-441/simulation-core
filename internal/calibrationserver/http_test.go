@@ -122,6 +122,20 @@ func postCalibrate(t *testing.T, body map[string]any) *httptest.ResponseRecorder
 	return rec
 }
 
+func postValidate(t *testing.T, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	Register(mux)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/validate", bytes.NewReader(raw))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
 func TestCalibrateHTTP_BadJSON(t *testing.T) {
 	mux := http.NewServeMux()
 	Register(mux)
@@ -420,4 +434,68 @@ func TestMergeCalibrationReportWarnings_DedupesAndPrefixes(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("merge warnings = %v, want %v", got, want)
 	}
+}
+
+func TestValidateHTTPMethodNotAllowed(t *testing.T) {
+	mux := http.NewServeMux()
+	Register(mux)
+	req := httptest.NewRequest(http.MethodGet, "/v1/validate", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestValidateHTTPBadRequestPaths(t *testing.T) {
+	t.Run("bad json", func(t *testing.T) {
+		mux := http.NewServeMux()
+		Register(mux)
+		req := httptest.NewRequest(http.MethodPost, "/v1/validate", bytes.NewReader([]byte(`{`)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("missing scenario", func(t *testing.T) {
+		rec := postValidate(t, map[string]any{
+			"observed_format": calibration.FormatSimulatorExport,
+			"observed":        map[string]any{"window": "1s", "run_metrics": map[string]any{"total_requests": 1}},
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("missing observed", func(t *testing.T) {
+		rec := postValidate(t, map[string]any{
+			"scenario_yaml":   strings.TrimSpace(testScenarioYAMLRate1),
+			"observed_format": calibration.FormatSimulatorExport,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("invalid tolerance overrides", func(t *testing.T) {
+		rec := postValidate(t, map[string]any{
+			"scenario_yaml":   strings.TrimSpace(testScenarioYAMLRate1),
+			"observed_format": calibration.FormatSimulatorExport,
+			"observed": map[string]any{
+				"window":      "1s",
+				"run_metrics": map[string]any{"total_requests": 10, "ingress_requests": 10, "ingress_throughput_rps": 1},
+			},
+			"validate_options": map[string]any{
+				"tolerance_profile": "strict",
+				"tolerances": map[string]any{
+					"latency_p95_pct": "not-a-number",
+				},
+			},
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for invalid tolerance override, got %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 }

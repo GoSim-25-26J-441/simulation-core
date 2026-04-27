@@ -1092,6 +1092,66 @@ func TestManagerUpdateServiceResourcesMemoryDownsizeRejected(t *testing.T) {
 	}
 }
 
+func TestManagerWorkReservationHelpersAndHostMemoryUtilization(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4, MemoryGB: 2}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, Model: "cpu"},
+		},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	instances := m.GetInstancesForService("svc1")
+	if len(instances) != 1 {
+		t.Fatalf("expected one instance, got %d", len(instances))
+	}
+	inst := instances[0]
+	now := time.Unix(1000, 0)
+
+	if _, _, err := m.ReserveCPUWork("missing", now, 20); err == nil {
+		t.Fatal("expected ReserveCPUWork to fail for unknown instance")
+	}
+	cpuStart, cpuEnd, err := m.ReserveCPUWork(inst.ID(), now, 20)
+	if err != nil {
+		t.Fatalf("ReserveCPUWork error: %v", err)
+	}
+	if !cpuEnd.After(cpuStart) {
+		t.Fatalf("expected cpuEnd after cpuStart, got start=%v end=%v", cpuStart, cpuEnd)
+	}
+
+	if _, _, _, _, err := m.ReserveDBWork("missing", cpuEnd, 25, 2); err == nil {
+		t.Fatal("expected ReserveDBWork to fail for unknown instance")
+	}
+	ioStart, ioEnd, slotIdx, waitMs, err := m.ReserveDBWork(inst.ID(), cpuEnd, 25, 2)
+	if err != nil {
+		t.Fatalf("ReserveDBWork error: %v", err)
+	}
+	if !ioEnd.After(ioStart) {
+		t.Fatalf("expected ioEnd after ioStart, got start=%v end=%v", ioStart, ioEnd)
+	}
+	if slotIdx < 0 {
+		t.Fatalf("expected non-negative slot index, got %d", slotIdx)
+	}
+	if waitMs < 0 {
+		t.Fatalf("expected non-negative waitMs, got %f", waitMs)
+	}
+
+	m.ReleaseDBConnection("missing") // no-op path
+	m.ReleaseDBConnection(inst.ID())
+	m.RollbackCPUTailReservation("missing", cpuStart, cpuEnd) // no-op path
+	m.RollbackCPUTailReservation(inst.ID(), cpuStart, cpuEnd)
+
+	if err := m.AllocateMemory(inst.ID(), 1024); err != nil {
+		t.Fatalf("AllocateMemory error: %v", err)
+	}
+	util := m.MaxHostMemoryUtilization()
+	if util <= 0 {
+		t.Fatalf("expected positive host memory utilization, got %f", util)
+	}
+}
+
 func TestProcessDrainingInstancesTimeoutEvictsBusyInstance(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{

@@ -505,3 +505,71 @@ workload:
 		t.Fatalf("expected memory_mb=2048.0 in config, got %f", svcCfg.MemoryMb)
 	}
 }
+
+func TestRunExecutorUpdateServiceResourcesWithHeadroom(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+
+	if err := exec.UpdateServiceResourcesWithHeadroom("", "svc1", 1, 1, 16); !errors.Is(err, ErrRunIDMissing) {
+		t.Fatalf("expected ErrRunIDMissing, got %v", err)
+	}
+	if err := exec.UpdateServiceResourcesWithHeadroom("run-1", "", 1, 1, 16); err == nil {
+		t.Fatalf("expected error for missing service id")
+	}
+	if err := exec.UpdateServiceResourcesWithHeadroom("run-1", "svc1", -1, 1, 16); err == nil {
+		t.Fatalf("expected error for negative cpu")
+	}
+	if err := exec.UpdateServiceResourcesWithHeadroom("run-1", "svc1", 0, 0, 16); err != nil {
+		t.Fatalf("expected no-op success when cpu and memory are zero, got %v", err)
+	}
+	if err := exec.UpdateServiceResourcesWithHeadroom("run-1", "svc1", 1, 1, 16); !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("expected ErrRunNotFound for unknown run state, got %v", err)
+	}
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 4
+    memory_gb: 16
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	if _, err := store.Create("run-headroom", &simulationv1.RunInput{
+		ScenarioYaml: validScenario,
+		DurationMs:   1000,
+	}); err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := exec.Start("run-headroom"); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	rec, ok := store.Get("run-headroom")
+	if !ok || rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run is not RUNNING (status=%v), skipping headroom update test", rec.Run.Status)
+	}
+	defer exec.Stop("run-headroom")
+
+	if err := exec.UpdateServiceResourcesWithHeadroom("run-headroom", "svc1", 2.0, 1536.0, 32); err != nil {
+		t.Fatalf("UpdateServiceResourcesWithHeadroom error: %v", err)
+	}
+	cfg, ok := exec.GetRunConfiguration("run-headroom")
+	if !ok || cfg == nil || len(cfg.Services) == 0 {
+		t.Fatalf("expected run configuration after headroom update")
+	}
+	if cfg.Services[0].CpuCores != 2.0 || cfg.Services[0].MemoryMb != 1536.0 {
+		t.Fatalf("unexpected service resources after update: cpu=%f mem=%f", cfg.Services[0].CpuCores, cfg.Services[0].MemoryMb)
+	}
+}
