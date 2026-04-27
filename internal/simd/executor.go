@@ -673,14 +673,14 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	// Run simulation; wall-clock limits use signalOnlineLeaseEnd; explicit stop uses StopRun.
 	logger.Info("starting online optimization run", "run_id", runID, "duration", onlineRunDuration)
 	if err := eng.Run(onlineRunDuration); err != nil {
+		// If a graceful online completion reason was already signaled (e.g. heartbeat
+		// expiry), finalize as COMPLETED even if engine stop races context cancellation.
+		if reason := e.takeOnlineCompletionReason(runID); reason != "" {
+			e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason, eng.GetSimTime().Sub(startTime))
+			return
+		}
 		// If cancelled, handle based on current run status.
 		if ctx.Err() != nil {
-			reason := e.takeOnlineCompletionReason(runID)
-			if reason != "" {
-				e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason, eng.GetSimTime().Sub(startTime))
-				return
-			}
-
 			rec, ok := e.store.Get(runID)
 			if !ok {
 				logger.Info("online simulation cancelled; run record not found", "run_id", runID)
