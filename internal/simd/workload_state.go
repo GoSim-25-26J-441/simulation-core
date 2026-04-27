@@ -154,7 +154,7 @@ func (ws *WorkloadState) initPatternsLocked(scenario *config.Scenario, startTime
 			firstEventTime = ws.calculateNextArrivalTime(arrival, startTime, startTime)
 		}
 		ps := &WorkloadPatternState{
-			Pattern:                *workloadPattern,
+			Pattern:                workloadPattern,
 			ServiceID:              serviceID,
 			EndpointPath:           endpointPath,
 			Epoch:                  startTime,
