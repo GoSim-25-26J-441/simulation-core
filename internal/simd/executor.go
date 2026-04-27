@@ -387,6 +387,10 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		logger.Error("run not found", "run_id", runID)
 		return
 	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
+		return
+	}
 
 	e.mu.Lock()
 	runner := e.optimizationRunner
@@ -472,6 +476,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations, candidateRunIDs); err != nil {
 		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
 	}
+	e.store.TrimOptimizationCandidates(runID, bestRunID)
 
 	// Copy the best run's metrics onto the parent optimization run so GET /metrics
 	// and SSE metrics_snapshot (on the next tick before complete) expose them.
@@ -549,6 +554,10 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	rec, ok := e.store.Get(runID)
 	if !ok {
 		logger.Error("run not found", "run_id", runID)
+		return
+	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
 		return
 	}
 
@@ -797,6 +806,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	rec, ok := e.store.Get(runID)
 	if !ok {
 		logger.Error("run not found", "run_id", runID)
+		return
+	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
 		return
 	}
 

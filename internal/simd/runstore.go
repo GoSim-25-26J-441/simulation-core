@@ -2,7 +2,9 @@ package simd
 
 import (
 	"fmt"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,23 +22,127 @@ type RunRecord struct {
 	Input               *simulationv1.RunInput
 	Metrics             *simulationv1.RunMetrics
 	Collector           *metrics.Collector
+	IsOptimizationChild bool
 	OptimizationHistory []*simulationv1.OptimizationStep // Online controller steps; backend can persist to run.metadata.optimization_history
 	// FinalConfig is a snapshot of the effective RunConfiguration taken before executor cleanup
 	// (placements, replicas, workload). Populated for terminal runs when the simulator still had state.
 	FinalConfig *simulationv1.RunConfiguration
 }
 
+type RunStoreLifecycleConfig struct {
+	TTL                            time.Duration
+	CleanupInterval                time.Duration
+	MaxTerminalRuns                int
+	MaxOptimizationCandidates      int
+	KeepCollectorAfterCompletion   bool
+	KeepCandidateInputAfterCleanup bool
+}
+
+func defaultRunStoreLifecycleConfig() RunStoreLifecycleConfig {
+	return RunStoreLifecycleConfig{
+		TTL:                            30 * time.Minute,
+		CleanupInterval:                1 * time.Minute,
+		MaxTerminalRuns:                500,
+		MaxOptimizationCandidates:      200,
+		KeepCollectorAfterCompletion:   false,
+		KeepCandidateInputAfterCleanup: false,
+	}
+}
+
+func runStoreLifecycleConfigFromEnv() RunStoreLifecycleConfig {
+	cfg := defaultRunStoreLifecycleConfig()
+	if d, ok := parseRunStoreDurationEnv("SIMD_RUNSTORE_TTL"); ok && d > 0 {
+		cfg.TTL = d
+	}
+	if d, ok := parseRunStoreDurationEnv("SIMD_RUNSTORE_CLEANUP_INTERVAL"); ok && d > 0 {
+		cfg.CleanupInterval = d
+	}
+	if n, ok := parseRunStoreIntEnv("SIMD_RUNSTORE_MAX_TERMINAL_RUNS"); ok && n > 0 {
+		cfg.MaxTerminalRuns = n
+	}
+	if n, ok := parseRunStoreIntEnv("SIMD_RUNSTORE_MAX_OPTIMIZATION_CANDIDATES"); ok && n > 0 {
+		cfg.MaxOptimizationCandidates = n
+	}
+	if b, ok := parseRunStoreBoolEnv("SIMD_RUNSTORE_KEEP_COLLECTOR_AFTER_COMPLETION"); ok {
+		cfg.KeepCollectorAfterCompletion = b
+	}
+	return cfg
+}
+
+func parseRunStoreDurationEnv(key string) (time.Duration, bool) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, false
+	}
+	return d, true
+}
+
+func parseRunStoreIntEnv(key string) (int, bool) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func parseRunStoreBoolEnv(key string) (bool, bool) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return false, false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, false
+	}
+	return b, true
+}
+
 type RunStore struct {
 	mu           sync.RWMutex
 	runs         map[string]*RunRecord
 	onlineLimits OnlineRunLimits
+	lifecycle    RunStoreLifecycleConfig
+	stopCh       chan struct{}
+	doneCh       chan struct{}
 }
 
 func NewRunStore() *RunStore {
-	return &RunStore{
+	s := &RunStore{
 		runs:         make(map[string]*RunRecord),
 		onlineLimits: DefaultOnlineRunLimits(),
+		lifecycle:    runStoreLifecycleConfigFromEnv(),
+		stopCh:       make(chan struct{}),
+		doneCh:       make(chan struct{}),
 	}
+	go s.cleanupLoop()
+	return s
+}
+
+func (s *RunStore) cleanupLoop() {
+	t := time.NewTicker(s.lifecycle.CleanupInterval)
+	defer t.Stop()
+	defer close(s.doneCh)
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case <-t.C:
+			s.CleanupNow()
+		}
+	}
+}
+
+func (s *RunStore) Stop() {
+	close(s.stopCh)
+	<-s.doneCh
 }
 
 // SetOnlineLimits replaces server-side online run defaults and caps (e.g. from environment).
@@ -117,8 +223,9 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 			Status:          simulationv1.RunStatus_RUN_STATUS_PENDING,
 			CreatedAtUnixMs: nowUnixMs(),
 		},
-		Input:   clonedInput,
-		Metrics: nil,
+		Input:               clonedInput,
+		Metrics:             nil,
+		IsOptimizationChild: strings.HasPrefix(runID, "opt-"),
 	}
 	s.runs[runID] = rec
 	return cloneRunRecord(rec), nil
@@ -256,6 +363,7 @@ func (s *RunStore) SetStatus(runID string, status simulationv1.RunStatus, errMsg
 		simulationv1.RunStatus_RUN_STATUS_CANCELLED,
 		simulationv1.RunStatus_RUN_STATUS_STOPPED:
 		rec.Run.EndedAtUnixMs = nowUnixMs()
+		s.finalizeRunStorageLocked(rec)
 	}
 
 	return cloneRunRecord(rec), nil
@@ -283,6 +391,32 @@ func (s *RunStore) SetMetrics(runID string, metrics *simulationv1.RunMetrics) er
 	}
 	rec.Metrics = cloneRunMetrics(metrics)
 	return nil
+}
+
+func isTerminalStatus(status simulationv1.RunStatus) bool {
+	switch status {
+	case simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+		simulationv1.RunStatus_RUN_STATUS_FAILED,
+		simulationv1.RunStatus_RUN_STATUS_CANCELLED,
+		simulationv1.RunStatus_RUN_STATUS_STOPPED:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *RunStore) finalizeRunStorageLocked(rec *RunRecord) {
+	if rec == nil {
+		return
+	}
+	if !s.lifecycle.KeepCollectorAfterCompletion {
+		rec.Collector = nil
+	}
+	if rec.IsOptimizationChild && !s.lifecycle.KeepCandidateInputAfterCleanup {
+		rec.Input = nil
+		rec.OptimizationHistory = nil
+		rec.FinalConfig = nil
+	}
 }
 
 // SetFinalConfiguration stores a cloned effective run configuration (e.g. before executor cleanup).
@@ -333,12 +467,48 @@ func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestSco
 	rec.Run.BestScore = bestScore
 	rec.Run.Iterations = iterations
 	if candidateRunIDs != nil {
+		if s.lifecycle.MaxOptimizationCandidates > 0 && len(candidateRunIDs) > s.lifecycle.MaxOptimizationCandidates {
+			candidateRunIDs = candidateRunIDs[:s.lifecycle.MaxOptimizationCandidates]
+		}
 		rec.Run.CandidateRunIds = make([]string, len(candidateRunIDs))
 		copy(rec.Run.CandidateRunIds, candidateRunIDs)
 	} else {
 		rec.Run.CandidateRunIds = nil
 	}
 	return nil
+}
+
+func (s *RunStore) TrimOptimizationCandidates(parentRunID, bestRunID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parent, ok := s.runs[parentRunID]
+	if !ok || parent == nil || parent.Run == nil {
+		return
+	}
+	keep := make(map[string]struct{})
+	if bestRunID != "" {
+		keep[bestRunID] = struct{}{}
+	}
+	limit := s.lifecycle.MaxOptimizationCandidates
+	for i, id := range parent.Run.CandidateRunIds {
+		if id == "" {
+			continue
+		}
+		if limit > 0 && i >= limit {
+			break
+		}
+		keep[id] = struct{}{}
+	}
+	for runID, rec := range s.runs {
+		if rec == nil || !rec.IsOptimizationChild || !isTerminalStatus(rec.Run.Status) {
+			continue
+		}
+		if _, ok := keep[runID]; ok {
+			s.finalizeRunStorageLocked(rec)
+			continue
+		}
+		delete(s.runs, runID)
+	}
 }
 
 // SetOptimizationProgress updates in-progress optimization state (iteration, best_score).
@@ -432,8 +602,51 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 		Input:               cloneRunInput(rec.Input),
 		Metrics:             cloneRunMetrics(rec.Metrics),
 		Collector:           rec.Collector,
+		IsOptimizationChild: rec.IsOptimizationChild,
 		OptimizationHistory: history,
 		FinalConfig:         cloneRunConfiguration(rec.FinalConfig),
+	}
+}
+
+// CleanupNow applies TTL and max-terminal retention.
+func (s *RunStore) CleanupNow() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nowMs := nowUnixMs()
+	type terminalRun struct {
+		id    string
+		ended int64
+		child bool
+	}
+	terminal := make([]terminalRun, 0)
+	for id, rec := range s.runs {
+		if rec == nil || rec.Run == nil || !isTerminalStatus(rec.Run.Status) {
+			continue
+		}
+		s.finalizeRunStorageLocked(rec)
+		ended := rec.Run.EndedAtUnixMs
+		if ended == 0 {
+			ended = rec.Run.CreatedAtUnixMs
+		}
+		if s.lifecycle.TTL > 0 && nowMs-ended >= s.lifecycle.TTL.Milliseconds() {
+			delete(s.runs, id)
+			continue
+		}
+		terminal = append(terminal, terminalRun{id: id, ended: ended, child: rec.IsOptimizationChild})
+	}
+	if s.lifecycle.MaxTerminalRuns <= 0 || len(terminal) <= s.lifecycle.MaxTerminalRuns {
+		return
+	}
+	sort.Slice(terminal, func(i, j int) bool {
+		if terminal[i].child != terminal[j].child {
+			return terminal[i].child
+		}
+		return terminal[i].ended < terminal[j].ended
+	})
+	for len(terminal) > s.lifecycle.MaxTerminalRuns {
+		evict := terminal[0]
+		terminal = terminal[1:]
+		delete(s.runs, evict.id)
 	}
 }
 

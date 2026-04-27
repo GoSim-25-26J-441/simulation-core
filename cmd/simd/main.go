@@ -298,6 +298,7 @@ func main() {
 	<-ctx.Done()
 	logger.Info("shutdown requested")
 	stop()
+	store.Stop()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
