@@ -526,7 +526,7 @@ func (e *Engine) GetStats() map[string]interface{} {
 	stats := e.runManager.GetStats()
 	stats["sim_time"] = e.simTime.Now().Format(time.RFC3339)
 	stats["events_in_queue"] = e.eventQueue.Size()
-	stats["events_processed"] = atomic.LoadInt64(&e.eventCounter)
+	stats["events_processed"] = atomic.LoadInt64(&e.processed)
 	return stats
 }
 

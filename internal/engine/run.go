@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"math"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -15,24 +17,129 @@ import (
 
 // RunManager manages the lifecycle of a simulation run
 type RunManager struct {
-	run               *models.Run
-	traces            map[string]*models.Trace
-	requests          map[string]*models.Request
-	completedRequests map[string]*models.Request
-	completedOrder    []string
-	serviceMetrics    map[string]*models.ServiceMetrics
-	latencies         []float64
-	totalRequests     int64
-	completedCount    int64
-	failedCount       int64
-	maxActiveRequests int
-	maxTotalRequests  int
-	maxCompletedKeep  int
-	traceSamplingRate float64
-	onLimitReached    func(currentCount, max int)
-	mu                sync.RWMutex
-	ctx               context.Context
-	cancel            context.CancelFunc
+	run                  *models.Run
+	traces               map[string]*models.Trace
+	requests             map[string]*models.Request
+	completedRequests    map[string]*models.Request
+	completedOrder       []string
+	serviceMetrics       map[string]*models.ServiceMetrics
+	latencySummary       latencySummary
+	totalRequests        int64
+	completedCount       int64
+	failedCount          int64
+	maxActiveRequests    int
+	maxTotalRequests     int
+	maxCompletedKeep     int
+	traceSamplingRate    float64
+	onActiveLimitReached func(currentCount, max int)
+	onTotalLimitReached  func(currentCount, max int)
+	mu                   sync.RWMutex
+	ctx                  context.Context
+	cancel               context.CancelFunc
+}
+
+const defaultLatencyReservoirSize = 2048
+
+type latencySummary struct {
+	count      int64
+	sum        float64
+	min        float64
+	max        float64
+	mean       float64
+	reservoir  []float64
+	maxResSize int
+	seenValues int64
+	dirty      bool
+	cachedP50  float64
+	cachedP95  float64
+	cachedP99  float64
+}
+
+type latencySnapshot struct {
+	Count int64
+	Mean  float64
+	P50   float64
+	P95   float64
+	P99   float64
+}
+
+func loadPositiveIntEnv(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func newLatencySummary(maxReservoir int) latencySummary {
+	if maxReservoir <= 0 {
+		maxReservoir = defaultLatencyReservoirSize
+	}
+	return latencySummary{
+		min:        math.Inf(1),
+		max:        math.Inf(-1),
+		maxResSize: maxReservoir,
+		reservoir:  make([]float64, 0, maxReservoir),
+	}
+}
+
+func (s *latencySummary) record(value float64) {
+	s.count++
+	s.sum += value
+	if value < s.min {
+		s.min = value
+	}
+	if value > s.max {
+		s.max = value
+	}
+	s.mean = s.sum / float64(s.count)
+	s.seenValues++
+	if len(s.reservoir) < s.maxResSize {
+		s.reservoir = append(s.reservoir, value)
+	} else if s.maxResSize > 0 {
+		idx := int((s.seenValues * 1103515245) % int64(s.maxResSize))
+		if idx >= 0 && idx < len(s.reservoir) {
+			s.reservoir[idx] = value
+		}
+	}
+	s.dirty = true
+}
+
+func (s *latencySummary) ensurePercentiles() {
+	if !s.dirty {
+		return
+	}
+	if len(s.reservoir) == 0 {
+		s.cachedP50 = 0
+		s.cachedP95 = 0
+		s.cachedP99 = 0
+		s.dirty = false
+		return
+	}
+	vals := append([]float64(nil), s.reservoir...)
+	sort.Float64s(vals)
+	s.cachedP50 = utils.P50(vals)
+	s.cachedP95 = utils.P95(vals)
+	s.cachedP99 = utils.P99(vals)
+	s.dirty = false
+}
+
+func (s *latencySummary) snapshot() latencySnapshot {
+	if s.count == 0 {
+		return latencySnapshot{}
+	}
+	s.ensurePercentiles()
+	return latencySnapshot{
+		Count: s.count,
+		Mean:  s.mean,
+		P50:   s.cachedP50,
+		P95:   s.cachedP95,
+		P99:   s.cachedP99,
+	}
 }
 
 type RunManagerSnapshot struct {
@@ -59,6 +166,7 @@ func NewRunManager(runID string) *RunManager {
 			traceSamplingRate = v
 		}
 	}
+	latencyReservoirSize := loadPositiveIntEnv("SIMD_RUN_LATENCY_RESERVOIR_SIZE", defaultLatencyReservoirSize)
 	return &RunManager{
 		run: &models.Run{
 			ID:        runID,
@@ -72,7 +180,7 @@ func NewRunManager(runID string) *RunManager {
 		completedRequests: make(map[string]*models.Request),
 		completedOrder:    make([]string, 0, maxCompletedKeep),
 		serviceMetrics:    make(map[string]*models.ServiceMetrics),
-		latencies:         make([]float64, 0),
+		latencySummary:    newLatencySummary(latencyReservoirSize),
 		maxCompletedKeep:  maxCompletedKeep,
 		traceSamplingRate: traceSamplingRate,
 		ctx:               ctx,
@@ -153,14 +261,14 @@ func (rm *RunManager) AddRequest(request *models.Request) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	if rm.maxTotalRequests > 0 && int(rm.totalRequests) >= rm.maxTotalRequests {
-		if rm.onLimitReached != nil {
-			rm.onLimitReached(int(rm.totalRequests)+1, rm.maxTotalRequests)
+		if rm.onTotalLimitReached != nil {
+			rm.onTotalLimitReached(int(rm.totalRequests)+1, rm.maxTotalRequests)
 		}
 		return
 	}
 	if rm.maxActiveRequests > 0 && len(rm.requests) >= rm.maxActiveRequests {
-		if rm.onLimitReached != nil {
-			rm.onLimitReached(len(rm.requests)+1, rm.maxActiveRequests)
+		if rm.onActiveLimitReached != nil {
+			rm.onActiveLimitReached(len(rm.requests)+1, rm.maxActiveRequests)
 		}
 		return
 	}
@@ -174,7 +282,7 @@ func (rm *RunManager) SetMaxRequestsTracked(max int, onLimitReached func(current
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	rm.maxActiveRequests = max
-	rm.onLimitReached = onLimitReached
+	rm.onActiveLimitReached = onLimitReached
 }
 
 // SetMaxTotalRequests sets an optional cap on total requests created over the run lifetime.
@@ -182,7 +290,7 @@ func (rm *RunManager) SetMaxTotalRequests(max int, onLimitReached func(currentCo
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 	rm.maxTotalRequests = max
-	rm.onLimitReached = onLimitReached
+	rm.onTotalLimitReached = onLimitReached
 }
 
 // GetRequest retrieves a request by ID
@@ -254,7 +362,7 @@ func (rm *RunManager) shouldSampleCompletedRequest(requestID string) bool {
 func (rm *RunManager) RecordLatency(latencyMs float64) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	rm.latencies = append(rm.latencies, latencyMs)
+	rm.latencySummary.record(latencyMs)
 }
 
 // UpdateServiceMetrics updates metrics for a service
@@ -308,13 +416,8 @@ func (rm *RunManager) calculateMetrics() *models.RunMetrics {
 	failedRequests := rm.failedCount
 	successfulRequests := totalRequests - failedRequests
 
-	var latencyP50, latencyP95, latencyP99, latencyMean float64
-	if len(rm.latencies) > 0 {
-		latencyP50 = utils.P50(rm.latencies)
-		latencyP95 = utils.P95(rm.latencies)
-		latencyP99 = utils.P99(rm.latencies)
-		latencyMean = utils.Mean(rm.latencies)
-	}
+	latency := rm.latencySummary.snapshot()
+	latencyP50, latencyP95, latencyP99, latencyMean := latency.P50, latency.P95, latency.P99, latency.Mean
 
 	duration := rm.run.EndTime.Sub(rm.run.StartTime)
 	throughputRPS := 0.0
@@ -337,8 +440,8 @@ func (rm *RunManager) calculateMetrics() *models.RunMetrics {
 
 // GetStats returns current run statistics
 func (rm *RunManager) GetStats() map[string]interface{} {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
 
 	totalRequests := int(rm.totalRequests)
 	totalTraces := len(rm.traces)
@@ -352,11 +455,8 @@ func (rm *RunManager) GetStats() map[string]interface{} {
 		}
 	}
 
-	var currentLatencyP50, currentLatencyP95 float64
-	if len(rm.latencies) > 0 {
-		currentLatencyP50 = utils.P50(rm.latencies)
-		currentLatencyP95 = utils.P95(rm.latencies)
-	}
+	latency := rm.latencySummary.snapshot()
+	currentLatencyP50, currentLatencyP95 := latency.P50, latency.P95
 
 	elapsed := time.Since(rm.run.StartTime)
 

@@ -27,6 +27,8 @@ const (
 	EventGenerationLookaheadWindow = 10 * time.Second
 	// EventGenerationTickerInterval is the interval at which the event generation loop checks for new events to generate
 	EventGenerationTickerInterval = 500 * time.Millisecond
+	// uniformCompactionThreshold is the consumed-cursor threshold for pruning lazy uniform schedules.
+	uniformCompactionThreshold = 2048
 )
 
 // WorkloadPatternState tracks the state of a workload pattern during simulation
@@ -39,13 +41,19 @@ type WorkloadPatternState struct {
 	Epoch         time.Time
 	LastEventTime time.Time
 	NextEventTime time.Time
-	// uniformTimes is a sorted schedule of arrivals for type "uniform" (i.i.d. uniform in [start,end)),
-	// matching internal/workload.Generator.scheduleUniformArrivals. uniformCursor indexes NextEventTime in that slice.
+	// uniformTimes is a sorted lazy schedule of upcoming arrivals for type "uniform"
+	// (i.i.d. uniform in chunk intervals); consumed prefix is periodically compacted.
+	// uniformCursor indexes NextEventTime in that slice.
 	uniformTimes  []time.Time
 	uniformCursor int
-	// uniformLazy: real-time uniform loads chunks of EventGenerationLookaheadWindow instead of the full [start,endTime].
+	// uniformLazy: both real-time and standard uniform runs load chunks of
+	// EventGenerationLookaheadWindow instead of full-run pre-generation.
 	uniformLazy            bool
 	uniformStreamWatermark time.Time // exclusive end of simulation time range already sampled (lazy only)
+	// For standard-mode global uniform semantics (N=round(rate*fullDuration)):
+	// lazily distribute remaining arrivals to chunks via conditional binomial sampling.
+	uniformGlobalCountMode bool
+	uniformRemaining       int64
 	Active                 bool
 	mu                     sync.RWMutex
 }
@@ -138,17 +146,10 @@ func (ws *WorkloadState) initPatternsLocked(scenario *config.Scenario, startTime
 		uniformLazy := false
 		var uniformWatermark time.Time
 		if arrival.Type == "uniform" {
-			if realTime {
-				uniformLazy = true
-				uniformWatermark = startTime
-			} else {
-				uniformTimes = ws.sampleUniformArrivalTimes(startTime, ws.endTime, arrival.RateRPS)
-				if len(uniformTimes) == 0 {
-					firstEventTime = ws.endTime
-				} else {
-					firstEventTime = uniformTimes[0]
-				}
-			}
+			// Always keep uniform generation horizon-based to avoid full-duration
+			// pre-generation in standard mode while preserving deterministic seed order.
+			uniformLazy = true
+			uniformWatermark = startTime
 		} else {
 			firstEventTime = ws.calculateNextArrivalTime(arrival, startTime, startTime)
 		}
@@ -163,9 +164,17 @@ func (ws *WorkloadState) initPatternsLocked(scenario *config.Scenario, startTime
 			uniformCursor:          0,
 			uniformLazy:            uniformLazy,
 			uniformStreamWatermark: uniformWatermark,
+			uniformGlobalCountMode: !realTime,
+			uniformRemaining:       0,
 			Active:                 true,
 		}
-		if arrival.Type == "uniform" && realTime {
+		if arrival.Type == "uniform" && !realTime {
+			ps.uniformRemaining = int64(math.Round(arrival.RateRPS * ws.endTime.Sub(startTime).Seconds()))
+			if ps.uniformRemaining < 0 {
+				ps.uniformRemaining = 0
+			}
+		}
+		if arrival.Type == "uniform" {
 			ws.ensureUniformHorizon(ps, startTime.Add(EventGenerationLookaheadWindow))
 			if len(ps.uniformTimes) > 0 {
 				ps.NextEventTime = ps.uniformTimes[0]
@@ -297,29 +306,25 @@ func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error
 	patternState.Pattern.Arrival.RateRPS = newRateRPS
 	currentSimTime := ws.engine.GetSimTime()
 	if patternState.Pattern.Arrival.Type == "uniform" {
-		if ws.realTimeMode {
-			patternState.uniformLazy = true
-			patternState.uniformTimes = nil
-			patternState.uniformCursor = 0
-			patternState.uniformStreamWatermark = currentSimTime
-			patternState.Epoch = currentSimTime
-			ws.ensureUniformHorizon(patternState, currentSimTime.Add(EventGenerationLookaheadWindow))
-			if len(patternState.uniformTimes) > 0 {
-				patternState.NextEventTime = patternState.uniformTimes[0]
-			} else {
-				patternState.NextEventTime = ws.endTime
+		patternState.uniformLazy = true
+		patternState.uniformTimes = nil
+		patternState.uniformCursor = 0
+		patternState.uniformStreamWatermark = currentSimTime
+		patternState.Epoch = currentSimTime
+		patternState.uniformGlobalCountMode = !ws.realTimeMode
+		if patternState.uniformGlobalCountMode {
+			patternState.uniformRemaining = int64(math.Round(newRateRPS * ws.endTime.Sub(currentSimTime).Seconds()))
+			if patternState.uniformRemaining < 0 {
+				patternState.uniformRemaining = 0
 			}
 		} else {
-			patternState.uniformLazy = false
-			patternState.uniformStreamWatermark = time.Time{}
-			patternState.uniformTimes = ws.sampleUniformArrivalTimes(currentSimTime, ws.endTime, newRateRPS)
-			patternState.uniformCursor = 0
-			patternState.Epoch = currentSimTime
-			if len(patternState.uniformTimes) > 0 {
-				patternState.NextEventTime = patternState.uniformTimes[0]
-			} else {
-				patternState.NextEventTime = ws.endTime
-			}
+			patternState.uniformRemaining = 0
+		}
+		ws.ensureUniformHorizon(patternState, currentSimTime.Add(EventGenerationLookaheadWindow))
+		if len(patternState.uniformTimes) > 0 {
+			patternState.NextEventTime = patternState.uniformTimes[0]
+		} else {
+			patternState.NextEventTime = ws.endTime
 		}
 	} else {
 		// Reset next event time to trigger immediate recalculation
@@ -361,33 +366,32 @@ func (ws *WorkloadState) UpdatePattern(patternKey string, pattern config.Workloa
 	// (especially bursty timing) do not stay tied to the original simulation start.
 	patternState.Epoch = currentSimTime
 	if pattern.Arrival.Type == "uniform" {
-		if ws.realTimeMode {
-			patternState.uniformLazy = true
-			patternState.uniformTimes = nil
-			patternState.uniformCursor = 0
-			patternState.uniformStreamWatermark = currentSimTime
-			ws.ensureUniformHorizon(patternState, currentSimTime.Add(EventGenerationLookaheadWindow))
-			if len(patternState.uniformTimes) > 0 {
-				patternState.NextEventTime = patternState.uniformTimes[0]
-			} else {
-				patternState.NextEventTime = ws.endTime
+		patternState.uniformLazy = true
+		patternState.uniformTimes = nil
+		patternState.uniformCursor = 0
+		patternState.uniformStreamWatermark = currentSimTime
+		patternState.uniformGlobalCountMode = !ws.realTimeMode
+		if patternState.uniformGlobalCountMode {
+			patternState.uniformRemaining = int64(math.Round(pattern.Arrival.RateRPS * ws.endTime.Sub(currentSimTime).Seconds()))
+			if patternState.uniformRemaining < 0 {
+				patternState.uniformRemaining = 0
 			}
 		} else {
-			patternState.uniformLazy = false
-			patternState.uniformStreamWatermark = time.Time{}
-			patternState.uniformTimes = ws.sampleUniformArrivalTimes(currentSimTime, ws.endTime, pattern.Arrival.RateRPS)
-			patternState.uniformCursor = 0
-			if len(patternState.uniformTimes) > 0 {
-				patternState.NextEventTime = patternState.uniformTimes[0]
-			} else {
-				patternState.NextEventTime = ws.endTime
-			}
+			patternState.uniformRemaining = 0
+		}
+		ws.ensureUniformHorizon(patternState, currentSimTime.Add(EventGenerationLookaheadWindow))
+		if len(patternState.uniformTimes) > 0 {
+			patternState.NextEventTime = patternState.uniformTimes[0]
+		} else {
+			patternState.NextEventTime = ws.endTime
 		}
 	} else {
 		patternState.uniformTimes = nil
 		patternState.uniformCursor = 0
 		patternState.uniformLazy = false
 		patternState.uniformStreamWatermark = time.Time{}
+		patternState.uniformGlobalCountMode = false
+		patternState.uniformRemaining = 0
 		patternState.NextEventTime = currentSimTime
 	}
 
@@ -426,6 +430,8 @@ func (ws *WorkloadState) GetPattern(patternKey string) (*WorkloadPatternState, b
 		uniformCursor:          pattern.uniformCursor,
 		uniformLazy:            pattern.uniformLazy,
 		uniformStreamWatermark: pattern.uniformStreamWatermark,
+		uniformGlobalCountMode: pattern.uniformGlobalCountMode,
+		uniformRemaining:       pattern.uniformRemaining,
 		Active:                 pattern.Active,
 	}
 	return copy, true
@@ -454,6 +460,8 @@ func (ws *WorkloadState) GetAllPatterns() map[string]*WorkloadPatternState {
 			uniformCursor:          v.uniformCursor,
 			uniformLazy:            v.uniformLazy,
 			uniformStreamWatermark: v.uniformStreamWatermark,
+			uniformGlobalCountMode: v.uniformGlobalCountMode,
+			uniformRemaining:       v.uniformRemaining,
 			Active:                 v.Active,
 		}
 		v.mu.RUnlock()
@@ -665,7 +673,13 @@ func (ws *WorkloadState) ensureUniformHorizon(ps *WorkloadPatternState, coverThr
 		if !chunkStart.Before(chunkEnd) {
 			break
 		}
-		part := ws.sampleLazyUniformChunk(chunkStart, chunkEnd, rate, ps.Epoch)
+		var part []time.Time
+		if ps.uniformGlobalCountMode {
+			n := ws.sampleGlobalUniformChunkCount(ps, chunkStart, chunkEnd)
+			part = ws.uniformPlaceNInInterval(chunkStart, chunkEnd, n)
+		} else {
+			part = ws.sampleLazyUniformChunk(chunkStart, chunkEnd, rate, ps.Epoch)
+		}
 		ps.uniformTimes = append(ps.uniformTimes, part...)
 		if len(ps.uniformTimes) > ps.uniformCursor {
 			tail := ps.uniformTimes[ps.uniformCursor:]
@@ -673,6 +687,83 @@ func (ws *WorkloadState) ensureUniformHorizon(ps *WorkloadPatternState, coverThr
 		}
 		ps.uniformStreamWatermark = chunkEnd
 	}
+	ws.compactUniformSchedule(ps)
+}
+
+func (ws *WorkloadState) sampleGlobalUniformChunkCount(ps *WorkloadPatternState, chunkStart, chunkEnd time.Time) int64 {
+	if ps == nil || !chunkStart.Before(chunkEnd) || ps.uniformRemaining <= 0 {
+		return 0
+	}
+	if !chunkEnd.Before(ws.endTime) {
+		n := ps.uniformRemaining
+		ps.uniformRemaining = 0
+		return n
+	}
+	remainingDuration := ws.endTime.Sub(chunkStart).Seconds()
+	if remainingDuration <= 0 {
+		n := ps.uniformRemaining
+		ps.uniformRemaining = 0
+		return n
+	}
+	chunkDuration := chunkEnd.Sub(chunkStart).Seconds()
+	p := chunkDuration / remainingDuration
+	if p <= 0 {
+		return 0
+	}
+	if p >= 1 {
+		n := ps.uniformRemaining
+		ps.uniformRemaining = 0
+		return n
+	}
+	n := ws.sampleBinomial(ps.uniformRemaining, p)
+	if n > ps.uniformRemaining {
+		n = ps.uniformRemaining
+	}
+	ps.uniformRemaining -= n
+	return n
+}
+
+func (ws *WorkloadState) sampleBinomial(n int64, p float64) int64 {
+	if n <= 0 || p <= 0 {
+		return 0
+	}
+	if p >= 1 {
+		return n
+	}
+	// Exact Bernoulli sum for moderate n; normal approximation for large n.
+	if n <= 200000 {
+		var out int64
+		for i := int64(0); i < n; i++ {
+			if ws.generator.BernoulliBool(p) {
+				out++
+			}
+		}
+		return out
+	}
+	mean := float64(n) * p
+	stddev := math.Sqrt(float64(n) * p * (1 - p))
+	val := math.Round(ws.generator.NormFloat64(mean, stddev))
+	if val < 0 {
+		return 0
+	}
+	if val > float64(n) {
+		return n
+	}
+	return int64(val)
+}
+
+// compactUniformSchedule prunes consumed lazy-uniform arrivals to keep memory bounded.
+func (ws *WorkloadState) compactUniformSchedule(ps *WorkloadPatternState) {
+	if ps == nil || !ps.uniformLazy || ps.uniformCursor < uniformCompactionThreshold {
+		return
+	}
+	if ps.uniformCursor >= len(ps.uniformTimes) {
+		ps.uniformTimes = ps.uniformTimes[:0]
+		ps.uniformCursor = 0
+		return
+	}
+	ps.uniformTimes = append([]time.Time(nil), ps.uniformTimes[ps.uniformCursor:]...)
+	ps.uniformCursor = 0
 }
 
 // advanceToNextArrival returns the next arrival instant after scheduling at scheduledAt.
@@ -688,6 +779,7 @@ func (ws *WorkloadState) advanceToNextArrival(patternState *WorkloadPatternState
 		return ws.endTime
 	}
 	patternState.uniformCursor++
+	ws.compactUniformSchedule(patternState)
 	if patternState.uniformCursor < len(patternState.uniformTimes) {
 		return patternState.uniformTimes[patternState.uniformCursor]
 	}

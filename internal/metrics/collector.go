@@ -13,6 +13,7 @@ import (
 const (
 	defaultMaxSeriesPoints = 256
 	defaultReservoirSize   = 1024
+	defaultMaxSeries       = 10000
 )
 
 type metricSeries struct {
@@ -23,14 +24,22 @@ type metricSeries struct {
 	maxResSize int
 	seenValues int64
 	agg        models.Aggregation
+	dirtyPct   bool
 }
 
 func newMetricSeries(labels map[string]string, maxSeriesPoints, maxReservoir int) *metricSeries {
+	pointsCap := maxSeriesPoints
+	if pointsCap > 16 {
+		pointsCap = 16
+	}
+	if pointsCap < 0 {
+		pointsCap = 0
+	}
 	return &metricSeries{
 		labels:     copyLabels(labels),
-		points:     make([]*models.MetricPoint, 0, maxSeriesPoints),
+		points:     make([]*models.MetricPoint, 0, pointsCap),
 		maxPoints:  maxSeriesPoints,
-		reservoir:  make([]float64, 0, maxReservoir),
+		reservoir:  nil, // lazily allocated on first value
 		maxResSize: maxReservoir,
 		agg: models.Aggregation{
 			Min: 0,
@@ -71,6 +80,13 @@ func (s *metricSeries) addValue(value float64) {
 
 	// Vitter's reservoir sampling (Algorithm R) for bounded percentile estimation.
 	if len(s.reservoir) < s.maxResSize {
+		if s.reservoir == nil && s.maxResSize > 0 {
+			capHint := s.maxResSize
+			if capHint > 64 {
+				capHint = 64
+			}
+			s.reservoir = make([]float64, 0, capHint)
+		}
 		s.reservoir = append(s.reservoir, value)
 	} else if s.maxResSize > 0 {
 		idx := int((s.seenValues * 1103515245) % int64(s.maxResSize)) // deterministic pseudo-random slot
@@ -78,7 +94,7 @@ func (s *metricSeries) addValue(value float64) {
 			s.reservoir[idx] = value
 		}
 	}
-	s.updatePercentiles()
+	s.dirtyPct = true
 }
 
 func (s *metricSeries) updatePercentiles() {
@@ -98,6 +114,10 @@ func (s *metricSeries) updatePercentiles() {
 func (s *metricSeries) aggregationCopy() *models.Aggregation {
 	if s == nil || s.agg.Count == 0 {
 		return nil
+	}
+	if s.dirtyPct {
+		s.updatePercentiles()
+		s.dirtyPct = false
 	}
 	cp := s.agg
 	return &cp
@@ -127,10 +147,13 @@ type Collector struct {
 
 	maxSeriesPoints int
 	maxReservoir    int
+	maxSeries       int
 
-	totalPoints int
-	maxPoints   int
-	onLimit     func(currentCount, max int)
+	totalPoints     int
+	totalSeries     int
+	maxPoints       int
+	onLimit         func(currentCount, max int)
+	onLimitWithName func(limit string, currentCount, max int)
 }
 
 type CollectorSnapshot struct {
@@ -145,6 +168,7 @@ func NewCollector() *Collector {
 		series:          make(map[string]map[string]*metricSeries),
 		maxSeriesPoints: loadIntEnv("SIMD_MAX_METRIC_SERIES_POINTS", defaultMaxSeriesPoints),
 		maxReservoir:    loadIntEnv("SIMD_METRIC_RESERVOIR_SIZE", defaultReservoirSize),
+		maxSeries:       loadIntEnv("SIMD_MAX_METRIC_SERIES", defaultMaxSeries),
 	}
 }
 
@@ -179,8 +203,18 @@ func (c *Collector) Record(name string, value float64, timestamp time.Time, labe
 	}
 	s := c.series[name][labelKey]
 	if s == nil {
+		if c.maxSeries > 0 && c.totalSeries >= c.maxSeries {
+			if c.onLimit != nil {
+				c.onLimit(c.totalSeries+1, c.maxSeries)
+			}
+			if c.onLimitWithName != nil {
+				c.onLimitWithName("max_metric_series", c.totalSeries+1, c.maxSeries)
+			}
+			return
+		}
 		s = newMetricSeries(labels, c.maxSeriesPoints, c.maxReservoir)
 		c.series[name][labelKey] = s
+		c.totalSeries++
 	}
 
 	point := &models.MetricPoint{
@@ -228,8 +262,8 @@ func (c *Collector) GetTimeSeries(name string, labels map[string]string) []*mode
 
 // GetAggregation calculates and returns aggregated statistics for a metric
 func (c *Collector) GetAggregation(name string, labels map[string]string) *models.Aggregation {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	labelKey := labelKey(labels)
 	if c.series[name] == nil {
@@ -256,8 +290,8 @@ func (c *Collector) ComputeAllAggregations() {
 
 // GetSummary returns a summary of all collected metrics
 func (c *Collector) GetSummary() *models.MetricsSummary {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	summary := &models.MetricsSummary{
 		StartTime:    c.startTime,
@@ -358,6 +392,7 @@ func (c *Collector) Clear() {
 
 	c.series = make(map[string]map[string]*metricSeries)
 	c.totalPoints = 0
+	c.totalSeries = 0
 	c.startTime = time.Now()
 	c.endTime = time.Time{}
 }
@@ -369,6 +404,14 @@ func (c *Collector) SetMaxPoints(max int, onLimit func(currentCount, max int)) {
 	defer c.mu.Unlock()
 	c.maxPoints = max
 	c.onLimit = onLimit
+}
+
+// SetLimitCallback configures a named limit callback used when a specific collector
+// guardrail is exceeded (e.g. max_metric_points, max_metric_series).
+func (c *Collector) SetLimitCallback(onLimit func(limit string, currentCount, max int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onLimitWithName = onLimit
 }
 
 func (c *Collector) Snapshot() CollectorSnapshot {
@@ -435,8 +478,8 @@ func (c *Collector) SumMetricWhere(name, key, value string) float64 {
 
 // GetMetricAggregation returns merged aggregation across all label series for a metric.
 func (c *Collector) GetMetricAggregation(name string) *models.Aggregation {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var merged *models.Aggregation
 	for _, s := range c.series[name] {
 		merged = mergeAggregations(merged, s.aggregationCopy())

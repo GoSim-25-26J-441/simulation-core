@@ -701,6 +701,13 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetLimitCallback(func(limit string, currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: limit,
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
 		eng.TriggerLimitExceeded(&engine.LimitExceededError{
 			Limit: "max_metric_points",
@@ -948,6 +955,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetLimitCallback(func(limit string, currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: limit,
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
 		eng.TriggerLimitExceeded(&engine.LimitExceededError{
 			Limit: "max_metric_points",

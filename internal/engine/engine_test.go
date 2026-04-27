@@ -265,6 +265,17 @@ func TestEngineGetStats(t *testing.T) {
 	}
 }
 
+func TestEngineGetStatsEventsProcessedUsesProcessedCounter(t *testing.T) {
+	engine := NewEngine("stats-processed")
+	now := engine.GetSimTime()
+	// Schedule one event but do not run engine yet.
+	engine.ScheduleAt(EventTypeRequestArrival, now.Add(10*time.Millisecond), nil, "", nil)
+	stats := engine.GetStats()
+	if got := stats["events_processed"]; got != int64(0) {
+		t.Fatalf("expected 0 processed events before run, got %v", got)
+	}
+}
+
 func TestEngineSimTimeAdvancement(t *testing.T) {
 	engine := NewEngine("test-run")
 
