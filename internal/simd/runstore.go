@@ -62,6 +62,8 @@ func runStoreLifecycleConfigFromEnv() RunStoreLifecycleConfig {
 	}
 	if n, ok := parseRunStoreIntEnv("SIMD_RUNSTORE_MAX_OPTIMIZATION_CANDIDATES"); ok && n > 0 {
 		cfg.MaxOptimizationCandidates = n
+	} else if n, ok := parseRunStoreIntEnv("SIMD_OPTIMIZATION_MAX_RETAINED_CANDIDATES"); ok && n > 0 {
+		cfg.MaxOptimizationCandidates = n
 	}
 	if b, ok := parseRunStoreBoolEnv("SIMD_RUNSTORE_KEEP_COLLECTOR_AFTER_COMPLETION"); ok {
 		cfg.KeepCollectorAfterCompletion = b

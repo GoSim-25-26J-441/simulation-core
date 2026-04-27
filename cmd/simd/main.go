@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"flag"
 	"math"
 	"net"
@@ -139,6 +140,7 @@ type optimizationRunnerAdapter struct {
 }
 
 func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID string, scenario *config.Scenario, durationMs int64, params *simd.OptimizationParams) (bestRunID string, bestScore float64, iterations int32, candidateRunIDs []string, err error) {
+	safety := improvement.OptimizationSafetyConfigFromEnv()
 	objName := params.Objective
 	if objName == "" {
 		objName = "p95_latency_ms"
@@ -157,6 +159,9 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 	if maxIter <= 0 {
 		maxIter = 10
 	}
+	if safety.MaxIterations > 0 && int32(maxIter) > safety.MaxIterations {
+		return "", 0, 0, nil, fmt.Errorf("optimization max_iterations %d exceeds server limit %d", maxIter, safety.MaxIterations)
+	}
 	stepSize := params.StepSize
 	if stepSize <= 0 {
 		stepSize = 1.0
@@ -174,9 +179,21 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 	done := make(chan result, 1)
 
 	if params.Batch != nil {
+		if !safety.AllowBatch {
+			return "", 0, 0, nil, fmt.Errorf("batch optimization disabled by server")
+		}
 		orchestrator = improvement.NewOrchestrator(a.store, a.executor, improvement.NewOptimizer(objective, 1, 1.0), objective)
+		orchestrator.WithMaxParallelRuns(safety.MaxConcurrentCandidates)
 		go func() {
-			r, err := orchestrator.RunBatchExperiment(ctx, scenario, durationMs, params.Batch, int(params.MaxEvaluations))
+			maxEval := int(params.MaxEvaluations)
+			if maxEval <= 0 {
+				maxEval = int(safety.MaxEvaluations)
+			}
+			if safety.MaxEvaluations > 0 && maxEval > int(safety.MaxEvaluations) {
+				done <- result{err: fmt.Errorf("optimization max_evaluations %d exceeds server limit %d", maxEval, safety.MaxEvaluations)}
+				return
+			}
+			r, err := orchestrator.RunBatchExperiment(ctx, scenario, durationMs, params.Batch, maxEval)
 			if err != nil {
 				done <- result{err: err}
 				return
@@ -197,9 +214,15 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 				a.store.SetOptimizationProgress(runID, iterClamped, score)
 			})
 		if params.MaxEvaluations > 0 {
+			if safety.MaxEvaluations > 0 && params.MaxEvaluations > safety.MaxEvaluations {
+				return "", 0, 0, nil, fmt.Errorf("optimization max_evaluations %d exceeds server limit %d", params.MaxEvaluations, safety.MaxEvaluations)
+			}
 			optimizer = optimizer.WithMaxEvaluations(int(params.MaxEvaluations))
+		} else if safety.MaxEvaluations > 0 {
+			optimizer = optimizer.WithMaxEvaluations(int(safety.MaxEvaluations))
 		}
 		orchestrator = improvement.NewOrchestrator(a.store, a.executor, optimizer, objective)
+		orchestrator.WithMaxParallelRuns(safety.MaxConcurrentCandidates)
 		go func() {
 			r, err := orchestrator.RunExperiment(ctx, scenario, durationMs)
 			if err != nil {

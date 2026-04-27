@@ -49,6 +49,7 @@ type RunExecutor struct {
 	store     *RunStore
 	notifier  *Notifier
 	limits    SimulationLimits
+	optSafety OptimizationSafetyLimits
 	limitsErr error
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
@@ -100,6 +101,7 @@ func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 		store:                  store,
 		notifier:               NewNotifierWithWhitelist(callbackWhitelist),
 		limits:                 limits,
+		optSafety:              optimizationSafetyLimitsFromEnv(),
 		limitsErr:              limitsErr,
 		cancels:                make(map[string]context.CancelFunc),
 		workloadStates:         make(map[string]*WorkloadState),
@@ -132,6 +134,12 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 	if err := e.limits.validatePreStart(updated.Input); err != nil {
 		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
 			logger.Error("failed to set failed status after prestart guardrail rejection", "run_id", runID, "error", serr)
+		}
+		return nil, err
+	}
+	if err := validateOptimizationPreStart(updated.Input, e.optSafety); err != nil {
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after optimization prestart rejection", "run_id", runID, "error", serr)
 		}
 		return nil, err
 	}
@@ -381,6 +389,11 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 
 func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	defer e.cleanup(runID)
+	if e.optSafety.MaxWallClockRuntime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.optSafety.MaxWallClockRuntime)
+		defer cancel()
+	}
 
 	rec, ok := e.store.Get(runID)
 	if !ok {
@@ -452,7 +465,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		durationMs = opt.EvaluationDurationMs
 	}
 	if durationMs <= 0 {
-		durationMs = 10000 // 10 seconds default
+		durationMs = e.optSafety.DefaultEvaluationDuration
 	}
 
 	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective,

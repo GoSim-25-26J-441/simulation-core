@@ -3,6 +3,7 @@ package improvement
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -15,6 +16,12 @@ import (
 // maxEvaluations caps total simulation runs (0 = unlimited). The simd executor applies a
 // default cap when the client omits optimization.max_evaluations for batch runs.
 func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.Scenario, durationMs int64, pb *simulationv1.BatchOptimizationConfig, maxEvaluations int) (*ExperimentResult, error) {
+	if o.safety.MaxWallClockRuntime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.safety.MaxWallClockRuntime)
+		defer cancel()
+	}
+	atomic.StoreInt32(&o.failedCandidates, 0)
 	if initial == nil {
 		return nil, fmt.Errorf("initial configuration is required")
 	}
@@ -35,6 +42,9 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 
 	start := time.Now()
 	eval := func(sc *config.Scenario) (*simulationv1.RunMetrics, int, error) {
+		if atomic.LoadInt32(&o.failedCandidates) >= int32(o.safety.MaxFailedCandidates) {
+			return nil, 0, fmt.Errorf("max failed candidates reached")
+		}
 		n := int(spec.ReevalPerCandidate)
 		if n < 1 {
 			n = 1
