@@ -132,7 +132,9 @@ func TestRunStoreCleanupNowAppliesMaxTerminalRetention(t *testing.T) {
 	_, _ = store.Create("r2", &simulationv1.RunInput{ScenarioYaml: "x"})
 	_, _ = store.Create("r3", &simulationv1.RunInput{ScenarioYaml: "x"})
 	_, _ = store.SetStatus("r1", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	time.Sleep(2 * time.Millisecond)
 	_, _ = store.SetStatus("r2", simulationv1.RunStatus_RUN_STATUS_FAILED, "")
+	time.Sleep(2 * time.Millisecond)
 	_, _ = store.SetStatus("r3", simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
 	store.CleanupNow()
 	if _, ok := store.Get("r1"); ok {
