@@ -583,6 +583,13 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 			Max:   int64(max),
 		})
 	})
+	eng.GetRunManager().SetMaxTotalRequests(e.limits.MaxTotalRequests, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_total_requests",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested
 	if rec.Input.RealTimeMode {
@@ -818,6 +825,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
 		eng.TriggerLimitExceeded(&engine.LimitExceededError{
 			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	eng.GetRunManager().SetMaxTotalRequests(e.limits.MaxTotalRequests, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_total_requests",
 			Value: int64(currentCount),
 			Max:   int64(max),
 		})

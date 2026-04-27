@@ -3,6 +3,9 @@ package engine
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -12,22 +15,42 @@ import (
 
 // RunManager manages the lifecycle of a simulation run
 type RunManager struct {
-	run            *models.Run
-	traces         map[string]*models.Trace
-	requests       map[string]*models.Request
-	serviceMetrics map[string]*models.ServiceMetrics
-	latencies      []float64
-	maxRequests    int
-	onLimitReached func(currentCount, max int)
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
+	run               *models.Run
+	traces            map[string]*models.Trace
+	requests          map[string]*models.Request
+	completedRequests map[string]*models.Request
+	completedOrder    []string
+	serviceMetrics    map[string]*models.ServiceMetrics
+	latencies         []float64
+	totalRequests     int64
+	completedCount    int64
+	failedCount       int64
+	maxActiveRequests int
+	maxTotalRequests  int
+	maxCompletedKeep  int
+	traceSamplingRate float64
+	onLimitReached    func(currentCount, max int)
+	mu                sync.RWMutex
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 // NewRunManager creates a new run manager
 func NewRunManager(runID string) *RunManager {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	maxCompletedKeep := 1000
+	if s := os.Getenv("SIMD_MAX_COMPLETED_REQUEST_TRACES"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			maxCompletedKeep = n
+		}
+	}
+	traceSamplingRate := 1.0
+	if s := os.Getenv("SIMD_REQUEST_TRACE_SAMPLING_RATE"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 && v <= 1 {
+			traceSamplingRate = v
+		}
+	}
 	return &RunManager{
 		run: &models.Run{
 			ID:        runID,
@@ -36,12 +59,16 @@ func NewRunManager(runID string) *RunManager {
 			Config:    make(map[string]interface{}),
 			Metadata:  make(map[string]string),
 		},
-		traces:         make(map[string]*models.Trace),
-		requests:       make(map[string]*models.Request),
-		serviceMetrics: make(map[string]*models.ServiceMetrics),
-		latencies:      make([]float64, 0),
-		ctx:            ctx,
-		cancel:         cancel,
+		traces:            make(map[string]*models.Trace),
+		requests:          make(map[string]*models.Request),
+		completedRequests: make(map[string]*models.Request),
+		completedOrder:    make([]string, 0, maxCompletedKeep),
+		serviceMetrics:    make(map[string]*models.ServiceMetrics),
+		latencies:         make([]float64, 0),
+		maxCompletedKeep:  maxCompletedKeep,
+		traceSamplingRate: traceSamplingRate,
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 }
 
@@ -117,13 +144,20 @@ func (rm *RunManager) GetTrace(traceID string) (*models.Trace, bool) {
 func (rm *RunManager) AddRequest(request *models.Request) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	if rm.maxRequests > 0 && len(rm.requests) >= rm.maxRequests {
+	if rm.maxTotalRequests > 0 && int(rm.totalRequests) >= rm.maxTotalRequests {
 		if rm.onLimitReached != nil {
-			rm.onLimitReached(len(rm.requests)+1, rm.maxRequests)
+			rm.onLimitReached(int(rm.totalRequests)+1, rm.maxTotalRequests)
+		}
+		return
+	}
+	if rm.maxActiveRequests > 0 && len(rm.requests) >= rm.maxActiveRequests {
+		if rm.onLimitReached != nil {
+			rm.onLimitReached(len(rm.requests)+1, rm.maxActiveRequests)
 		}
 		return
 	}
 	rm.requests[request.ID] = request
+	rm.totalRequests++
 }
 
 // SetMaxRequestsTracked configures an optional hard cap for tracked requests.
@@ -131,7 +165,15 @@ func (rm *RunManager) AddRequest(request *models.Request) {
 func (rm *RunManager) SetMaxRequestsTracked(max int, onLimitReached func(currentCount, max int)) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	rm.maxRequests = max
+	rm.maxActiveRequests = max
+	rm.onLimitReached = onLimitReached
+}
+
+// SetMaxTotalRequests sets an optional cap on total requests created over the run lifetime.
+func (rm *RunManager) SetMaxTotalRequests(max int, onLimitReached func(currentCount, max int)) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.maxTotalRequests = max
 	rm.onLimitReached = onLimitReached
 }
 
@@ -140,6 +182,10 @@ func (rm *RunManager) GetRequest(requestID string) (*models.Request, bool) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 	request, ok := rm.requests[requestID]
+	if ok {
+		return request, ok
+	}
+	request, ok = rm.completedRequests[requestID]
 	return request, ok
 }
 
@@ -147,11 +193,53 @@ func (rm *RunManager) GetRequest(requestID string) (*models.Request, bool) {
 func (rm *RunManager) ListRequests() []*models.Request {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
-	out := make([]*models.Request, 0, len(rm.requests))
+	out := make([]*models.Request, 0, len(rm.requests)+len(rm.completedRequests))
 	for _, r := range rm.requests {
 		out = append(out, r)
 	}
+	for _, id := range rm.completedOrder {
+		if r, ok := rm.completedRequests[id]; ok {
+			out = append(out, r)
+		}
+	}
 	return out
+}
+
+// FinalizeRequest moves a terminal request out of active state into bounded completed samples.
+func (rm *RunManager) FinalizeRequest(request *models.Request) {
+	if request == nil {
+		return
+	}
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	delete(rm.requests, request.ID)
+	rm.completedCount++
+	if request.Status == models.RequestStatusFailed || request.Error != "" {
+		rm.failedCount++
+	}
+	if !rm.shouldSampleCompletedRequest(request.ID) {
+		return
+	}
+	rm.completedRequests[request.ID] = request
+	rm.completedOrder = append(rm.completedOrder, request.ID)
+	for len(rm.completedOrder) > rm.maxCompletedKeep {
+		evictID := rm.completedOrder[0]
+		rm.completedOrder = rm.completedOrder[1:]
+		delete(rm.completedRequests, evictID)
+	}
+}
+
+func (rm *RunManager) shouldSampleCompletedRequest(requestID string) bool {
+	if rm.traceSamplingRate >= 1.0 {
+		return true
+	}
+	if rm.traceSamplingRate <= 0 {
+		return false
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(requestID))
+	v := float64(h.Sum32()) / float64(^uint32(0))
+	return v < rm.traceSamplingRate
 }
 
 // RecordLatency records a request latency
@@ -208,17 +296,9 @@ func (rm *RunManager) GetMetadata(key string) (string, bool) {
 
 // calculateMetrics calculates final run metrics
 func (rm *RunManager) calculateMetrics() *models.RunMetrics {
-	totalRequests := int64(len(rm.requests))
-	successfulRequests := int64(0)
-	failedRequests := int64(0)
-
-	for _, req := range rm.requests {
-		if req.Status == models.RequestStatusCompleted && req.Error == "" {
-			successfulRequests++
-		} else if req.Status == models.RequestStatusFailed || req.Error != "" {
-			failedRequests++
-		}
-	}
+	totalRequests := rm.totalRequests
+	failedRequests := rm.failedCount
+	successfulRequests := totalRequests - failedRequests
 
 	var latencyP50, latencyP95, latencyP99, latencyMean float64
 	if len(rm.latencies) > 0 {
@@ -229,7 +309,10 @@ func (rm *RunManager) calculateMetrics() *models.RunMetrics {
 	}
 
 	duration := rm.run.EndTime.Sub(rm.run.StartTime)
-	throughputRPS := float64(totalRequests) / duration.Seconds()
+	throughputRPS := 0.0
+	if duration > 0 {
+		throughputRPS = float64(totalRequests) / duration.Seconds()
+	}
 
 	return &models.RunMetrics{
 		TotalRequests:      totalRequests,
@@ -249,15 +332,14 @@ func (rm *RunManager) GetStats() map[string]interface{} {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
 
-	totalRequests := len(rm.requests)
+	totalRequests := int(rm.totalRequests)
 	totalTraces := len(rm.traces)
-	completedRequests := 0
-	failedRequests := 0
-
+	completedRequests := int(rm.completedCount)
+	failedRequests := int(rm.failedCount)
 	for _, req := range rm.requests {
 		if req.Status == models.RequestStatusCompleted {
 			completedRequests++
-		} else if req.Status == models.RequestStatusFailed {
+		} else if req.Status == models.RequestStatusFailed || req.Error != "" {
 			failedRequests++
 		}
 	}
@@ -270,15 +352,21 @@ func (rm *RunManager) GetStats() map[string]interface{} {
 
 	elapsed := time.Since(rm.run.StartTime)
 
+	throughput := 0.0
+	if elapsed > 0 {
+		throughput = float64(totalRequests) / elapsed.Seconds()
+	}
+
 	return map[string]interface{}{
 		"status":             rm.run.Status,
 		"elapsed":            elapsed.String(),
 		"total_requests":     totalRequests,
+		"active_requests":    len(rm.requests),
 		"completed_requests": completedRequests,
 		"failed_requests":    failedRequests,
 		"total_traces":       totalTraces,
 		"current_p50_ms":     fmt.Sprintf("%.2f", currentLatencyP50),
 		"current_p95_ms":     fmt.Sprintf("%.2f", currentLatencyP95),
-		"throughput_rps":     fmt.Sprintf("%.2f", float64(totalRequests)/elapsed.Seconds()),
+		"throughput_rps":     fmt.Sprintf("%.2f", throughput),
 	}
 }

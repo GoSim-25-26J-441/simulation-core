@@ -14,6 +14,7 @@ func TestSimulationLimitsFromEnvDefaults(t *testing.T) {
 	t.Setenv("SIMD_MAX_EVENTS_PROCESSED", "")
 	t.Setenv("SIMD_MAX_EVENT_QUEUE_SIZE", "")
 	t.Setenv("SIMD_MAX_REQUESTS_TRACKED", "")
+	t.Setenv("SIMD_MAX_TOTAL_REQUESTS", "")
 	t.Setenv("SIMD_MAX_METRIC_POINTS", "")
 	t.Setenv("SIMD_MAX_WALL_CLOCK_RUNTIME", "")
 	t.Setenv("SIMD_MAX_OPTIMIZATION_EVALUATIONS", "")
@@ -34,6 +35,7 @@ func TestSimulationLimitsFromEnvParsesAndRejectsInvalid(t *testing.T) {
 	t.Setenv("SIMD_MAX_EVENTS_PROCESSED", "200")
 	t.Setenv("SIMD_MAX_EVENT_QUEUE_SIZE", "300")
 	t.Setenv("SIMD_MAX_REQUESTS_TRACKED", "400")
+	t.Setenv("SIMD_MAX_TOTAL_REQUESTS", "450")
 	t.Setenv("SIMD_MAX_METRIC_POINTS", "500")
 	t.Setenv("SIMD_MAX_WALL_CLOCK_RUNTIME", "2m")
 	t.Setenv("SIMD_MAX_OPTIMIZATION_EVALUATIONS", "600")
@@ -41,7 +43,7 @@ func TestSimulationLimitsFromEnvParsesAndRejectsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("simulationLimitsFromEnv error: %v", err)
 	}
-	if got.MaxStandardDuration != 45*time.Second || got.MaxOptimizationEvaluations != 600 {
+	if got.MaxStandardDuration != 45*time.Second || got.MaxOptimizationEvaluations != 600 || got.MaxTotalRequests != 450 {
 		t.Fatalf("unexpected parsed limits: %+v", got)
 	}
 

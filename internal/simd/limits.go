@@ -19,6 +19,7 @@ type SimulationLimits struct {
 	MaxEventsProcessed         int64
 	MaxEventQueueSize          int64
 	MaxRequestsTracked         int
+	MaxTotalRequests           int
 	MaxMetricPoints            int
 	MaxWallClockRuntime        time.Duration
 	MaxOptimizationEvaluations int32
@@ -31,6 +32,7 @@ func defaultSimulationLimits() SimulationLimits {
 		MaxEventsProcessed:         2_000_000,
 		MaxEventQueueSize:          200_000,
 		MaxRequestsTracked:         200_000,
+		MaxTotalRequests:           2_000_000,
 		MaxMetricPoints:            1_000_000,
 		MaxWallClockRuntime:        15 * time.Minute,
 		MaxOptimizationEvaluations: 1_000,
@@ -54,6 +56,9 @@ func simulationLimitsFromEnv() (SimulationLimits, error) {
 		return SimulationLimits{}, err
 	}
 	if limits.MaxRequestsTracked, err = parsePositiveIntEnv("SIMD_MAX_REQUESTS_TRACKED", limits.MaxRequestsTracked); err != nil {
+		return SimulationLimits{}, err
+	}
+	if limits.MaxTotalRequests, err = parsePositiveIntEnv("SIMD_MAX_TOTAL_REQUESTS", limits.MaxTotalRequests); err != nil {
 		return SimulationLimits{}, err
 	}
 	if limits.MaxMetricPoints, err = parsePositiveIntEnv("SIMD_MAX_METRIC_POINTS", limits.MaxMetricPoints); err != nil {

@@ -352,3 +352,65 @@ func TestRunManagerMaxRequestsTrackedLimit(t *testing.T) {
 		t.Fatalf("expected only first request retained, got %d", got)
 	}
 }
+
+func TestRunManagerMaxTotalRequestsLimit(t *testing.T) {
+	rm := NewRunManager("run-total-limit")
+	limitReached := false
+	rm.SetMaxTotalRequests(1, func(currentCount, max int) {
+		limitReached = true
+		if currentCount <= max {
+			t.Fatalf("expected currentCount > max, got %d <= %d", currentCount, max)
+		}
+	})
+	req := &models.Request{ID: "req-1", Status: models.RequestStatusCompleted}
+	rm.AddRequest(req)
+	rm.FinalizeRequest(req)
+	rm.AddRequest(&models.Request{ID: "req-2"})
+	if !limitReached {
+		t.Fatalf("expected total-request limit callback")
+	}
+	if got := rm.GetStats()["total_requests"]; got != 1 {
+		t.Fatalf("expected total_requests to remain capped at 1, got %v", got)
+	}
+}
+
+func TestRunManagerFinalizePrunesActiveRequest(t *testing.T) {
+	t.Setenv("SIMD_MAX_COMPLETED_REQUEST_TRACES", "2")
+	rm := NewRunManager("run-prune")
+	req := &models.Request{
+		ID:     "req-1",
+		Status: models.RequestStatusCompleted,
+	}
+	rm.AddRequest(req)
+	rm.FinalizeRequest(req)
+
+	if got := len(rm.requests); got != 0 {
+		t.Fatalf("expected active requests to be pruned, got %d", got)
+	}
+	r, ok := rm.GetRequest("req-1")
+	if !ok || r == nil {
+		t.Fatalf("expected finalized request to remain in completed sample")
+	}
+}
+
+func TestRunManagerCompletedSamplesAreBounded(t *testing.T) {
+	t.Setenv("SIMD_MAX_COMPLETED_REQUEST_TRACES", "2")
+	rm := NewRunManager("run-prune-cap")
+
+	for i := 1; i <= 3; i++ {
+		id := "req-" + string(rune('0'+i))
+		req := &models.Request{ID: id, Status: models.RequestStatusCompleted}
+		rm.AddRequest(req)
+		rm.FinalizeRequest(req)
+	}
+
+	if _, ok := rm.GetRequest("req-1"); ok {
+		t.Fatalf("expected oldest completed request to be evicted")
+	}
+	if _, ok := rm.GetRequest("req-2"); !ok {
+		t.Fatalf("expected req-2 to remain")
+	}
+	if _, ok := rm.GetRequest("req-3"); !ok {
+		t.Fatalf("expected req-3 to remain")
+	}
+}
