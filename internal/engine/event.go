@@ -32,6 +32,8 @@ const (
 
 	// EventTypeSimulationEnd represents the end of the simulation
 	EventTypeSimulationEnd EventType = "simulation_end"
+	// EventTypeWorkloadGenerate triggers standard-mode incremental workload generation.
+	EventTypeWorkloadGenerate EventType = "workload_generate"
 
 	// EventTypeDrainSweep runs periodic replica drain processing independent of request traffic.
 	EventTypeDrainSweep EventType = "drain_sweep"

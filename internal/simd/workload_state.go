@@ -60,8 +60,9 @@ type WorkloadState struct {
 	cancel    context.CancelFunc
 	endTime   time.Time // Immutable after initialization, safe to read without lock
 	// realTimeMode matches WorkloadState.Start(..., realTime); used for uniform chunking and updates.
-	realTimeMode bool
-	mu           sync.RWMutex
+	realTimeMode     bool
+	generatedHorizon time.Time
+	mu               sync.RWMutex
 }
 
 // NewWorkloadState creates a new workload state manager.
@@ -88,17 +89,49 @@ func NewWorkloadState(runID string, eng *engine.Engine, endTime time.Time, seed 
 func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, realTime bool) error {
 	ws.mu.Lock()
 	ws.realTimeMode = realTime
+	if err := ws.initPatternsLocked(scenario, startTime, realTime); err != nil {
+		ws.mu.Unlock()
+		return err
+	}
+	ws.mu.Unlock()
 
-	// Initialize patterns from scenario
+	if realTime {
+		// Seed initial events synchronously to avoid startup races where the
+		// simulation end event is processed before workload arrivals are queued.
+		ws.generateNextEvents()
+		// Start continuous event generation (ticker-based loop)
+		go ws.generateEventsLoop()
+		return nil
+	}
+
+	// Non-real-time: generate a bounded initial window and refill using simulation-time events.
+	initialHorizon := startTime.Add(EventGenerationLookaheadWindow)
+	if initialHorizon.After(ws.endTime) {
+		initialHorizon = ws.endTime
+	}
+	generated := ws.generateUpToHorizon(initialHorizon)
+	ws.mu.Lock()
+	ws.generatedHorizon = initialHorizon
+	ws.mu.Unlock()
+	logger.Debug("standard workload initial chunk generated",
+		"run_id", ws.runID,
+		"generated_horizon", initialHorizon,
+		"arrivals_generated", generated)
+	if initialHorizon.Before(ws.endTime) {
+		ws.engine.RegisterHandler(engine.EventTypeWorkloadGenerate, ws.handleWorkloadGenerate())
+		ws.engine.ScheduleAt(engine.EventTypeWorkloadGenerate, initialHorizon, nil, "", nil)
+	}
+	return nil
+}
+
+func (ws *WorkloadState) initPatternsLocked(scenario *config.Scenario, startTime time.Time, realTime bool) error {
+	ws.patterns = make(map[string]*WorkloadPatternState)
 	for _, workloadPattern := range scenario.Workload {
-		// Parse target: "serviceID:path"
 		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {
-			ws.mu.Unlock()
 			return fmt.Errorf("invalid workload target %s: %w", workloadPattern.To, err)
 		}
-
-		patternKey := patternKey(workloadPattern.From, workloadPattern.To)
+		key := patternKey(workloadPattern.From, workloadPattern.To)
 		arrival := workloadPattern.Arrival
 		var firstEventTime time.Time
 		var uniformTimes []time.Time
@@ -140,22 +173,8 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 				ps.NextEventTime = ws.endTime
 			}
 		}
-		ws.patterns[patternKey] = ps
+		ws.patterns[key] = ps
 	}
-	ws.mu.Unlock()
-
-	if realTime {
-		// Seed initial events synchronously to avoid startup races where the
-		// simulation end event is processed before workload arrivals are queued.
-		ws.generateNextEvents()
-		// Start continuous event generation (ticker-based loop)
-		go ws.generateEventsLoop()
-		return nil
-	}
-
-	// Non-real-time: pre-generate all arrival events up to endTime so the engine
-	// processes them before hitting the simulation end event.
-	ws.generateAllEventsUpToEndTime()
 	return nil
 }
 
@@ -188,6 +207,36 @@ func (ws *WorkloadState) generateAllEventsUpToEndTime() {
 			patternState.NextEventTime = nextTime
 		}
 		patternState.mu.Unlock()
+	}
+}
+
+func (ws *WorkloadState) handleWorkloadGenerate() engine.EventHandler {
+	return func(eng *engine.Engine, _ *engine.Event) error {
+		select {
+		case <-ws.ctx.Done():
+			return nil
+		default:
+		}
+		current := eng.GetSimTime()
+		nextHorizon := current.Add(EventGenerationLookaheadWindow)
+		if nextHorizon.After(ws.endTime) {
+			nextHorizon = ws.endTime
+		}
+		generated := ws.generateUpToHorizon(nextHorizon)
+		ws.mu.Lock()
+		if nextHorizon.After(ws.generatedHorizon) {
+			ws.generatedHorizon = nextHorizon
+		}
+		ws.mu.Unlock()
+		logger.Debug("standard workload chunk generated",
+			"run_id", ws.runID,
+			"current_sim_time", current,
+			"generated_horizon", nextHorizon,
+			"arrivals_generated", generated)
+		if nextHorizon.Before(ws.endTime) {
+			eng.ScheduleAt(engine.EventTypeWorkloadGenerate, nextHorizon, nil, "", nil)
+		}
+		return nil
 	}
 }
 
@@ -476,6 +525,66 @@ func (ws *WorkloadState) generateNextEvents() {
 		}
 		patternState.mu.Unlock()
 	}
+}
+
+// generateUpToHorizon schedules arrivals up to the provided simulation-time horizon (exclusive).
+// Returns the number of arrivals generated.
+func (ws *WorkloadState) generateUpToHorizon(horizon time.Time) int {
+	ws.mu.RLock()
+	currentSimTime := ws.engine.GetSimTime()
+	if horizon.After(ws.endTime) {
+		horizon = ws.endTime
+	}
+	patterns := make([]*WorkloadPatternState, 0, len(ws.patterns))
+	for _, pattern := range ws.patterns {
+		patterns = append(patterns, pattern)
+	}
+	ws.mu.RUnlock()
+	if !currentSimTime.Before(ws.endTime) {
+		return 0
+	}
+
+	generated := 0
+	for _, patternState := range patterns {
+		select {
+		case <-ws.ctx.Done():
+			return generated
+		default:
+		}
+		patternState.mu.Lock()
+		if !patternState.Active {
+			patternState.mu.Unlock()
+			continue
+		}
+		if patternState.Pattern.Arrival.Type == "uniform" && patternState.uniformLazy {
+			ws.ensureUniformHorizon(patternState, horizon)
+		}
+		for patternState.NextEventTime.Before(horizon) && patternState.NextEventTime.Before(ws.endTime) {
+			select {
+			case <-ws.ctx.Done():
+				patternState.mu.Unlock()
+				return generated
+			default:
+			}
+			ws.engine.ScheduleAt(
+				engine.EventTypeRequestArrival,
+				patternState.NextEventTime,
+				nil,
+				patternState.ServiceID,
+				workloadArrivalEventData(patternState),
+			)
+			generated++
+			if ws.engine.GuardrailError() != nil {
+				patternState.mu.Unlock()
+				return generated
+			}
+			nextTime := ws.advanceToNextArrival(patternState, patternState.NextEventTime)
+			patternState.LastEventTime = patternState.NextEventTime
+			patternState.NextEventTime = nextTime
+		}
+		patternState.mu.Unlock()
+	}
+	return generated
 }
 
 func (ws *WorkloadState) sampleUniformArrivalTimes(startTime, endTime time.Time, rateRPS float64) []time.Time {

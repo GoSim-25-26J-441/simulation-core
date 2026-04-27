@@ -446,6 +446,11 @@ func (e *Engine) guardrailErr() error {
 	return e.guardErr
 }
 
+// GuardrailError returns the currently latched runtime guardrail error, if any.
+func (e *Engine) GuardrailError() error {
+	return e.guardrailErr()
+}
+
 // GetStats returns current simulation statistics
 func (e *Engine) GetStats() map[string]interface{} {
 	stats := e.runManager.GetStats()
