@@ -928,6 +928,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Mark as completed if still running
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		// For ordinary (non-optimization) runs, expose the run itself as the single
+		// candidate/result run for API-contract consistency with optimization flows.
+		if rec.Input == nil || rec.Input.Optimization == nil {
+			if err := e.store.SetOptimizationResult(runID, runID, 0, 0, []string{runID}); err != nil {
+				logger.Error("failed to set self optimization result for ordinary run", "run_id", runID, "error", err)
+			}
+		}
 		e.snapshotFinalConfiguration(runID)
 		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 			logger.Error("failed to set completed status", "run_id", runID, "error", err)

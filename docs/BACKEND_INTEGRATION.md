@@ -683,15 +683,17 @@ When `callback_url` is set in the run input, the simulator sends an HTTP POST to
 | `status` | string | Terminal status (e.g. `RUN_STATUS_COMPLETED`, `RUN_STATUS_STOPPED`) |
 | `status_string` | string | Human-readable status |
 | `metrics` | object | Aggregated metrics (when available) |
-| `best_run_id` | string | (Optimization only) Best candidate run ID |
-| `best_score` | float | (Optimization only) Best objective score |
-| `iterations` | int | (Optimization only) Number of iterations |
-| `top_candidates` | string[] | (Optimization only) Up to 5 candidate run IDs, best first |
+| `best_run_id` | string | Best candidate/result run ID (ordinary runs use their own run ID) |
+| `best_score` | float | Best objective score (ordinary runs report `0`) |
+| `iterations` | int | Optimization iteration count (ordinary runs report `0`) |
+| `top_candidates` | string[] | Up to 5 candidate run IDs, best first (ordinary runs may contain only the run ID) |
 | `final_config` | object | (Online optimization only) Final/settled run configuration (services, workload, hosts) after controller updates. Omitted if no optimization steps. |
 
 For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (up to 5 run IDs). Batch runs support `optimization.objective` values: `p95_latency_ms`, `p99_latency_ms`, `mean_latency_ms`, `throughput_rps`, `error_rate`, `cost`, `cpu_utilization`, `memory_utilization`. For `cost`, candidate ranking is based on allocated infrastructure (`replicas * cpu_cores`, `replicas * memory_mb`, and replicas), so selected candidates align with provisioned resource changes. For `cpu_utilization` and `memory_utilization`, setting `optimization.target_util_low` and `optimization.target_util_high` (e.g. 0.4 and 0.7) makes the optimizer favor configs whose max utilization lies in that band; if omitted, the optimizer minimizes utilization (current behavior). `max_iterations` limits the number of improvement steps (each step may evaluate many neighbor configs). To cap total simulation runs, set `optimization.max_evaluations` to a positive value (e.g. 20); when reached, optimization stops. The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
 
 For **online optimization** runs, the completion callback may include `final_config` (the config the run settled on). The same config is available in run export as top-level `final_config`, or as the last entry's `current_config` in `run.optimization_history`.
+
+For **ordinary (non-optimization)** runs, the API surfaces the run itself as the single result candidate: `best_run_id = run_id`, `best_score = 0`, `iterations = 0`, and `top_candidates` may contain only `[run_id]`.
 
 **Getting the top candidate config:** For batch mode, use `best_run_id` and `GET /v1/runs/{best_run_id}/export` (e.g. `input.scenario_yaml`). For online mode, use the callback's `final_config`, or the export's top-level `final_config`, or the last step's `current_config` in `run.optimization_history`.
 

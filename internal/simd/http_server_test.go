@@ -428,6 +428,60 @@ func TestHTTPServerGetRun(t *testing.T) {
 	}
 }
 
+func TestHTTPServerGetRunCompletedOrdinaryIncludesSelfCandidateFields(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+	rec, err := store.Create("ordinary-http-run", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if _, err := executor.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		latest, ok := store.Get(rec.Run.Id)
+		if ok && latest.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+rec.Run.Id, nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	run, ok := resp["run"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected run in response")
+	}
+	if run["best_run_id"] != rec.Run.Id {
+		t.Fatalf("expected best_run_id=%q, got %v", rec.Run.Id, run["best_run_id"])
+	}
+	if run["iterations"].(float64) != 0 {
+		t.Fatalf("expected iterations=0, got %v", run["iterations"])
+	}
+	candidates, ok := run["candidate_run_ids"].([]any)
+	if !ok {
+		t.Fatalf("expected candidate_run_ids array, got %T", run["candidate_run_ids"])
+	}
+	if len(candidates) != 1 || candidates[0] != rec.Run.Id {
+		t.Fatalf("expected candidate_run_ids=[%q], got %v", rec.Run.Id, candidates)
+	}
+}
+
 func TestHTTPServerGetRunNotFound(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))

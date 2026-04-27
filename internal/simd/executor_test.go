@@ -150,6 +150,64 @@ workload:
 	t.Fatalf("expected run to complete within timeout")
 }
 
+func TestRunExecutorOrdinaryRunExposesSelfAsSingleCandidate(t *testing.T) {
+	store := NewRunStore()
+	scenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	const runID = "ordinary-self-candidate"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: scenario,
+		DurationMs:   100,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	exec := NewRunExecutor(store, nil)
+	if _, err := exec.Start(runID); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		rec, ok := store.Get(runID)
+		if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+			if rec.Run.BestRunId != runID {
+				t.Fatalf("expected BestRunId=%q, got %q", runID, rec.Run.BestRunId)
+			}
+			if rec.Run.BestScore != 0 {
+				t.Fatalf("expected BestScore=0, got %f", rec.Run.BestScore)
+			}
+			if rec.Run.Iterations != 0 {
+				t.Fatalf("expected Iterations=0, got %d", rec.Run.Iterations)
+			}
+			if len(rec.Run.CandidateRunIds) != 1 || rec.Run.CandidateRunIds[0] != runID {
+				t.Fatalf("expected CandidateRunIds=[%q], got %v", runID, rec.Run.CandidateRunIds)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected ordinary run to complete within timeout")
+}
+
 func TestRunExecutorSetOptimizationRunner(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store, nil)
