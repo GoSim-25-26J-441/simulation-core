@@ -691,7 +691,7 @@ func TestGRPCServerUpdateRunConfigurationVerticalScaling(t *testing.T) {
 	validScenario := `
 hosts:
   - id: host-1
-    cores: 2
+    cores: 8
 services:
   - id: svc1
     replicas: 1
