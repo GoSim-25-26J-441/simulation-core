@@ -19,9 +19,9 @@ func TestEffectiveTopicBehaviorDefaultsAndOverrides(t *testing.T) {
 		PublishAck:         " leader_ack ",
 		AsyncFireAndForget: true,
 		Subscribers: []TopicSubscriber{{
-			Name:             "sub-a",
-			ConsumerGroup:    "g-a",
-			ConsumerTarget:   "svc:/work",
+			Name:                "sub-a",
+			ConsumerGroup:       "g-a",
+			ConsumerTarget:      "svc:/work",
 			ConsumerConcurrency: 2,
 		}},
 	}
@@ -70,16 +70,16 @@ func TestValidateTopicBehaviorSuccessAndRepresentativeErrors(t *testing.T) {
 	valid := &TopicBehavior{
 		Partitions: 1,
 		Subscribers: []TopicSubscriber{{
-			Name:                 "sub1",
-			ConsumerGroup:        "group-a",
-			ConsumerTarget:       "consumer:/handle",
-			ConsumerConcurrency:  2,
+			Name:                   "sub1",
+			ConsumerGroup:          "group-a",
+			ConsumerTarget:         "consumer:/handle",
+			ConsumerConcurrency:    2,
 			MinConsumerConcurrency: 1,
 			MaxConsumerConcurrency: 4,
-			AckTimeoutMs:         1000,
-			MaxRedeliveries:      2,
-			DropPolicy:           "block",
-			DLQ:                  "dlq-svc:/dead",
+			AckTimeoutMs:           1000,
+			MaxRedeliveries:        2,
+			DropPolicy:             "block",
+			DLQ:                    "dlq-svc:/dead",
 		}},
 	}
 	if err := ValidateTopicBehavior("topic-svc", valid, endpointRef, serviceIDs); err != nil {
@@ -120,8 +120,8 @@ func TestValidateTopicBehaviorConcurrencyAndDLQValidation(t *testing.T) {
 		err := ValidateTopicBehavior("topic-svc", &TopicBehavior{
 			Partitions: 1,
 			Subscribers: []TopicSubscriber{{
-				ConsumerGroup:        "g",
-				ConsumerTarget:       "consumer:/handle",
+				ConsumerGroup:          "g",
+				ConsumerTarget:         "consumer:/handle",
 				MinConsumerConcurrency: 5,
 				MaxConsumerConcurrency: 2,
 			}},
@@ -145,4 +145,3 @@ func TestValidateTopicBehaviorConcurrencyAndDLQValidation(t *testing.T) {
 		}
 	})
 }
-

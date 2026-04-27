@@ -121,15 +121,15 @@ func TestObjectiveAndUnitForProgressMappings(t *testing.T) {
 	}
 
 	cases := map[string][2]string{
-		"p95_latency_ms":    {"p95_latency", "ms"},
-		"p99_latency_ms":    {"p99_latency", "ms"},
-		"mean_latency_ms":   {"mean_latency", "ms"},
-		"cpu_utilization":   {"cpu_utilization", "ratio"},
+		"p95_latency_ms":     {"p95_latency", "ms"},
+		"p99_latency_ms":     {"p99_latency", "ms"},
+		"mean_latency_ms":    {"mean_latency", "ms"},
+		"cpu_utilization":    {"cpu_utilization", "ratio"},
 		"memory_utilization": {"memory_utilization", "ratio"},
-		"error_rate":        {"error_rate", "ratio"},
-		"throughput_rps":    {"throughput_rps", "rps"},
-		"custom_cost":       {"custom_cost", "ms"},
-		"":                  {"p95_latency", "ms"},
+		"error_rate":         {"error_rate", "ratio"},
+		"throughput_rps":     {"throughput_rps", "rps"},
+		"custom_cost":        {"custom_cost", "ms"},
+		"":                   {"p95_latency", "ms"},
 	}
 	for objective, want := range cases {
 		opt := &simulationv1.OptimizationConfig{Objective: objective}
@@ -139,4 +139,3 @@ func TestObjectiveAndUnitForProgressMappings(t *testing.T) {
 		}
 	}
 }
-
