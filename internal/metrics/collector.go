@@ -133,6 +133,11 @@ type Collector struct {
 	onLimit     func(currentCount, max int)
 }
 
+type CollectorSnapshot struct {
+	SeriesCount int `json:"series_count"`
+	TotalPoints int `json:"total_points"`
+}
+
 // NewCollector creates a new metrics collector
 func NewCollector() *Collector {
 	return &Collector{
@@ -364,6 +369,19 @@ func (c *Collector) SetMaxPoints(max int, onLimit func(currentCount, max int)) {
 	defer c.mu.Unlock()
 	c.maxPoints = max
 	c.onLimit = onLimit
+}
+
+func (c *Collector) Snapshot() CollectorSnapshot {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	series := 0
+	for _, labelMap := range c.series {
+		series += len(labelMap)
+	}
+	return CollectorSnapshot{
+		SeriesCount: series,
+		TotalPoints: c.totalPoints,
+	}
 }
 
 // GetLastValue returns the latest observed value for metric+labels.

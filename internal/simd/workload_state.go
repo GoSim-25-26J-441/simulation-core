@@ -270,6 +270,12 @@ func (ws *WorkloadState) Stop() {
 	ws.cancel()
 }
 
+func (ws *WorkloadState) GeneratedHorizon() time.Time {
+	ws.mu.RLock()
+	defer ws.mu.RUnlock()
+	return ws.generatedHorizon
+}
+
 // UpdateRate updates the rate for a specific workload pattern
 func (ws *WorkloadState) UpdateRate(patternKey string, newRateRPS float64) error {
 	if newRateRPS <= 0 {

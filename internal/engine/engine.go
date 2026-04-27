@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,6 +27,7 @@ type Engine struct {
 	guardErr      error
 	realTimeStart time.Time // Real-time start for throttling
 	realTimeMode  bool      // If true, throttle simulation to run in real-time
+	maxQueueSeen  int64
 }
 
 // RuntimeLimits are optional guardrails for simulation execution.
@@ -35,6 +37,19 @@ type RuntimeLimits struct {
 	MaxEventsProcessed int64
 	MaxEventQueueSize  int64
 	MaxWallClockRun    time.Duration
+}
+
+type ProgressSnapshot struct {
+	RunID            string    `json:"run_id"`
+	SimTime          time.Time `json:"sim_time"`
+	RequestedEndTime time.Time `json:"requested_end_time"`
+	EventsScheduled  int64     `json:"events_scheduled"`
+	EventsProcessed  int64     `json:"events_processed"`
+	QueueLength      int       `json:"queue_length"`
+	MaxQueueSeen     int64     `json:"max_queue_seen"`
+	ActiveRequests   int       `json:"active_requests"`
+	TotalRequests    int64     `json:"total_requests"`
+	LastError        string    `json:"last_error,omitempty"`
 }
 
 // LimitExceededError describes a guardrail failure.
@@ -184,6 +199,8 @@ func (e *Engine) Run(duration time.Duration) error {
 		"end_time", endTime,
 		"duration", duration)
 
+	lastProgressLog := time.Now()
+	lastProgressEvents := int64(0)
 	// Event loop - continue until simulation end event is processed
 	for {
 		if e.limits.MaxWallClockRun > 0 {
@@ -212,6 +229,13 @@ func (e *Engine) Run(duration time.Duration) error {
 
 		// Get next event
 		event := e.eventQueue.Next()
+		qLen := e.eventQueue.Size()
+		for {
+			seen := atomic.LoadInt64(&e.maxQueueSeen)
+			if int64(qLen) <= seen || atomic.CompareAndSwapInt64(&e.maxQueueSeen, seen, int64(qLen)) {
+				break
+			}
+		}
 
 		// If queue is empty, check if we should end the simulation
 		if event == nil {
@@ -393,6 +417,32 @@ func (e *Engine) Run(duration time.Duration) error {
 				"error", err)
 			// Continue processing other events
 		}
+		now := time.Now()
+		if now.Sub(lastProgressLog) >= 10*time.Second || (processed-lastProgressEvents) >= 100000 {
+			lastProgressLog = now
+			lastProgressEvents = processed
+			snap := e.ProgressSnapshot(endTime)
+			percent := 0.0
+			totalDur := endTime.Sub(startTime)
+			if totalDur > 0 {
+				percent = 100 * float64(snap.SimTime.Sub(startTime)) / float64(totalDur)
+			}
+			var mem runtime.MemStats
+			runtime.ReadMemStats(&mem)
+			e.logger.Info("Simulation progress",
+				"run_id", snap.RunID,
+				"sim_time", snap.SimTime,
+				"duration", totalDur.String(),
+				"percent_complete", percent,
+				"events_scheduled", snap.EventsScheduled,
+				"events_processed", snap.EventsProcessed,
+				"queue_length", snap.QueueLength,
+				"active_requests", snap.ActiveRequests,
+				"memory_alloc_bytes", mem.Alloc,
+				"goroutines", runtime.NumGoroutine(),
+				"elapsed_wall_clock", now.Sub(wallStart).String(),
+			)
+		}
 	}
 
 	e.logger.Info("Simulation completed",
@@ -401,6 +451,26 @@ func (e *Engine) Run(duration time.Duration) error {
 		"events_processed", atomic.LoadInt64(&e.eventCounter))
 
 	return nil
+}
+
+func (e *Engine) ProgressSnapshot(requestedEnd time.Time) ProgressSnapshot {
+	rmSnap := e.runManager.Snapshot()
+	lastErr := ""
+	if err := e.GuardrailError(); err != nil {
+		lastErr = err.Error()
+	}
+	return ProgressSnapshot{
+		RunID:            e.runManager.GetRun().ID,
+		SimTime:          e.simTime.Now(),
+		RequestedEndTime: requestedEnd,
+		EventsScheduled:  atomic.LoadInt64(&e.eventCounter),
+		EventsProcessed:  atomic.LoadInt64(&e.processed),
+		QueueLength:      e.eventQueue.Size(),
+		MaxQueueSeen:     atomic.LoadInt64(&e.maxQueueSeen),
+		ActiveRequests:   rmSnap.ActiveRequests,
+		TotalRequests:    rmSnap.TotalRequests,
+		LastError:        lastErr,
+	}
 }
 
 // GetSimTime returns the current simulation time

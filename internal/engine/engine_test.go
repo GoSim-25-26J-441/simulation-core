@@ -219,6 +219,26 @@ func TestEngineStop(t *testing.T) {
 	}
 }
 
+func TestEngineProgressSnapshotUpdates(t *testing.T) {
+	engine := NewEngine("progress-run")
+	now := engine.GetSimTime()
+	engine.ScheduleAt(EventTypeRequestArrival, now.Add(1*time.Millisecond), nil, "", nil)
+	engine.RegisterHandler(EventTypeRequestArrival, func(_ *Engine, _ *Event) error { return nil })
+	if err := engine.Run(5 * time.Millisecond); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	snap := engine.ProgressSnapshot(now.Add(5 * time.Millisecond))
+	if snap.EventsScheduled == 0 {
+		t.Fatalf("expected scheduled events > 0")
+	}
+	if snap.EventsProcessed == 0 {
+		t.Fatalf("expected processed events > 0")
+	}
+	if snap.MaxQueueSeen < 0 {
+		t.Fatalf("expected non-negative max queue")
+	}
+}
+
 func TestEngineGetStats(t *testing.T) {
 	engine := NewEngine("test-run")
 	engine.runManager.Start()

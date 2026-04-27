@@ -168,6 +168,26 @@ func TestRunStoreTrimOptimizationCandidatesDropsNonTopChildren(t *testing.T) {
 	}
 }
 
+func TestRunStoreCountsByStatus(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	_, _ = store.Create("a", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("b", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("c", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("opt-d", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.SetStatus("a", simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	_, _ = store.SetStatus("b", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	_, _ = store.SetStatus("c", simulationv1.RunStatus_RUN_STATUS_FAILED, "")
+	_, _ = store.SetStatus("opt-d", simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	counts := store.Counts()
+	if counts.Active != 1 || counts.CompletedRetained != 1 || counts.FailedRetained != 1 || counts.CancelledRetained != 1 {
+		t.Fatalf("unexpected counts: %+v", counts)
+	}
+	if counts.OptimizationCandidates != 1 {
+		t.Fatalf("expected 1 optimization candidate, got %+v", counts)
+	}
+}
+
 func TestRunStoreCreateDuplicate(t *testing.T) {
 	store := NewRunStore()
 	_, err := store.Create("run-1", &simulationv1.RunInput{ScenarioYaml: "x"})

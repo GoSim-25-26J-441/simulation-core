@@ -116,6 +116,14 @@ type RunStore struct {
 	doneCh       chan struct{}
 }
 
+type RunStoreCounts struct {
+	Active                 int `json:"active"`
+	CompletedRetained      int `json:"completed_retained"`
+	FailedRetained         int `json:"failed_retained"`
+	CancelledRetained      int `json:"cancelled_retained"`
+	OptimizationCandidates int `json:"optimization_candidates_retained"`
+}
+
 func NewRunStore() *RunStore {
 	s := &RunStore{
 		runs:         make(map[string]*RunRecord),
@@ -145,6 +153,37 @@ func (s *RunStore) cleanupLoop() {
 func (s *RunStore) Stop() {
 	close(s.stopCh)
 	<-s.doneCh
+}
+
+func (s *RunStore) LifecycleConfig() RunStoreLifecycleConfig {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lifecycle
+}
+
+func (s *RunStore) Counts() RunStoreCounts {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out RunStoreCounts
+	for _, rec := range s.runs {
+		if rec == nil || rec.Run == nil {
+			continue
+		}
+		switch rec.Run.Status {
+		case simulationv1.RunStatus_RUN_STATUS_RUNNING, simulationv1.RunStatus_RUN_STATUS_PENDING:
+			out.Active++
+		case simulationv1.RunStatus_RUN_STATUS_COMPLETED:
+			out.CompletedRetained++
+		case simulationv1.RunStatus_RUN_STATUS_FAILED:
+			out.FailedRetained++
+		case simulationv1.RunStatus_RUN_STATUS_CANCELLED, simulationv1.RunStatus_RUN_STATUS_STOPPED:
+			out.CancelledRetained++
+		}
+		if rec.IsOptimizationChild {
+			out.OptimizationCandidates++
+		}
+	}
+	return out
 }
 
 // SetOnlineLimits replaces server-side online run defaults and caps (e.g. from environment).

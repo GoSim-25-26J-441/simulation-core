@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ type HTTPServer struct {
 	mux      *http.ServeMux
 	store    *RunStore
 	Executor *RunExecutor
+	started  time.Time
 }
 
 func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
@@ -27,14 +29,75 @@ func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
 		mux:      http.NewServeMux(),
 		store:    store,
 		Executor: executor,
+		started:  time.Now(),
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/v1/runs", s.handleRuns)
 	s.mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	s.mux.HandleFunc("/v1/scenarios:validate", s.handleValidateScenario)
+	s.mux.HandleFunc("/diagnostics/runtime", s.handleDiagnosticsRuntime)
 
 	return s
+}
+
+func (s *HTTPServer) handleDiagnosticsRuntime(w http.ResponseWriter, r *http.Request) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	runCounts := s.store.Counts()
+	lifecycle := s.store.LifecycleConfig()
+	activeProgress := []*RunProgress{}
+	limits := SimulationLimits{}
+	opt := OptimizationSafetyLimits{}
+	if s.Executor != nil {
+		activeProgress = s.Executor.ActiveProgress()
+		limits = s.Executor.LimitsSnapshot()
+		opt = s.Executor.OptimizationSafetySnapshot()
+	}
+	resp := map[string]any{
+		"uptime_seconds": time.Since(s.started).Seconds(),
+		"go_version":     runtime.Version(),
+		"goroutines":     runtime.NumGoroutine(),
+		"memstats": map[string]any{
+			"alloc":       mem.Alloc,
+			"heap_alloc":  mem.HeapAlloc,
+			"heap_sys":    mem.HeapSys,
+			"num_gc":      mem.NumGC,
+			"next_gc":     mem.NextGC,
+			"pause_total": mem.PauseTotalNs,
+		},
+		"active_runs": activeProgress,
+		"runstore_counts": map[string]any{
+			"active":                        runCounts.Active,
+			"completed_retained":            runCounts.CompletedRetained,
+			"failed_retained":               runCounts.FailedRetained,
+			"cancelled_retained":            runCounts.CancelledRetained,
+			"optimization_candidates_retained": runCounts.OptimizationCandidates,
+		},
+		"limits":               limits,
+		"runstore_lifecycle":   lifecycle,
+		"optimization_safety":  opt,
+		"note":                 "Protect diagnostics endpoint via network controls in production.",
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *HTTPServer) handleRunProgress(w http.ResponseWriter, runID string) {
+	if _, ok := s.store.Get(runID); !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if s.Executor == nil {
+		s.writeError(w, http.StatusPreconditionFailed, "executor not available")
+		return
+	}
+	for _, p := range s.Executor.ActiveProgress() {
+		if p.RunID == runID {
+			s.writeJSON(w, http.StatusOK, map[string]any{"progress": p})
+			return
+		}
+	}
+	s.writeError(w, http.StatusPreconditionFailed, "progress not available")
 }
 
 // handleValidateScenario handles POST /v1/scenarios:validate.
@@ -153,6 +216,16 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		runID := strings.TrimSuffix(path, "/metrics")
 		if r.Method == http.MethodGet {
 			s.handleGetRunMetrics(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	// Check for /progress suffix
+	if strings.HasSuffix(path, "/progress") {
+		runID := strings.TrimSuffix(path, "/progress")
+		if r.Method == http.MethodGet {
+			s.handleRunProgress(w, runID)
 		} else {
 			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}

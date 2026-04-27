@@ -35,6 +35,14 @@ type RunManager struct {
 	cancel            context.CancelFunc
 }
 
+type RunManagerSnapshot struct {
+	ActiveRequests           int   `json:"active_requests"`
+	TotalRequests            int64 `json:"total_requests"`
+	CompletedRequests        int64 `json:"completed_requests"`
+	FailedRequests           int64 `json:"failed_requests"`
+	RetainedCompletedSamples int   `json:"retained_completed_samples"`
+}
+
 // NewRunManager creates a new run manager
 func NewRunManager(runID string) *RunManager {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -368,5 +376,17 @@ func (rm *RunManager) GetStats() map[string]interface{} {
 		"current_p50_ms":     fmt.Sprintf("%.2f", currentLatencyP50),
 		"current_p95_ms":     fmt.Sprintf("%.2f", currentLatencyP95),
 		"throughput_rps":     fmt.Sprintf("%.2f", throughput),
+	}
+}
+
+func (rm *RunManager) Snapshot() RunManagerSnapshot {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	return RunManagerSnapshot{
+		ActiveRequests:           len(rm.requests),
+		TotalRequests:            rm.totalRequests,
+		CompletedRequests:        rm.completedCount,
+		FailedRequests:           rm.failedCount,
+		RetainedCompletedSamples: len(rm.completedRequests),
 	}
 }

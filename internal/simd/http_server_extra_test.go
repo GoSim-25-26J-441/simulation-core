@@ -27,6 +27,46 @@ func TestHTTPServerHandleRunsMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHTTPServerDiagnosticsRuntimeShape(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/diagnostics/runtime", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, k := range []string{"uptime_seconds", "go_version", "goroutines", "memstats", "active_runs", "runstore_counts", "limits", "runstore_lifecycle", "optimization_safety"} {
+		if _, ok := body[k]; !ok {
+			t.Fatalf("expected key %s", k)
+		}
+	}
+}
+
+func TestHTTPServerRunProgressEndpoint(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+	_, err := store.Create("run-progress", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 1000})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	exec.updateProgress("run-progress", &RunProgress{RunID: "run-progress", Status: "RUNNING"})
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/run-progress/progress", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
 func TestHTTPServerHandleRunByIDMethodNotAllowed(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
