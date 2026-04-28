@@ -664,7 +664,8 @@ workload:
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
 		Input: &simulationv1.RunInput{
 			ScenarioYaml: validScenario,
-			DurationMs:   1000,
+			DurationMs:   300,
+			RealTimeMode: true,
 		},
 	})
 	if err != nil {
@@ -722,14 +723,26 @@ workload:
 		t.Fatalf("StartRun error: %v", err)
 	}
 
-	// Wait briefly for initialization but ensure run is still RUNNING
-	time.Sleep(10 * time.Millisecond)
-	rec, ok := store.Get(createResp.Run.Id)
-	if !ok {
-		t.Fatal("run not found after start")
-	}
-	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
-		t.Skipf("run is not RUNNING (status=%v), skipping vertical scaling test", rec.Run.Status)
+	// Wait until executor live config is available (or bail if run already terminal).
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, cfgOK := executor.GetRunConfiguration(createResp.Run.Id); cfgOK {
+			break
+		}
+		rec, ok := store.Get(createResp.Run.Id)
+		if !ok {
+			t.Fatal("run not found after start")
+		}
+		if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
+			rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
+			rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
+			rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
+			t.Skipf("run reached terminal state before live config became available (status=%v)", rec.Run.Status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for live run configuration")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	_, err = srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
