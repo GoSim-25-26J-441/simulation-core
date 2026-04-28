@@ -545,45 +545,6 @@ func copyLabels(labels map[string]string) map[string]string {
 	return copy
 }
 
-// calculateAggregation calculates aggregated statistics from metric points
-func calculateAggregation(points []*models.MetricPoint) *models.Aggregation {
-	if len(points) == 0 {
-		return nil
-	}
-
-	values := make([]float64, len(points))
-	for i, p := range points {
-		values[i] = p.Value
-	}
-
-	sort.Float64s(values)
-
-	count := int64(len(values))
-	sum := 0.0
-	min := values[0]
-	max := values[len(values)-1]
-
-	for _, v := range values {
-		sum += v
-	}
-
-	mean := sum / float64(count)
-	p50 := calculatePercentile(values, 0.50)
-	p95 := calculatePercentile(values, 0.95)
-	p99 := calculatePercentile(values, 0.99)
-
-	return &models.Aggregation{
-		Count: count,
-		Sum:   sum,
-		Min:   min,
-		Max:   max,
-		Mean:  mean,
-		P50:   p50,
-		P95:   p95,
-		P99:   p99,
-	}
-}
-
 // calculatePercentile calculates the percentile value from a sorted slice
 func calculatePercentile(sortedValues []float64, p float64) float64 {
 	if len(sortedValues) == 0 {

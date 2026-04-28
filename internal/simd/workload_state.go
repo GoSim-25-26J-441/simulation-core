@@ -134,7 +134,8 @@ func (ws *WorkloadState) Start(scenario *config.Scenario, startTime time.Time, r
 
 func (ws *WorkloadState) initPatternsLocked(scenario *config.Scenario, startTime time.Time, realTime bool) error {
 	ws.patterns = make(map[string]*WorkloadPatternState)
-	for _, workloadPattern := range scenario.Workload {
+	for i := range scenario.Workload {
+		workloadPattern := &scenario.Workload[i]
 		serviceID, endpointPath, err := interaction.ParseDownstreamTarget(workloadPattern.To)
 		if err != nil {
 			return fmt.Errorf("invalid workload target %s: %w", workloadPattern.To, err)
@@ -154,7 +155,7 @@ func (ws *WorkloadState) initPatternsLocked(scenario *config.Scenario, startTime
 			firstEventTime = ws.calculateNextArrivalTime(arrival, startTime, startTime)
 		}
 		ps := &WorkloadPatternState{
-			Pattern:                workloadPattern,
+			Pattern:                *workloadPattern,
 			ServiceID:              serviceID,
 			EndpointPath:           endpointPath,
 			Epoch:                  startTime,

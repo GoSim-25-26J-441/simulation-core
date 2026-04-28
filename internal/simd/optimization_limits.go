@@ -142,7 +142,7 @@ func getenvDuration(key string) time.Duration {
 	}
 	return d
 }
-func getenvBool(key string) (bool, bool) {
+func getenvBool(key string) (value bool, ok bool) {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return false, false

@@ -20,15 +20,15 @@ import (
 
 // Orchestrator manages multi-run optimization experiments
 type Orchestrator struct {
-	store           *simd.RunStore
-	executor        *simd.RunExecutor
-	optimizer       *Optimizer
-	objective       ObjectiveFunction
-	mu              sync.RWMutex
-	activeRuns      map[string]*RunContext
-	maxParallelRuns int // Maximum number of parallel runs
-	safety          OptimizationSafetyConfig
-	candidateSem    chan struct{}
+	store            *simd.RunStore
+	executor         *simd.RunExecutor
+	optimizer        *Optimizer
+	objective        ObjectiveFunction
+	mu               sync.RWMutex
+	activeRuns       map[string]*RunContext
+	maxParallelRuns  int // Maximum number of parallel runs
+	safety           OptimizationSafetyConfig
+	candidateSem     chan struct{}
 	failedCandidates int32
 
 	// batchCandidateStore is set only during RunBatchExperiment for hash→runID resolution.
@@ -55,10 +55,10 @@ type RunContext struct {
 type CandidateOutcome string
 
 const (
-	CandidateSucceeded    CandidateOutcome = "succeeded"
-	CandidateFailed       CandidateOutcome = "failed"
-	CandidateTimedOut     CandidateOutcome = "timed_out"
-	CandidateCancelled    CandidateOutcome = "cancelled"
+	CandidateSucceeded     CandidateOutcome = "succeeded"
+	CandidateFailed        CandidateOutcome = "failed"
+	CandidateTimedOut      CandidateOutcome = "timed_out"
+	CandidateCancelled     CandidateOutcome = "cancelled"
 	CandidateLimitExceeded CandidateOutcome = "limit_exceeded"
 	CandidateInvalidConfig CandidateOutcome = "invalid_config"
 )
@@ -195,7 +195,7 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 // evaluateConfigurationMetrics runs one candidate simulation and returns metrics. When cand is non-nil,
 // registers ConfigHash(scenario)→runID for lookup. seed is passed to RunInput when > 0 (deterministic re-runs).
 func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenario *config.Scenario, durationMs int64, cand *CandidateStore, seed int64) (*simulationv1.RunMetrics, error) {
-	if atomic.LoadInt32(&o.failedCandidates) >= int32(o.safety.MaxFailedCandidates) {
+	if int(atomic.LoadInt32(&o.failedCandidates)) >= o.safety.MaxFailedCandidates {
 		return nil, fmt.Errorf("max failed candidates reached")
 	}
 	select {
@@ -302,15 +302,16 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 			}
 			o.mu.Lock()
 			runCtx.Status = RunStatusFailed
-			if errors.Is(completionCtx.Err(), context.DeadlineExceeded) {
+			switch {
+			case errors.Is(completionCtx.Err(), context.DeadlineExceeded):
 				runCtx.Error = completionCtx.Err()
 				runCtx.Outcome = CandidateTimedOut
 				runCtx.Reason = "candidate timeout"
-			} else if completionCtx.Err() != nil {
+			case completionCtx.Err() != nil:
 				runCtx.Error = completionCtx.Err()
 				runCtx.Outcome = CandidateCancelled
 				runCtx.Reason = completionCtx.Err().Error()
-			} else {
+			default:
 				runCtx.Error = fmt.Errorf("run timed out or was cancelled")
 				runCtx.Outcome = CandidateFailed
 				runCtx.Reason = runCtx.Error.Error()

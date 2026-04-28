@@ -46,4 +46,3 @@ func TestValidateOptimizationPreStartRejectsUnknownObjective(t *testing.T) {
 		t.Fatalf("expected unsupported objective rejection, got %v", err)
 	}
 }
-

@@ -95,7 +95,7 @@ func parseRunStoreIntEnv(key string) (int, bool) {
 	return n, true
 }
 
-func parseRunStoreBoolEnv(key string) (bool, bool) {
+func parseRunStoreBoolEnv(key string) (value bool, ok bool) {
 	v := strings.TrimSpace(os.Getenv(key))
 	if v == "" {
 		return false, false

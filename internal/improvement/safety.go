@@ -9,15 +9,15 @@ import (
 
 // OptimizationSafetyConfig bounds optimizer runtime behavior.
 type OptimizationSafetyConfig struct {
-	MaxEvaluations             int32
-	MaxIterations              int32
-	MaxConcurrentCandidates    int
-	MaxWallClockRuntime        time.Duration
-	CandidateMaxWallClock      time.Duration
-	MaxFailedCandidates        int
-	MaxRetainedCandidates      int
-	DefaultEvaluationDuration  int64
-	AllowBatch                 bool
+	MaxEvaluations            int32
+	MaxIterations             int32
+	MaxConcurrentCandidates   int
+	MaxWallClockRuntime       time.Duration
+	CandidateMaxWallClock     time.Duration
+	MaxFailedCandidates       int
+	MaxRetainedCandidates     int
+	DefaultEvaluationDuration int64
+	AllowBatch                bool
 }
 
 func DefaultOptimizationSafetyConfig() OptimizationSafetyConfig {
@@ -114,7 +114,7 @@ func parseDurationEnv(key string) time.Duration {
 	return d
 }
 
-func parseBoolEnv(key string) (bool, bool) {
+func parseBoolEnv(key string) (value bool, ok bool) {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
 		return false, false

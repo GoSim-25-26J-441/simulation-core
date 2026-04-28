@@ -166,7 +166,8 @@ func estimateWorkloadArrivals(scenario *config.Scenario, duration time.Duration)
 	}
 	seconds := duration.Seconds()
 	var total float64
-	for _, wl := range scenario.Workload {
+	for i := range scenario.Workload {
+		wl := &scenario.Workload[i]
 		rate := wl.Arrival.RateRPS
 		if rate <= 0 {
 			continue

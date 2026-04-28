@@ -43,7 +43,7 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 
 	start := time.Now()
 	eval := func(sc *config.Scenario) (*simulationv1.RunMetrics, int, error) {
-		if atomic.LoadInt32(&o.failedCandidates) >= int32(o.safety.MaxFailedCandidates) {
+		if int(atomic.LoadInt32(&o.failedCandidates)) >= o.safety.MaxFailedCandidates {
 			return nil, 0, fmt.Errorf("max failed candidates reached")
 		}
 		n := int(spec.ReevalPerCandidate)

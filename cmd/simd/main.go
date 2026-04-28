@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"flag"
+	"fmt"
 	"math"
 	"net"
 	"net/http"
@@ -159,7 +159,7 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 	if maxIter <= 0 {
 		maxIter = 10
 	}
-	if safety.MaxIterations > 0 && int32(maxIter) > safety.MaxIterations {
+	if safety.MaxIterations > 0 && maxIter > int(safety.MaxIterations) {
 		return "", 0, 0, nil, fmt.Errorf("optimization max_iterations %d exceeds server limit %d", maxIter, safety.MaxIterations)
 	}
 	stepSize := params.StepSize

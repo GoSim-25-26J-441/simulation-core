@@ -74,16 +74,16 @@ func (s *HTTPServer) handleDiagnosticsRuntime(w http.ResponseWriter, r *http.Req
 		},
 		"active_runs": activeProgress,
 		"runstore_counts": map[string]any{
-			"active":                        runCounts.Active,
-			"completed_retained":            runCounts.CompletedRetained,
-			"failed_retained":               runCounts.FailedRetained,
-			"cancelled_retained":            runCounts.CancelledRetained,
+			"active":                           runCounts.Active,
+			"completed_retained":               runCounts.CompletedRetained,
+			"failed_retained":                  runCounts.FailedRetained,
+			"cancelled_retained":               runCounts.CancelledRetained,
 			"optimization_candidates_retained": runCounts.OptimizationCandidates,
 		},
-		"limits":               limits,
-		"runstore_lifecycle":   lifecycle,
-		"optimization_safety":  opt,
-		"note":                 "Protect diagnostics endpoint via network controls in production.",
+		"limits":              limits,
+		"runstore_lifecycle":  lifecycle,
+		"optimization_safety": opt,
+		"note":                "Protect diagnostics endpoint via network controls in production.",
 	}
 	s.writeJSON(w, http.StatusOK, resp)
 }
@@ -1320,7 +1320,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 	if err := s.sendSSEEvent(w, "status_change", map[string]any{
 		"status": rec.Run.Status.String(),
 	}); err != nil {
-		s.logSSEWriteFailure(runID, "status_change", err, r.Context())
+		s.logSSEWriteFailure(r.Context(), runID, "status_change", err)
 		return
 	}
 
@@ -1362,9 +1362,11 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Get current run state
 			rec, ok := s.store.Get(runID)
 			if !ok {
-				_ = s.sendSSEEvent(w, "error", map[string]any{
+				if err := s.sendSSEEvent(w, "error", map[string]any{
 					"error": "run not found",
-				})
+				}); err != nil {
+					s.logSSEWriteFailure(ctx, runID, "error", err)
+				}
 				return
 			}
 
@@ -1385,7 +1387,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 				if err := s.sendSSEEvent(w, "status_change", map[string]any{
 					"status": rec.Run.Status.String(),
 				}); err != nil {
-					s.logSSEWriteFailure(runID, "status_change", err, ctx)
+					s.logSSEWriteFailure(ctx, runID, "status_change", err)
 					return
 				}
 				previousStatus = rec.Run.Status
@@ -1400,13 +1402,13 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 						rec = r2
 					}
 					if err := s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector); err != nil {
-						s.logSSEWriteFailure(runID, "metrics_snapshot", err, ctx)
+						s.logSSEWriteFailure(ctx, runID, "metrics_snapshot", err)
 						return
 					}
 					if err := s.sendSSEEvent(w, "complete", map[string]any{
 						"status": rec.Run.Status.String(),
 					}); err != nil {
-						s.logSSEWriteFailure(runID, "complete", err, ctx)
+						s.logSSEWriteFailure(ctx, runID, "complete", err)
 						return
 					}
 					if rc != nil {
@@ -1435,7 +1437,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 						"objective":   objective,
 						"unit":        unit,
 					}); err != nil {
-						s.logSSEWriteFailure(runID, "optimization_progress", err, ctx)
+						s.logSSEWriteFailure(ctx, runID, "optimization_progress", err)
 						return
 					}
 				}
@@ -1446,7 +1448,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 						step := rec.OptimizationHistory[i]
 						if step != nil {
 							if err := s.sendSSEEvent(w, "optimization_step", convertOptimizationStepToJSON(step)); err != nil {
-								s.logSSEWriteFailure(runID, "optimization_step", err, ctx)
+								s.logSSEWriteFailure(ctx, runID, "optimization_step", err)
 								return
 							}
 						}
@@ -1459,7 +1461,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// collector snapshots only for real-time runs (non-real-time runs can take wall-clock time to
 			// finish simulation work without throttling — partial metrics would be misleading as "live").
 			if err := s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector); err != nil {
-				s.logSSEWriteFailure(runID, "metrics_snapshot", err, ctx)
+				s.logSSEWriteFailure(ctx, runID, "metrics_snapshot", err)
 				return
 			}
 
@@ -1489,7 +1491,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 									"value":     value,
 									"labels":    latest.Labels,
 								}); err != nil {
-									s.logSSEWriteFailure(runID, "metric_update", err, ctx)
+									s.logSSEWriteFailure(ctx, runID, "metric_update", err)
 									return
 								}
 								lastSentTimestamps[metricName][labelKey] = latest.Timestamp
@@ -1512,7 +1514,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 										"value":     value,
 										"labels":    latest.Labels,
 									}); err != nil {
-										s.logSSEWriteFailure(runID, "metric_update", err, ctx)
+										s.logSSEWriteFailure(ctx, runID, "metric_update", err)
 										return
 									}
 									lastSentTimestamps[metricName][labelKey] = latest.Timestamp
@@ -1556,7 +1558,7 @@ func isClientDisconnect(err error) bool {
 	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset by peer")
 }
 
-func (s *HTTPServer) logSSEWriteFailure(runID, eventType string, err error, ctx context.Context) {
+func (s *HTTPServer) logSSEWriteFailure(ctx context.Context, runID, eventType string, err error) {
 	if err == nil {
 		return
 	}
