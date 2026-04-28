@@ -219,6 +219,30 @@ func TestEngineStop(t *testing.T) {
 	}
 }
 
+func TestEngineTriggerLimitExceededLatchesFirstError(t *testing.T) {
+	engine := NewEngine("limit-run")
+	engine.GetRunManager().Start()
+
+	first := &LimitExceededError{Limit: "max_events_scheduled", Value: 11, Max: 10}
+	second := &LimitExceededError{Limit: "max_event_queue_size", Value: 21, Max: 20}
+	engine.TriggerLimitExceeded(first)
+	engine.TriggerLimitExceeded(second)
+
+	got := engine.GuardrailError()
+	if got == nil {
+		t.Fatalf("expected guardrail error to be set")
+	}
+	if got.Error() != first.Error() {
+		t.Fatalf("expected first guardrail error to latch, got %v", got)
+	}
+	select {
+	case <-engine.GetRunManager().Context().Done():
+		// expected
+	default:
+		t.Fatalf("expected run context to be cancelled after guard failure")
+	}
+}
+
 func TestEngineProgressSnapshotUpdates(t *testing.T) {
 	engine := NewEngine("progress-run")
 	now := engine.GetSimTime()

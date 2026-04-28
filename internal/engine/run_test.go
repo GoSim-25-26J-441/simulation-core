@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"hash/fnv"
 	"sync"
 	"testing"
 	"time"
@@ -523,5 +524,35 @@ func TestRunManagerCompletedSamplesAreBounded(t *testing.T) {
 	}
 	if _, ok := rm.GetRequest("req-3"); !ok {
 		t.Fatalf("expected req-3 to remain")
+	}
+}
+
+func TestRunManagerShouldSampleCompletedRequestBoundaries(t *testing.T) {
+	rm := NewRunManager("run-sample-bounds")
+	if !rm.shouldSampleCompletedRequest("req-a") {
+		t.Fatalf("rate 1.0 should sample all requests")
+	}
+
+	rm.traceSamplingRate = 0
+	if rm.shouldSampleCompletedRequest("req-a") {
+		t.Fatalf("rate 0 should sample no requests")
+	}
+}
+
+func TestRunManagerShouldSampleCompletedRequestDeterministicHash(t *testing.T) {
+	rm := NewRunManager("run-sample-hash")
+	rm.traceSamplingRate = 0.5
+	requestID := "req-deterministic"
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(requestID))
+	v := float64(h.Sum32()) / float64(^uint32(0))
+	want := v < rm.traceSamplingRate
+
+	for i := 0; i < 5; i++ {
+		got := rm.shouldSampleCompletedRequest(requestID)
+		if got != want {
+			t.Fatalf("deterministic sampling mismatch: got %v want %v", got, want)
+		}
 	}
 }
