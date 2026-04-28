@@ -237,6 +237,25 @@ optimization:
   max_iterations: 20
 ```
 
+### Runtime Guardrails (SIMD_ env vars)
+
+The server enforces safety limits for simulation runs to prevent unbounded memory/CPU growth.
+
+- `SIMD_MAX_STANDARD_DURATION` (default: `30m`): max duration for non-optimization (standard) runs.
+- `SIMD_MAX_EVENTS_SCHEDULED` (default: `2000000`): max events that can be scheduled.
+- `SIMD_MAX_EVENTS_PROCESSED` (default: `2000000`): max events processed by the engine loop.
+- `SIMD_MAX_EVENT_QUEUE_SIZE` (default: `200000`): max in-memory pending events in queue.
+- `SIMD_MAX_REQUESTS_TRACKED` (default: `200000`): max tracked requests in run manager.
+- `SIMD_MAX_METRIC_POINTS` (default: `1000000`): max retained metric points in collector.
+- `SIMD_MAX_WALL_CLOCK_RUNTIME` (default: `15m`): max wall-clock runtime for a simulation run.
+- `SIMD_MAX_OPTIMIZATION_EVALUATIONS` (default: `1000`): max allowed `optimization.max_evaluations` per run.
+
+Notes:
+
+- Duration values use Go duration strings (for example `30s`, `5m`, `1h`).
+- Invalid values (non-parsable, zero, or negative) are rejected with a clear run failure.
+- Guardrail violations fail runs cleanly through the normal run status/error path (no process exit).
+
 ### Scenario Configuration
 
 Simulation runs are defined using scenario YAML files. Example `scenario.yaml`:

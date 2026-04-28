@@ -3,10 +3,14 @@ package simd
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1160,6 +1164,103 @@ func TestHTTPServerMetricsStream(t *testing.T) {
 	if !strings.Contains(body, "event:") {
 		t.Fatalf("expected SSE event format, got: %s", body)
 	}
+}
+
+func TestSendSSEEventFormatUnchanged(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	rr := httptest.NewRecorder()
+
+	if err := srv.sendSSEEvent(rr, "status_change", map[string]any{"status": "RUNNING"}); err != nil {
+		t.Fatalf("sendSSEEvent error: %v", err)
+	}
+
+	want := "event: status_change\ndata: {\"status\":\"RUNNING\"}\n\n"
+	if got := rr.Body.String(); got != want {
+		t.Fatalf("unexpected SSE payload:\nwant=%q\ngot =%q", want, got)
+	}
+}
+
+func TestIsClientDisconnect(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "eof", err: io.EOF, want: true},
+		{name: "broken pipe syscall", err: syscall.EPIPE, want: true},
+		{name: "conn reset syscall", err: syscall.ECONNRESET, want: true},
+		{name: "wrapped broken pipe", err: fmt.Errorf("write failed: %w", syscall.EPIPE), want: true},
+		{name: "wrapped conn reset", err: fmt.Errorf("write failed: %w", syscall.ECONNRESET), want: true},
+		{name: "broken pipe text fallback", err: errors.New("write: broken pipe"), want: true},
+		{name: "connection reset text fallback", err: errors.New("read: connection reset by peer"), want: true},
+		{name: "other", err: errors.New("unexpected serialization failure"), want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isClientDisconnect(tc.err)
+			if got != tc.want {
+				t.Fatalf("isClientDisconnect(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHTTPServerMetricsStreamStopsOnWriteFailure(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	_, err := store.Create("disconnect-run", &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   1000,
+		RealTimeMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/disconnect-run/metrics/stream?interval_ms=1", nil)
+	w := &failingSSEWriter{
+		header:    http.Header{},
+		failAfter: 1,
+		err:       syscall.EPIPE,
+	}
+
+	done := make(chan struct{})
+	go func() {
+		srv.handleMetricsStream(w, req, "disconnect-run")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("metrics stream did not exit after write failure")
+	}
+
+	if w.writes != 2 {
+		t.Fatalf("expected exactly 2 write attempts (header then failed data), got %d", w.writes)
+	}
+}
+
+type failingSSEWriter struct {
+	header    http.Header
+	writes    int
+	failAfter int
+	err       error
+}
+
+func (w *failingSSEWriter) Header() http.Header { return w.header }
+func (w *failingSSEWriter) WriteHeader(_ int)   {}
+func (w *failingSSEWriter) Flush()              {}
+
+func (w *failingSSEWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > w.failAfter {
+		return 0, w.err
+	}
+	return len(p), nil
 }
 
 func TestHTTPServerMetricsStreamNotFound(t *testing.T) {

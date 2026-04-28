@@ -69,3 +69,115 @@ func TestMergeRunMetricsEndpointStatsMultiSeed(t *testing.T) {
 		t.Fatalf("max p95: %v", es.ProcessingLatencyP95Ms)
 	}
 }
+
+func TestMergeRunMetricsForCalibrationBaselineServiceMetrics(t *testing.T) {
+	rm1 := &models.RunMetrics{
+		IngressThroughputRPS: 100,
+		LatencyP50:           10,
+		LatencyMean:          12,
+		LatencyP95:           20,
+		LatencyP99:           30,
+		ServiceMetrics: map[string]*models.ServiceMetrics{
+			"svc1": {
+				ServiceName:             "svc1",
+				RequestCount:            100,
+				ErrorCount:              2,
+				LatencyP50:              10,
+				LatencyMean:             11,
+				LatencyP95:              20,
+				LatencyP99:              30,
+				ProcessingLatencyMeanMs: 5,
+				ProcessingLatencyP95Ms:  8,
+				ProcessingLatencyP99Ms:  9,
+				QueueWaitMeanMs:         1,
+				QueueWaitP95Ms:          2,
+				QueueWaitP99Ms:          3,
+				CPUUtilization:          0.4,
+				MemoryUtilization:       0.5,
+				QueueLength:             4,
+				ConcurrentRequests:      5,
+				ActiveReplicas:          2,
+			},
+		},
+	}
+	rm2 := &models.RunMetrics{
+		IngressThroughputRPS: 60,
+		LatencyP50:           14,
+		LatencyMean:          16,
+		LatencyP95:           28,
+		LatencyP99:           40,
+		ServiceMetrics: map[string]*models.ServiceMetrics{
+			"svc1": {
+				ServiceName:             "svc1",
+				RequestCount:            50,
+				ErrorCount:              4,
+				LatencyP50:              14,
+				LatencyMean:             15,
+				LatencyP95:              28,
+				LatencyP99:              40,
+				ProcessingLatencyMeanMs: 7,
+				ProcessingLatencyP95Ms:  10,
+				ProcessingLatencyP99Ms:  12,
+				QueueWaitMeanMs:         2,
+				QueueWaitP95Ms:          5,
+				QueueWaitP99Ms:          6,
+				CPUUtilization:          0.8,
+				MemoryUtilization:       0.7,
+				QueueLength:             8,
+				ConcurrentRequests:      9,
+				ActiveReplicas:          3,
+			},
+			"nil-entry": nil,
+		},
+	}
+
+	merged := MergeRunMetricsForCalibrationBaseline([]*models.RunMetrics{rm1, nil, rm2})
+	if merged == nil {
+		t.Fatal("expected merged metrics")
+	}
+	if merged.IngressThroughputRPS != 160.0/3.0 {
+		t.Fatalf("unexpected mean throughput: %v", merged.IngressThroughputRPS)
+	}
+	if merged.LatencyP95 != 28 || merged.LatencyP99 != 40 {
+		t.Fatalf("expected max tail latencies, got p95=%v p99=%v", merged.LatencyP95, merged.LatencyP99)
+	}
+	svc := merged.ServiceMetrics["svc1"]
+	if svc == nil {
+		t.Fatalf("expected merged service metrics")
+	}
+	if svc.RequestCount != 75 || svc.ErrorCount != 3 {
+		t.Fatalf("unexpected averaged counts: req=%d err=%d", svc.RequestCount, svc.ErrorCount)
+	}
+	if svc.CPUUtilization != 0.8 || svc.MemoryUtilization != 0.7 {
+		t.Fatalf("expected max utilization values, got cpu=%v mem=%v", svc.CPUUtilization, svc.MemoryUtilization)
+	}
+	if svc.ActiveReplicas != 3 || svc.ConcurrentRequests != 9 || svc.QueueLength != 8 {
+		t.Fatalf("expected max queue/concurrency/replica values, got %+v", svc)
+	}
+}
+
+func TestMergeRunMetricsForCalibrationBaselineEmptyAndClone(t *testing.T) {
+	if got := MergeRunMetricsForCalibrationBaseline(nil); got != nil {
+		t.Fatalf("expected nil for nil runs")
+	}
+
+	orig := &models.RunMetrics{
+		LatencyP50: 11,
+		ServiceMetrics: map[string]*models.ServiceMetrics{
+			"svc": {ServiceName: "svc", RequestCount: 9},
+		},
+		EndpointRequestStats: []models.EndpointRequestStats{{ServiceName: "svc", EndpointPath: "/x", RequestCount: 1}},
+	}
+	got := MergeRunMetricsForCalibrationBaseline([]*models.RunMetrics{orig})
+	if got == nil {
+		t.Fatalf("expected cloned metrics")
+	}
+	got.ServiceMetrics["svc"].RequestCount = 123
+	got.EndpointRequestStats[0].RequestCount = 456
+	if orig.ServiceMetrics["svc"].RequestCount != 9 {
+		t.Fatalf("expected original service metrics to remain unchanged")
+	}
+	if orig.EndpointRequestStats[0].RequestCount != 1 {
+		t.Fatalf("expected original endpoint stats to remain unchanged")
+	}
+}

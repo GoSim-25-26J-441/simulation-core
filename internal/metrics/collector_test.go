@@ -600,6 +600,121 @@ func TestAttachHostUtilizationScaledOutHostNoSamplesIsZero(t *testing.T) {
 	}
 }
 
+func TestCollectorDownsampledSeriesIsBounded(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "8")
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	for i := 0; i < 100; i++ {
+		c.Record("bounded_metric", float64(i), now.Add(time.Duration(i)*time.Millisecond), map[string]string{"service": "s1"})
+	}
+	points := c.GetTimeSeries("bounded_metric", map[string]string{"service": "s1"})
+	if len(points) > 8 {
+		t.Fatalf("expected downsampled points <= 8, got %d", len(points))
+	}
+	agg := c.GetOrComputeAggregation("bounded_metric", map[string]string{"service": "s1"})
+	if agg == nil || agg.Count != 100 {
+		t.Fatalf("expected streaming aggregate count=100, got %+v", agg)
+	}
+}
+
+func TestCollectorGetTimeSeriesReturnsBoundedData(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "5")
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	for i := 0; i < 30; i++ {
+		c.Record("m", float64(i), now.Add(time.Duration(i)*time.Millisecond), nil)
+	}
+	if got := len(c.GetTimeSeries("m", nil)); got > 5 {
+		t.Fatalf("expected bounded series length <= 5, got %d", got)
+	}
+}
+
+func TestCollectorStreamingAggregationFields(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	for _, v := range []float64{2, 4, 6, 8} {
+		c.Record("agg", v, now, map[string]string{"service": "svc1"})
+	}
+	agg := c.GetOrComputeAggregation("agg", map[string]string{"service": "svc1"})
+	if agg == nil {
+		t.Fatalf("expected aggregation")
+	}
+	if agg.Count != 4 || agg.Sum != 20 || agg.Min != 2 || agg.Max != 8 || agg.Mean != 5 {
+		t.Fatalf("unexpected aggregation values: %+v", agg)
+	}
+}
+
+func TestCollectorPercentilesAreRecomputedLazily(t *testing.T) {
+	t.Setenv("SIMD_METRIC_RESERVOIR_SIZE", "128")
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+
+	for i := 0; i < 20; i++ {
+		c.Record("lazy_pct", float64(i+1), now.Add(time.Duration(i)*time.Millisecond), nil)
+	}
+
+	c.mu.RLock()
+	s := c.series["lazy_pct"][""]
+	if s == nil {
+		c.mu.RUnlock()
+		t.Fatal("expected series")
+	}
+	if !s.dirtyPct {
+		c.mu.RUnlock()
+		t.Fatal("expected percentiles marked dirty after writes")
+	}
+	c.mu.RUnlock()
+
+	agg1 := c.GetAggregation("lazy_pct", nil)
+	if agg1 == nil {
+		t.Fatal("expected aggregation after lazy recompute")
+	}
+
+	c.mu.RLock()
+	if s.dirtyPct {
+		c.mu.RUnlock()
+		t.Fatal("expected dirty flag cleared after aggregation read")
+	}
+	c.mu.RUnlock()
+
+	c.Record("lazy_pct", 1000, now.Add(50*time.Millisecond), nil)
+	c.mu.RLock()
+	if !s.dirtyPct {
+		c.mu.RUnlock()
+		t.Fatal("expected dirty flag set after additional write")
+	}
+	c.mu.RUnlock()
+
+	agg2 := c.GetAggregation("lazy_pct", nil)
+	if agg2 == nil {
+		t.Fatal("expected aggregation")
+	}
+	if agg2.P95 < agg1.P95 {
+		t.Fatalf("expected updated percentile after lazy recompute: old p95=%f new p95=%f", agg1.P95, agg2.P95)
+	}
+}
+
+func TestCollectorLabelSeparationAndMergedAggregation(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	ts := time.Now()
+	c.Record("req", 1, ts, map[string]string{"service": "a"})
+	c.Record("req", 2, ts, map[string]string{"service": "b"})
+	aggA := c.GetOrComputeAggregation("req", map[string]string{"service": "a"})
+	aggB := c.GetOrComputeAggregation("req", map[string]string{"service": "b"})
+	if aggA == nil || aggA.Sum != 1 || aggB == nil || aggB.Sum != 2 {
+		t.Fatalf("unexpected per-label agg values: a=%+v b=%+v", aggA, aggB)
+	}
+	merged := c.GetMetricAggregation("req")
+	if merged == nil || merged.Sum != 3 || merged.Count != 2 {
+		t.Fatalf("unexpected merged agg: %+v", merged)
+	}
+}
+
 func TestConvertToRunMetricsQueueLengthSumsLatestPerInstanceWithInventory(t *testing.T) {
 	c := NewCollector()
 	c.Start()
@@ -615,5 +730,79 @@ func TestConvertToRunMetricsQueueLengthSumsLatestPerInstanceWithInventory(t *tes
 	sm := runMetrics.ServiceMetrics["svc1"]
 	if sm == nil || sm.QueueLength != 4 {
 		t.Fatalf("expected QueueLength 3+1+0 = 4, got %+v", sm)
+	}
+}
+
+func TestCollectorMaxPointsLimit(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	hit := false
+	c.SetMaxPoints(1, func(currentCount, max int) {
+		hit = true
+		if currentCount <= max {
+			t.Fatalf("expected currentCount > max, got %d <= %d", currentCount, max)
+		}
+	})
+	now := time.Now()
+	c.Record("m", 1, now, nil)
+	c.Record("m", 2, now.Add(time.Millisecond), nil)
+	if !hit {
+		t.Fatalf("expected max points callback")
+	}
+	points := c.GetTimeSeries("m", nil)
+	if len(points) != 1 {
+		t.Fatalf("expected only first point retained, got %d", len(points))
+	}
+}
+
+func TestCollectorMaxSeriesLimitRejectsNewSeriesButAllowsExisting(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES", "2")
+	c := NewCollector()
+	c.Start()
+	limitHit := false
+	c.SetLimitCallback(func(limit string, currentCount, max int) {
+		if limit == "max_metric_series" {
+			limitHit = true
+		}
+	})
+	now := time.Now()
+	c.Record("m", 1, now, map[string]string{"service": "a"})
+	c.Record("m", 2, now.Add(time.Millisecond), map[string]string{"service": "b"})
+	// Third distinct series should be rejected.
+	c.Record("m", 3, now.Add(2*time.Millisecond), map[string]string{"service": "c"})
+	if !limitHit {
+		t.Fatalf("expected max_metric_series limit callback")
+	}
+	// Existing series should still record.
+	c.Record("m", 4, now.Add(3*time.Millisecond), map[string]string{"service": "a"})
+
+	if got := c.totalSeries; got != 2 {
+		t.Fatalf("expected 2 series retained, got %d", got)
+	}
+	if pts := c.GetTimeSeries("m", map[string]string{"service": "a"}); len(pts) != 2 {
+		t.Fatalf("expected existing series to continue recording; got %d points", len(pts))
+	}
+	if pts := c.GetTimeSeries("m", map[string]string{"service": "c"}); len(pts) != 0 {
+		t.Fatalf("expected rejected third series to have no points, got %d", len(pts))
+	}
+}
+
+func TestCollectorSeriesReservoirAllocatedLazily(t *testing.T) {
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	labels := map[string]string{"service": "lazy"}
+	c.Record("m_lazy", 1, now, labels)
+	c.mu.RLock()
+	s := c.series["m_lazy"][labelKey(labels)]
+	c.mu.RUnlock()
+	if s == nil {
+		t.Fatal("expected series")
+	}
+	if s.reservoir == nil {
+		t.Fatal("expected reservoir allocated on first value")
+	}
+	if cap(s.reservoir) > 64 {
+		t.Fatalf("expected small initial reservoir cap, got %d", cap(s.reservoir))
 	}
 }

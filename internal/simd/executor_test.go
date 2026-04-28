@@ -1923,3 +1923,79 @@ workload:
 		t.Fatalf("expected stopped, got %v", rec.Run.Status)
 	}
 }
+
+func TestRunExecutorStartRejectsOverMaxStandardDuration(t *testing.T) {
+	t.Setenv("SIMD_MAX_STANDARD_DURATION", "1s")
+	store := NewRunStore()
+	scenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 1}
+`
+	_, err := store.Create("run-too-long", &simulationv1.RunInput{
+		ScenarioYaml: scenario,
+		DurationMs:   2000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	exec := NewRunExecutor(store, nil)
+	if _, err := exec.Start("run-too-long"); err == nil {
+		t.Fatalf("expected start rejection")
+	}
+	rec, ok := store.Get("run-too-long")
+	if !ok || rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_FAILED {
+		t.Fatalf("expected failed run state, got %+v", rec)
+	}
+}
+
+func TestRunExecutorStartRejectsOptimizationEvaluationLimit(t *testing.T) {
+	t.Setenv("SIMD_MAX_OPTIMIZATION_EVALUATIONS", "2")
+	store := NewRunStore()
+	scenario := `
+hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+workload:
+  - from: client
+    to: svc1:/test
+    arrival: {type: poisson, rate_rps: 1}
+`
+	_, err := store.Create("run-opt-too-many", &simulationv1.RunInput{
+		ScenarioYaml: scenario,
+		Optimization: &simulationv1.OptimizationConfig{
+			MaxEvaluations: 10,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	exec := NewRunExecutor(store, nil)
+	if _, err := exec.Start("run-opt-too-many"); err == nil {
+		t.Fatalf("expected optimization evaluation rejection")
+	}
+	rec, ok := store.Get("run-opt-too-many")
+	if !ok || rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_FAILED {
+		t.Fatalf("expected failed run state, got %+v", rec)
+	}
+}

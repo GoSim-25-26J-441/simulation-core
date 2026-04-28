@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -46,8 +47,11 @@ func effectiveRunSeed(input *simulationv1.RunInput) int64 {
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
-	store    *RunStore
-	notifier *Notifier
+	store     *RunStore
+	notifier  *Notifier
+	limits    SimulationLimits
+	optSafety OptimizationSafetyLimits
+	limitsErr error
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
 
@@ -60,6 +64,34 @@ type RunExecutor struct {
 	onlineLeaseDeadline    map[string]time.Time         // wall-clock heartbeat deadline per run
 	// runScenarios holds the parsed scenario per active run for configuration/metadata export.
 	runScenarios map[string]*config.Scenario
+	progress     map[string]*RunProgress
+}
+
+type RunProgress struct {
+	RunID                          string    `json:"run_id"`
+	Status                         string    `json:"status"`
+	Mode                           string    `json:"mode"`
+	Realtime                       bool      `json:"realtime"`
+	IsOptimization                 bool      `json:"is_optimization"`
+	StartedAt                      time.Time `json:"started_at"`
+	LastProgressAt                 time.Time `json:"last_progress_at"`
+	CurrentSimTime                 time.Time `json:"current_sim_time"`
+	RequestedDurationMs            int64     `json:"requested_duration_ms"`
+	PercentComplete                float64   `json:"percent_complete"`
+	EventsScheduled                int64     `json:"events_scheduled"`
+	EventsProcessed                int64     `json:"events_processed"`
+	CurrentEventQueueLength        int       `json:"current_event_queue_length"`
+	MaxEventQueueLengthSeen        int64     `json:"max_event_queue_length_seen"`
+	ActiveRequestCount             int       `json:"active_request_count"`
+	TotalRequestCount              int64     `json:"total_request_count"`
+	RetainedCompletedRequestTraces int       `json:"retained_completed_request_traces"`
+	MetricSeriesCount              int       `json:"metric_series_count"`
+	MetricSampleCount              int       `json:"metric_sample_count"`
+	GenerationHorizon              string    `json:"generation_horizon,omitempty"`
+	CancellationReason             string    `json:"cancellation_reason,omitempty"`
+	LastError                      string    `json:"last_error,omitempty"`
+	MemoryAllocBytes               uint64    `json:"memory_alloc_bytes"`
+	GoroutineCount                 int       `json:"goroutine_count"`
 }
 
 // SetOptimizationRunner sets the optimization runner for multi-run experiments.
@@ -93,9 +125,13 @@ var (
 )
 
 func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
+	limits, limitsErr := simulationLimitsFromEnv()
 	return &RunExecutor{
 		store:                  store,
 		notifier:               NewNotifierWithWhitelist(callbackWhitelist),
+		limits:                 limits,
+		optSafety:              optimizationSafetyLimitsFromEnv(),
+		limitsErr:              limitsErr,
 		cancels:                make(map[string]context.CancelFunc),
 		workloadStates:         make(map[string]*WorkloadState),
 		resourceManagers:       make(map[string]*resource.Manager),
@@ -103,6 +139,7 @@ func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 		onlineCompletionReason: make(map[string]string),
 		onlineLeaseDeadline:    make(map[string]time.Time),
 		runScenarios:           make(map[string]*config.Scenario),
+		progress:               make(map[string]*RunProgress),
 	}
 }
 
@@ -115,6 +152,25 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 
 	updated, err := e.store.SetStatusRunningWithOnlineConcurrencyGuard(runID)
 	if err != nil {
+		return nil, err
+	}
+	if e.limitsErr != nil {
+		err := fmt.Errorf("invalid SIMD guardrail configuration: %w", e.limitsErr)
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after limits config error", "run_id", runID, "error", serr)
+		}
+		return nil, err
+	}
+	if err := e.limits.validatePreStart(updated.Input); err != nil {
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after prestart guardrail rejection", "run_id", runID, "error", serr)
+		}
+		return nil, err
+	}
+	if err := validateOptimizationPreStart(updated.Input, e.optSafety); err != nil {
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after optimization prestart rejection", "run_id", runID, "error", serr)
+		}
 		return nil, err
 	}
 	if opt := updated.Input.GetOptimization(); opt != nil && opt.Online {
@@ -194,9 +250,38 @@ func (e *RunExecutor) cleanup(runID string) {
 	delete(e.resourceManagers, runID)
 	delete(e.policyManagers, runID)
 	delete(e.runScenarios, runID)
+	delete(e.progress, runID)
 	delete(e.onlineCompletionReason, runID)
 	delete(e.onlineLeaseDeadline, runID)
 	e.mu.Unlock()
+}
+
+func (e *RunExecutor) updateProgress(runID string, p *RunProgress) {
+	if p == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.progress[runID] = p
+}
+
+func (e *RunExecutor) ActiveProgress() []*RunProgress {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]*RunProgress, 0, len(e.progress))
+	for _, p := range e.progress {
+		cp := *p
+		out = append(out, &cp)
+	}
+	return out
+}
+
+func (e *RunExecutor) LimitsSnapshot() SimulationLimits {
+	return e.limits
+}
+
+func (e *RunExecutor) OptimizationSafetySnapshot() OptimizationSafetyLimits {
+	return e.optSafety
 }
 
 // signalOnlineLeaseEnd requests a normal completion for an online run (COMPLETED + online_completion_reason).
@@ -364,10 +449,19 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 
 func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	defer e.cleanup(runID)
+	if e.optSafety.MaxWallClockRuntime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.optSafety.MaxWallClockRuntime)
+		defer cancel()
+	}
 
 	rec, ok := e.store.Get(runID)
 	if !ok {
 		logger.Error("run not found", "run_id", runID)
+		return
+	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
 		return
 	}
 
@@ -431,7 +525,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		durationMs = opt.EvaluationDurationMs
 	}
 	if durationMs <= 0 {
-		durationMs = 10000 // 10 seconds default
+		durationMs = e.optSafety.DefaultEvaluationDuration
 	}
 
 	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective,
@@ -455,6 +549,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations, candidateRunIDs); err != nil {
 		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
 	}
+	e.store.TrimOptimizationCandidates(runID, bestRunID)
 
 	// Copy the best run's metrics onto the parent optimization run so GET /metrics
 	// and SSE metrics_snapshot (on the next tick before complete) expose them.
@@ -536,6 +631,10 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 		logger.Error("run not found", "run_id", runID)
 		return
 	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
+		return
+	}
 
 	if rec.Input == nil || rec.Input.Optimization == nil {
 		logger.Error("online optimization requested without optimization config", "run_id", runID)
@@ -560,6 +659,21 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Create engine
 	eng := engine.NewEngine(runID)
+	eng.SetRuntimeLimits(e.limits.toEngineRuntimeLimits())
+	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	eng.GetRunManager().SetMaxTotalRequests(e.limits.MaxTotalRequests, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_total_requests",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested
 	if rec.Input.RealTimeMode {
@@ -590,6 +704,20 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetLimitCallback(func(limit string, currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: limit,
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_metric_points",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.Start()
 
 	// Store collector reference for later access
@@ -764,6 +892,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		logger.Error("run not found", "run_id", runID)
 		return
 	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
+		return
+	}
 
 	// Parse scenario YAML
 	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
@@ -786,6 +918,21 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Create engine
 	eng := engine.NewEngine(runID)
+	eng.SetRuntimeLimits(e.limits.toEngineRuntimeLimits())
+	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	eng.GetRunManager().SetMaxTotalRequests(e.limits.MaxTotalRequests, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_total_requests",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested (for real-time dashboards/monitoring)
 	if rec.Input.RealTimeMode {
@@ -813,6 +960,20 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetLimitCallback(func(limit string, currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: limit,
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_metric_points",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.Start()
 
 	// Store collector reference for later access
@@ -875,15 +1036,45 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Run simulation
 	logger.Info("starting simulation", "run_id", runID, "duration", duration)
+	progressCtx, progressCancel := context.WithCancel(ctx)
+	defer progressCancel()
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-progressCtx.Done():
+				return
+			case <-t.C:
+				p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, "")
+				e.updateProgress(runID, p)
+				logger.Info("Run progress",
+					"run_id", p.RunID,
+					"sim_time", p.CurrentSimTime,
+					"percent_complete", p.PercentComplete,
+					"events_processed", p.EventsProcessed,
+					"queue_length", p.CurrentEventQueueLength,
+					"active_requests", p.ActiveRequestCount,
+					"metric_series", p.MetricSeriesCount,
+					"memory_alloc_bytes", p.MemoryAllocBytes,
+					"goroutines", p.GoroutineCount,
+				)
+			}
+		}
+	}()
 	if err := eng.Run(duration); err != nil {
 		// Check if it was cancelled
 		if ctx.Err() != nil {
 			logger.Info("simulation cancelled", "run_id", runID)
+			p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, "cancelled")
+			e.updateProgress(runID, p)
 			rec, _ := e.store.Get(runID)
 			e.sendNotificationIfConfigured(rec)
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
+		p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, err.Error())
+		e.updateProgress(runID, p)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
@@ -898,6 +1089,8 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	logger.Info("simulation completed", "run_id", runID,
 		"simulation_duration", simDuration,
 		"expected_duration", duration)
+	p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, "")
+	e.updateProgress(runID, p)
 
 	// Stop metrics collection
 	metricsCollector.Stop()
@@ -951,6 +1144,68 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 				"throughput_rps", pbMetrics.ThroughputRps)
 			e.sendNotificationIfConfigured(updated)
 		}
+	}
+}
+
+func (e *RunExecutor) buildRunProgress(runID string, rec *RunRecord, startTime time.Time, requested time.Duration, eng *engine.Engine, collector *metrics.Collector, ws *WorkloadState, reason string) *RunProgress {
+	if rec == nil {
+		rec, _ = e.store.Get(runID)
+	}
+	snap := eng.ProgressSnapshot(startTime.Add(requested))
+	cs := collector.Snapshot()
+	rm := eng.GetRunManager().Snapshot()
+	percent := 0.0
+	if requested > 0 {
+		percent = 100 * float64(snap.SimTime.Sub(startTime)) / float64(requested)
+		if percent < 0 {
+			percent = 0
+		}
+	}
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	mode := "standard"
+	realtime := rec != nil && rec.Input != nil && rec.Input.RealTimeMode
+	if realtime {
+		mode = "realtime"
+	}
+	horizon := ""
+	if ws != nil {
+		h := ws.GeneratedHorizon()
+		if !h.IsZero() {
+			horizon = h.Format(time.RFC3339Nano)
+		}
+	}
+	status := ""
+	isOpt := false
+	if rec != nil && rec.Run != nil {
+		status = rec.Run.Status.String()
+		isOpt = rec.Input != nil && rec.Input.Optimization != nil
+	}
+	return &RunProgress{
+		RunID:                          runID,
+		Status:                         status,
+		Mode:                           mode,
+		Realtime:                       realtime,
+		IsOptimization:                 isOpt,
+		StartedAt:                      startTime,
+		LastProgressAt:                 time.Now(),
+		CurrentSimTime:                 snap.SimTime,
+		RequestedDurationMs:            int64(requested / time.Millisecond),
+		PercentComplete:                percent,
+		EventsScheduled:                snap.EventsScheduled,
+		EventsProcessed:                snap.EventsProcessed,
+		CurrentEventQueueLength:        snap.QueueLength,
+		MaxEventQueueLengthSeen:        snap.MaxQueueSeen,
+		ActiveRequestCount:             rm.ActiveRequests,
+		TotalRequestCount:              rm.TotalRequests,
+		RetainedCompletedRequestTraces: rm.RetainedCompletedSamples,
+		MetricSeriesCount:              cs.SeriesCount,
+		MetricSampleCount:              cs.TotalPoints,
+		GenerationHorizon:              horizon,
+		CancellationReason:             reason,
+		LastError:                      snap.LastError,
+		MemoryAllocBytes:               mem.Alloc,
+		GoroutineCount:                 runtime.NumGoroutine(),
 	}
 }
 

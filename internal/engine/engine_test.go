@@ -2,6 +2,7 @@ package engine
 
 import (
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,6 +219,50 @@ func TestEngineStop(t *testing.T) {
 	}
 }
 
+func TestEngineTriggerLimitExceededLatchesFirstError(t *testing.T) {
+	engine := NewEngine("limit-run")
+	engine.GetRunManager().Start()
+
+	first := &LimitExceededError{Limit: "max_events_scheduled", Value: 11, Max: 10}
+	second := &LimitExceededError{Limit: "max_event_queue_size", Value: 21, Max: 20}
+	engine.TriggerLimitExceeded(first)
+	engine.TriggerLimitExceeded(second)
+
+	got := engine.GuardrailError()
+	if got == nil {
+		t.Fatalf("expected guardrail error to be set")
+	}
+	if got.Error() != first.Error() {
+		t.Fatalf("expected first guardrail error to latch, got %v", got)
+	}
+	select {
+	case <-engine.GetRunManager().Context().Done():
+		// expected
+	default:
+		t.Fatalf("expected run context to be cancelled after guard failure")
+	}
+}
+
+func TestEngineProgressSnapshotUpdates(t *testing.T) {
+	engine := NewEngine("progress-run")
+	now := engine.GetSimTime()
+	engine.ScheduleAt(EventTypeRequestArrival, now.Add(1*time.Millisecond), nil, "", nil)
+	engine.RegisterHandler(EventTypeRequestArrival, func(_ *Engine, _ *Event) error { return nil })
+	if err := engine.Run(5 * time.Millisecond); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	snap := engine.ProgressSnapshot(now.Add(5 * time.Millisecond))
+	if snap.EventsScheduled == 0 {
+		t.Fatalf("expected scheduled events > 0")
+	}
+	if snap.EventsProcessed == 0 {
+		t.Fatalf("expected processed events > 0")
+	}
+	if snap.MaxQueueSeen < 0 {
+		t.Fatalf("expected non-negative max queue")
+	}
+}
+
 func TestEngineGetStats(t *testing.T) {
 	engine := NewEngine("test-run")
 	engine.runManager.Start()
@@ -241,6 +286,17 @@ func TestEngineGetStats(t *testing.T) {
 	}
 	if stats["sim_time"] == "" {
 		t.Error("Expected sim_time to be set in stats")
+	}
+}
+
+func TestEngineGetStatsEventsProcessedUsesProcessedCounter(t *testing.T) {
+	engine := NewEngine("stats-processed")
+	now := engine.GetSimTime()
+	// Schedule one event but do not run engine yet.
+	engine.ScheduleAt(EventTypeRequestArrival, now.Add(10*time.Millisecond), nil, "", nil)
+	stats := engine.GetStats()
+	if got := stats["events_processed"]; got != int64(0) {
+		t.Fatalf("expected 0 processed events before run, got %v", got)
 	}
 }
 
@@ -347,4 +403,34 @@ func TestEnginePrintStats(t *testing.T) {
 	engine.ScheduleAt(EventTypeRequestArrival, engine.GetSimTime().Add(time.Millisecond), nil, "", nil)
 	// PrintStats should not panic; it logs and returns
 	engine.PrintStats()
+}
+
+func TestEngineRunFailsWhenScheduledLimitExceeded(t *testing.T) {
+	e := NewEngine("guard-scheduled")
+	e.SetRuntimeLimits(RuntimeLimits{
+		MaxEventsScheduled: 1,
+	})
+	now := e.GetSimTime()
+	e.ScheduleAt(EventTypeRequestArrival, now.Add(10*time.Millisecond), nil, "", nil)
+	e.ScheduleAt(EventTypeRequestStart, now.Add(20*time.Millisecond), nil, "", nil)
+
+	err := e.Run(100 * time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "max_events_scheduled") {
+		t.Fatalf("expected max_events_scheduled error, got %v", err)
+	}
+}
+
+func TestEngineRunFailsWhenProcessedLimitExceeded(t *testing.T) {
+	e := NewEngine("guard-processed")
+	e.SetRuntimeLimits(RuntimeLimits{
+		MaxEventsProcessed: 1,
+	})
+	e.RegisterHandler(EventTypeRequestArrival, func(_ *Engine, _ *Event) error { return nil })
+	now := e.GetSimTime()
+	e.ScheduleAt(EventTypeRequestArrival, now.Add(10*time.Millisecond), nil, "", nil)
+
+	err := e.Run(100 * time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "max_events_processed") {
+		t.Fatalf("expected max_events_processed error, got %v", err)
+	}
 }

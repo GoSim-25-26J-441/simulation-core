@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"hash/fnv"
+	"sync"
 	"testing"
 	"time"
 
@@ -202,6 +204,78 @@ func TestRunManagerLatencies(t *testing.T) {
 	}
 }
 
+func TestRunManagerLatencyReservoirIsBounded(t *testing.T) {
+	t.Setenv("SIMD_RUN_LATENCY_RESERVOIR_SIZE", "16")
+	rm := NewRunManager("run-latency-bound")
+	for i := 0; i < 5000; i++ {
+		rm.RecordLatency(float64(i))
+	}
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	if got := len(rm.latencySummary.reservoir); got != 16 {
+		t.Fatalf("expected bounded latency reservoir size 16, got %d", got)
+	}
+	if rm.latencySummary.count != 5000 {
+		t.Fatalf("expected latency count 5000, got %d", rm.latencySummary.count)
+	}
+}
+
+func TestRunManagerLatencyPercentilesFromSummary(t *testing.T) {
+	t.Setenv("SIMD_RUN_LATENCY_RESERVOIR_SIZE", "4096")
+	rm := NewRunManager("run-latency-percentiles")
+	rm.Start()
+	for i := 1; i <= 100; i++ {
+		rm.RecordLatency(float64(i))
+	}
+	time.Sleep(2 * time.Millisecond)
+	rm.Complete()
+
+	metrics := rm.GetRun().Metrics
+	if metrics == nil {
+		t.Fatal("expected metrics")
+	}
+	if metrics.LatencyP50 <= 0 || metrics.LatencyP95 <= 0 || metrics.LatencyP99 <= 0 {
+		t.Fatalf("expected populated latency percentiles, got p50=%f p95=%f p99=%f", metrics.LatencyP50, metrics.LatencyP95, metrics.LatencyP99)
+	}
+	if metrics.LatencyP95 < metrics.LatencyP50 || metrics.LatencyP99 < metrics.LatencyP95 {
+		t.Fatalf("expected ordered percentiles, got p50=%f p95=%f p99=%f", metrics.LatencyP50, metrics.LatencyP95, metrics.LatencyP99)
+	}
+	if metrics.LatencyMean <= 0 {
+		t.Fatalf("expected non-zero mean latency, got %f", metrics.LatencyMean)
+	}
+}
+
+func TestRunManagerConcurrentRecordLatencyAndGetStats(t *testing.T) {
+	t.Setenv("SIMD_RUN_LATENCY_RESERVOIR_SIZE", "256")
+	rm := NewRunManager("run-latency-concurrent")
+	rm.Start()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(offset int) {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				rm.RecordLatency(float64(offset*1000 + j))
+			}
+		}(i)
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 400; j++ {
+				stats := rm.GetStats()
+				if _, ok := stats["current_p50_ms"]; !ok {
+					t.Errorf("expected current_p50_ms in stats")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 func TestRunManagerServiceMetrics(t *testing.T) {
 	rm := NewRunManager("run-svc-metrics")
 
@@ -346,5 +420,139 @@ func TestRunManagerContext(t *testing.T) {
 		// Expected
 	case <-time.After(100 * time.Millisecond):
 		t.Error("Context should be cancelled after Cancel()")
+	}
+}
+
+func TestRunManagerMaxRequestsTrackedLimit(t *testing.T) {
+	rm := NewRunManager("run-limit")
+	limitReached := false
+	rm.SetMaxRequestsTracked(1, func(currentCount, max int) {
+		limitReached = true
+		if currentCount <= max {
+			t.Fatalf("expected currentCount > max, got %d <= %d", currentCount, max)
+		}
+	})
+	rm.AddRequest(&models.Request{ID: "req-1"})
+	rm.AddRequest(&models.Request{ID: "req-2"})
+	if !limitReached {
+		t.Fatalf("expected limit callback")
+	}
+	if got := len(rm.ListRequests()); got != 1 {
+		t.Fatalf("expected only first request retained, got %d", got)
+	}
+}
+
+func TestRunManagerMaxTotalRequestsLimit(t *testing.T) {
+	rm := NewRunManager("run-total-limit")
+	limitReached := false
+	rm.SetMaxTotalRequests(1, func(currentCount, max int) {
+		limitReached = true
+		if currentCount <= max {
+			t.Fatalf("expected currentCount > max, got %d <= %d", currentCount, max)
+		}
+	})
+	req := &models.Request{ID: "req-1", Status: models.RequestStatusCompleted}
+	rm.AddRequest(req)
+	rm.FinalizeRequest(req)
+	rm.AddRequest(&models.Request{ID: "req-2"})
+	if !limitReached {
+		t.Fatalf("expected total-request limit callback")
+	}
+	if got := rm.GetStats()["total_requests"]; got != 1 {
+		t.Fatalf("expected total_requests to remain capped at 1, got %v", got)
+	}
+}
+
+func TestRunManagerSeparateActiveAndTotalLimitCallbacks(t *testing.T) {
+	rm := NewRunManager("run-dual-limits")
+	activeHits := 0
+	totalHits := 0
+	rm.SetMaxRequestsTracked(1, func(currentCount, max int) {
+		activeHits++
+		if max != 1 {
+			t.Fatalf("expected active max=1, got %d", max)
+		}
+	})
+	rm.SetMaxTotalRequests(100, func(currentCount, max int) {
+		totalHits++
+	})
+	rm.AddRequest(&models.Request{ID: "req-1"})
+	rm.AddRequest(&models.Request{ID: "req-2"})
+	if activeHits != 1 {
+		t.Fatalf("expected active limit callback once, got %d", activeHits)
+	}
+	if totalHits != 0 {
+		t.Fatalf("expected total limit callback not to fire, got %d", totalHits)
+	}
+}
+
+func TestRunManagerFinalizePrunesActiveRequest(t *testing.T) {
+	t.Setenv("SIMD_MAX_COMPLETED_REQUEST_TRACES", "2")
+	rm := NewRunManager("run-prune")
+	req := &models.Request{
+		ID:     "req-1",
+		Status: models.RequestStatusCompleted,
+	}
+	rm.AddRequest(req)
+	rm.FinalizeRequest(req)
+
+	if got := len(rm.requests); got != 0 {
+		t.Fatalf("expected active requests to be pruned, got %d", got)
+	}
+	r, ok := rm.GetRequest("req-1")
+	if !ok || r == nil {
+		t.Fatalf("expected finalized request to remain in completed sample")
+	}
+}
+
+func TestRunManagerCompletedSamplesAreBounded(t *testing.T) {
+	t.Setenv("SIMD_MAX_COMPLETED_REQUEST_TRACES", "2")
+	rm := NewRunManager("run-prune-cap")
+
+	for i := 1; i <= 3; i++ {
+		id := "req-" + string(rune('0'+i))
+		req := &models.Request{ID: id, Status: models.RequestStatusCompleted}
+		rm.AddRequest(req)
+		rm.FinalizeRequest(req)
+	}
+
+	if _, ok := rm.GetRequest("req-1"); ok {
+		t.Fatalf("expected oldest completed request to be evicted")
+	}
+	if _, ok := rm.GetRequest("req-2"); !ok {
+		t.Fatalf("expected req-2 to remain")
+	}
+	if _, ok := rm.GetRequest("req-3"); !ok {
+		t.Fatalf("expected req-3 to remain")
+	}
+}
+
+func TestRunManagerShouldSampleCompletedRequestBoundaries(t *testing.T) {
+	rm := NewRunManager("run-sample-bounds")
+	if !rm.shouldSampleCompletedRequest("req-a") {
+		t.Fatalf("rate 1.0 should sample all requests")
+	}
+
+	rm.traceSamplingRate = 0
+	if rm.shouldSampleCompletedRequest("req-a") {
+		t.Fatalf("rate 0 should sample no requests")
+	}
+}
+
+func TestRunManagerShouldSampleCompletedRequestDeterministicHash(t *testing.T) {
+	rm := NewRunManager("run-sample-hash")
+	rm.traceSamplingRate = 0.5
+	requestID := "req-deterministic"
+
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(requestID))
+	v := float64(h.Sum32()) / float64(^uint32(0))
+	want := v < rm.traceSamplingRate
+
+	for i := 0; i < 5; i++ {
+		got := rm.shouldSampleCompletedRequest(requestID)
+		if got != want {
+			t.Fatalf("deterministic sampling mismatch: got %v want %v", got, want)
+		}
 	}
 }

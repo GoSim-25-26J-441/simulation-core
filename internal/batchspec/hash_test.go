@@ -1,6 +1,7 @@
 package batchspec
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -386,5 +387,17 @@ func assertHashDiffers(t *testing.T, a, b *config.Scenario, what string) {
 	t.Helper()
 	if ConfigHash(a) == ConfigHash(b) {
 		t.Fatalf("expected different hash when changing %s", what)
+	}
+}
+
+func TestConfigHashHexFormatting(t *testing.T) {
+	s := scenarioV2()
+	got := ConfigHashHex(s)
+	want := fmt.Sprintf("%016x", ConfigHash(s))
+	if got != want {
+		t.Fatalf("expected %s, got %s", want, got)
+	}
+	if len(got) != 16 {
+		t.Fatalf("expected 16-char hex hash, got %q", got)
 	}
 }

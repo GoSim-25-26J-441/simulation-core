@@ -1,14 +1,18 @@
 package simd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -23,6 +27,7 @@ type HTTPServer struct {
 	mux      *http.ServeMux
 	store    *RunStore
 	Executor *RunExecutor
+	started  time.Time
 }
 
 func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
@@ -30,14 +35,75 @@ func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
 		mux:      http.NewServeMux(),
 		store:    store,
 		Executor: executor,
+		started:  time.Now(),
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/v1/runs", s.handleRuns)
 	s.mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	s.mux.HandleFunc("/v1/scenarios:validate", s.handleValidateScenario)
+	s.mux.HandleFunc("/diagnostics/runtime", s.handleDiagnosticsRuntime)
 
 	return s
+}
+
+func (s *HTTPServer) handleDiagnosticsRuntime(w http.ResponseWriter, r *http.Request) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	runCounts := s.store.Counts()
+	lifecycle := s.store.LifecycleConfig()
+	activeProgress := []*RunProgress{}
+	limits := SimulationLimits{}
+	opt := OptimizationSafetyLimits{}
+	if s.Executor != nil {
+		activeProgress = s.Executor.ActiveProgress()
+		limits = s.Executor.LimitsSnapshot()
+		opt = s.Executor.OptimizationSafetySnapshot()
+	}
+	resp := map[string]any{
+		"uptime_seconds": time.Since(s.started).Seconds(),
+		"go_version":     runtime.Version(),
+		"goroutines":     runtime.NumGoroutine(),
+		"memstats": map[string]any{
+			"alloc":       mem.Alloc,
+			"heap_alloc":  mem.HeapAlloc,
+			"heap_sys":    mem.HeapSys,
+			"num_gc":      mem.NumGC,
+			"next_gc":     mem.NextGC,
+			"pause_total": mem.PauseTotalNs,
+		},
+		"active_runs": activeProgress,
+		"runstore_counts": map[string]any{
+			"active":                           runCounts.Active,
+			"completed_retained":               runCounts.CompletedRetained,
+			"failed_retained":                  runCounts.FailedRetained,
+			"cancelled_retained":               runCounts.CancelledRetained,
+			"optimization_candidates_retained": runCounts.OptimizationCandidates,
+		},
+		"limits":              limits,
+		"runstore_lifecycle":  lifecycle,
+		"optimization_safety": opt,
+		"note":                "Protect diagnostics endpoint via network controls in production.",
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *HTTPServer) handleRunProgress(w http.ResponseWriter, runID string) {
+	if _, ok := s.store.Get(runID); !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if s.Executor == nil {
+		s.writeError(w, http.StatusPreconditionFailed, "executor not available")
+		return
+	}
+	for _, p := range s.Executor.ActiveProgress() {
+		if p.RunID == runID {
+			s.writeJSON(w, http.StatusOK, map[string]any{"progress": p})
+			return
+		}
+	}
+	s.writeError(w, http.StatusPreconditionFailed, "progress not available")
 }
 
 // handleValidateScenario handles POST /v1/scenarios:validate.
@@ -185,6 +251,16 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		runID := strings.TrimSuffix(path, "/metrics")
 		if r.Method == http.MethodGet {
 			s.handleGetRunMetrics(w, r, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	// Check for /progress suffix
+	if strings.HasSuffix(path, "/progress") {
+		runID := strings.TrimSuffix(path, "/progress")
+		if r.Method == http.MethodGet {
+			s.handleRunProgress(w, runID)
 		} else {
 			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -1067,7 +1143,7 @@ func parseTime(timeStr string) (time.Time, error) {
 
 // sseWriteMetricsSnapshot sends a metrics_snapshot SSE event when persisted final metrics exist
 // or (for real-time runs) live aggregates from the collector.
-func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string, rec *RunRecord, streamLive, hasCollector bool, collector *metrics.Collector) {
+func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string, rec *RunRecord, streamLive, hasCollector bool, collector *metrics.Collector) error {
 	var metricsToSend *simulationv1.RunMetrics
 	if rec.Metrics != nil {
 		metricsToSend = rec.Metrics
@@ -1081,7 +1157,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 		metricsToSend = convertMetricsToProto(engineMetrics)
 	}
 	if metricsToSend == nil {
-		return
+		return nil
 	}
 	cfg, cfgOk := s.Executor.GetRunConfiguration(runID)
 	if cfgOk && cfg != nil {
@@ -1149,7 +1225,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 			payload["host_metrics"] = hostMetrics
 		}
 	}
-	s.sendSSEEvent(w, "metrics_snapshot", payload)
+	return s.sendSSEEvent(w, "metrics_snapshot", payload)
 }
 
 func (s *HTTPServer) brokerShardResourcesJSON(runID string) (queues []map[string]any, topics []map[string]any, ok bool) {
@@ -1241,9 +1317,12 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 
 	// Send initial status event
 	previousStatus := rec.Run.Status
-	s.sendSSEEvent(w, "status_change", map[string]any{
+	if err := s.sendSSEEvent(w, "status_change", map[string]any{
 		"status": rec.Run.Status.String(),
-	})
+	}); err != nil {
+		s.logSSEWriteFailure(r.Context(), runID, "status_change", err)
+		return
+	}
 
 	// Parse interval from query parameter (default: 1s)
 	interval := 1 * time.Second
@@ -1283,9 +1362,11 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Get current run state
 			rec, ok := s.store.Get(runID)
 			if !ok {
-				s.sendSSEEvent(w, "error", map[string]any{
+				if err := s.sendSSEEvent(w, "error", map[string]any{
 					"error": "run not found",
-				})
+				}); err != nil {
+					s.logSSEWriteFailure(ctx, runID, "error", err)
+				}
 				return
 			}
 
@@ -1303,9 +1384,12 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 
 			// Check for status changes
 			if rec.Run.Status != previousStatus {
-				s.sendSSEEvent(w, "status_change", map[string]any{
+				if err := s.sendSSEEvent(w, "status_change", map[string]any{
 					"status": rec.Run.Status.String(),
-				})
+				}); err != nil {
+					s.logSSEWriteFailure(ctx, runID, "status_change", err)
+					return
+				}
 				previousStatus = rec.Run.Status
 
 				// Exit if terminal status
@@ -1317,10 +1401,16 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					if r2, ok2 := s.store.Get(runID); ok2 {
 						rec = r2
 					}
-					s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector)
-					s.sendSSEEvent(w, "complete", map[string]any{
+					if err := s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector); err != nil {
+						s.logSSEWriteFailure(ctx, runID, "metrics_snapshot", err)
+						return
+					}
+					if err := s.sendSSEEvent(w, "complete", map[string]any{
 						"status": rec.Run.Status.String(),
-					})
+					}); err != nil {
+						s.logSSEWriteFailure(ctx, runID, "complete", err)
+						return
+					}
 					if rc != nil {
 						if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 							logger.Debug("SetWriteDeadline failed", "error", err)
@@ -1340,13 +1430,16 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					lastOptBestScore = rec.Run.BestScore
 					opt := rec.Input.Optimization
 					objective, unit := ObjectiveAndUnitForProgress(opt)
-					s.sendSSEEvent(w, "optimization_progress", map[string]any{
+					if err := s.sendSSEEvent(w, "optimization_progress", map[string]any{
 						"iteration":   rec.Run.Iterations,
 						"best_score":  rec.Run.BestScore,
 						"best_run_id": rec.Run.BestRunId,
 						"objective":   objective,
 						"unit":        unit,
-					})
+					}); err != nil {
+						s.logSSEWriteFailure(ctx, runID, "optimization_progress", err)
+						return
+					}
 				}
 				// Send new optimization steps (online controller config changes)
 				stepCount := len(rec.OptimizationHistory)
@@ -1354,7 +1447,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					for i := lastOptStepCount; i < stepCount; i++ {
 						step := rec.OptimizationHistory[i]
 						if step != nil {
-							s.sendSSEEvent(w, "optimization_step", convertOptimizationStepToJSON(step))
+							if err := s.sendSSEEvent(w, "optimization_step", convertOptimizationStepToJSON(step)); err != nil {
+								s.logSSEWriteFailure(ctx, runID, "optimization_step", err)
+								return
+							}
 						}
 					}
 					lastOptStepCount = stepCount
@@ -1364,7 +1460,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Send aggregated metrics snapshot: final metrics from store when persisted; during run, live
 			// collector snapshots only for real-time runs (non-real-time runs can take wall-clock time to
 			// finish simulation work without throttling — partial metrics would be misleading as "live").
-			s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector)
+			if err := s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector); err != nil {
+				s.logSSEWriteFailure(ctx, runID, "metrics_snapshot", err)
+				return
+			}
 
 			// Send time-series metric updates if collector is available (real-time runs only)
 			if streamLive && hasCollector && collector != nil {
@@ -1386,12 +1485,15 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 							}
 							if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
 								value := metricUpdateValue(metricName, points, latest)
-								s.sendSSEEvent(w, "metric_update", map[string]any{
+								if err := s.sendSSEEvent(w, "metric_update", map[string]any{
 									"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 									"metric":    latest.Name,
 									"value":     value,
 									"labels":    latest.Labels,
-								})
+								}); err != nil {
+									s.logSSEWriteFailure(ctx, runID, "metric_update", err)
+									return
+								}
 								lastSentTimestamps[metricName][labelKey] = latest.Timestamp
 							}
 						}
@@ -1406,12 +1508,15 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 								}
 								if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
 									value := metricUpdateValue(metricName, points, latest)
-									s.sendSSEEvent(w, "metric_update", map[string]any{
+									if err := s.sendSSEEvent(w, "metric_update", map[string]any{
 										"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 										"metric":    latest.Name,
 										"value":     value,
 										"labels":    latest.Labels,
-									})
+									}); err != nil {
+										s.logSSEWriteFailure(ctx, runID, "metric_update", err)
+										return
+									}
 									lastSentTimestamps[metricName][labelKey] = latest.Timestamp
 								}
 							}
@@ -1436,12 +1541,43 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 }
 
 // sendSSEEvent sends a Server-Sent Event
-func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data map[string]any) {
+func isClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		if errors.Is(netErr.Err, syscall.EPIPE) || errors.Is(netErr.Err, syscall.ECONNRESET) {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset by peer")
+}
+
+func (s *HTTPServer) logSSEWriteFailure(ctx context.Context, runID, eventType string, err error) {
+	if err == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		logger.Debug("SSE client context done", "run_id", runID, "event_type", eventType, "error", ctx.Err())
+		return
+	}
+	if isClientDisconnect(err) {
+		logger.Debug("SSE client disconnected", "run_id", runID, "event_type", eventType, "error", err)
+		return
+	}
+	logger.Warn("SSE write failed", "run_id", runID, "event_type", eventType, "error", err)
+}
+
+func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data map[string]any) error {
 	// Format: event: <type>\ndata: <json>\n\n
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		logger.Error("failed to marshal SSE event data", "error", err)
-		return
+		return fmt.Errorf("marshal sse event %s: %w", eventType, err)
 	}
 
 	// Reset write deadline before EVERY write to prevent timeouts
@@ -1455,13 +1591,7 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 	// Write event in SSE format
 	// Note: Errors are logged but not returned as SSE streams are best-effort
 	if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
-		// Check if it's a timeout error - downgrade to warning if so
-		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
-			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
-		} else {
-			logger.Error("failed to write SSE event header", "error", err)
-		}
-		return
+		return fmt.Errorf("write sse event header %s: %w", eventType, err)
 	}
 
 	// Reset deadline again before writing data
@@ -1472,14 +1602,9 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 	}
 
 	if _, err := w.Write([]byte("data: " + string(jsonData) + "\n\n")); err != nil {
-		// Check if it's a timeout error - downgrade to warning if so
-		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
-			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
-		} else {
-			logger.Error("failed to write SSE event data", "error", err)
-		}
-		return
+		return fmt.Errorf("write sse event data %s: %w", eventType, err)
 	}
+	return nil
 }
 
 // createLabelKey creates a key from labels for tracking
