@@ -476,6 +476,21 @@ func (c *Collector) SumMetricWhere(name, key, value string) float64 {
 	return sum
 }
 
+// GetSeriesSum returns the exact aggregate sum for one metric+labels series.
+// This uses the streaming aggregation state and is not affected by retained point downsampling.
+func (c *Collector) GetSeriesSum(name string, labels map[string]string) (float64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.series[name] == nil {
+		return 0, false
+	}
+	s := c.series[name][labelKey(labels)]
+	if s == nil || s.agg.Count == 0 {
+		return 0, false
+	}
+	return s.agg.Sum, true
+}
+
 // GetMetricAggregation returns merged aggregation across all label series for a metric.
 func (c *Collector) GetMetricAggregation(name string) *models.Aggregation {
 	c.mu.Lock()

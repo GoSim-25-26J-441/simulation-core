@@ -1012,6 +1012,182 @@ func TestHTTPServerTimeSeriesRequestCountCumulative(t *testing.T) {
 	}
 }
 
+func TestHTTPServerTimeSeriesRequestCountCumulativeUsesRetainedSamples(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "8")
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+	}
+	rec, err := store.Create("test-run-retained", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+	now := time.Now()
+	labels := map[string]string{"service": "svc1", "endpoint": "/test"}
+	for i := 0; i < 100; i++ {
+		metrics.RecordRequestCount(collector, 1.0, now.Add(time.Duration(i)*time.Millisecond), labels)
+	}
+	collector.Stop()
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run-retained/metrics/timeseries?metric=request_count", nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	points, ok := body["points"].([]any)
+	if !ok || len(points) == 0 {
+		t.Fatalf("expected non-empty points array")
+	}
+	// Timeseries endpoint is based on retained/downsampled points, so cumulative values
+	// here represent retained sample progression and may be lower than full aggregate.
+	last := points[len(points)-1].(map[string]any)["value"].(float64)
+	if last >= 100 {
+		t.Fatalf("expected retained cumulative value to be below full aggregate (100), got %f", last)
+	}
+}
+
+func TestMetricUpdateValueRequestCountUsesCollectorAggregate(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "8")
+	c := metrics.NewCollector()
+	c.Start()
+	now := time.Now()
+	labels := map[string]string{"service": "svc1", "endpoint": "/test"}
+	for i := 0; i < 100; i++ {
+		metrics.RecordRequestCount(c, 1.0, now.Add(time.Duration(i)*time.Millisecond), labels)
+	}
+	points := c.GetTimeSeries(metrics.MetricRequestCount, labels)
+	if len(points) == 0 {
+		t.Fatalf("expected retained points")
+	}
+	latest := points[len(points)-1]
+	v := metricUpdateValue(c, metrics.MetricRequestCount, labels, latest)
+	if v != 100 {
+		t.Fatalf("expected metric_update to use collector aggregate sum 100, got %f", v)
+	}
+	if float64(len(points)) >= v {
+		t.Fatalf("expected retained points (%d) to be less than aggregate sum (%f)", len(points), v)
+	}
+}
+
+func TestMetricUpdateValueNonCounterUsesLatestValue(t *testing.T) {
+	c := metrics.NewCollector()
+	c.Start()
+	now := time.Now()
+	labels := map[string]string{"service": "svc1"}
+	c.Record("cpu_usage", 0.12, now, labels)
+	c.Record("cpu_usage", 0.34, now.Add(time.Millisecond), labels)
+	points := c.GetTimeSeries("cpu_usage", labels)
+	if len(points) < 2 {
+		t.Fatalf("expected points")
+	}
+	latest := points[len(points)-1]
+	v := metricUpdateValue(c, "cpu_usage", labels, latest)
+	if v != latest.Value {
+		t.Fatalf("expected non-counter metric_update to use latest value %f, got %f", latest.Value, v)
+	}
+}
+
+func TestHTTPServerMetricsStreamRequestCountMonotonicBeyondRetention(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "8")
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, executor)
+
+	input := &simulationv1.RunInput{
+		ScenarioYaml: testScenarioYAML,
+		DurationMs:   100,
+		RealTimeMode: true,
+	}
+	rec, err := store.Create("test-run-counter-sse", input)
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	labels := map[string]string{"service": "svc1", "endpoint": "/test"}
+	base := time.Now()
+	for i := 0; i < 100; i++ {
+		metrics.RecordRequestCount(collector, 1.0, base.Add(time.Duration(i)*time.Millisecond), labels)
+	}
+	if err := store.SetCollector(rec.Run.Id, collector); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+	if _, err := store.SetStatus(rec.Run.Id, simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+
+	go func() {
+		for i := 0; i < 5; i++ {
+			time.Sleep(30 * time.Millisecond)
+			metrics.RecordRequestCount(collector, 1.0, time.Now().Add(time.Duration(i)*time.Millisecond), labels)
+		}
+	}()
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/test-run-counter-sse/metrics/stream?interval_ms=20", nil)
+	ctx, cancel := context.WithTimeout(req.Context(), 220*time.Millisecond)
+	defer cancel()
+	req = req.WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		srv.Handler().ServeHTTP(rr, req)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("SSE stream did not complete")
+	}
+
+	lines := strings.Split(rr.Body.String(), "\n")
+	values := make([]float64, 0)
+	for i := 0; i < len(lines)-1; i++ {
+		if strings.HasPrefix(lines[i], "event: metric_update") && strings.HasPrefix(lines[i+1], "data: ") {
+			var data map[string]any
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(lines[i+1], "data: ")), &data); err != nil {
+				continue
+			}
+			if data["metric"] != metrics.MetricRequestCount {
+				continue
+			}
+			lb, _ := data["labels"].(map[string]any)
+			if lb["service"] == "svc1" && lb["endpoint"] == "/test" {
+				if v, ok := data["value"].(float64); ok {
+					values = append(values, v)
+				}
+			}
+		}
+	}
+	if len(values) == 0 {
+		t.Fatalf("expected request_count metric_update values in SSE output")
+	}
+	for i := 1; i < len(values); i++ {
+		if values[i] < values[i-1] {
+			t.Fatalf("expected monotonic non-decreasing request_count values, got %v", values)
+		}
+	}
+	if got, ok := collector.GetSeriesSum(metrics.MetricRequestCount, labels); !ok || values[len(values)-1] != got {
+		t.Fatalf("expected final SSE value to equal collector aggregate sum, got sse=%f agg=%f ok=%v", values[len(values)-1], got, ok)
+	}
+}
+
 func TestHTTPServerTimeSeriesNotFound(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))

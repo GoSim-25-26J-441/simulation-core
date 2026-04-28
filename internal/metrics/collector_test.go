@@ -647,6 +647,33 @@ func TestCollectorStreamingAggregationFields(t *testing.T) {
 	}
 }
 
+func TestCollectorGetSeriesSumExactLabelsUsesAggregate(t *testing.T) {
+	t.Setenv("SIMD_MAX_METRIC_SERIES_POINTS", "8")
+	c := NewCollector()
+	c.Start()
+	now := time.Now()
+	labelsA := map[string]string{"service": "svc-a"}
+	labelsB := map[string]string{"service": "svc-b"}
+	for i := 0; i < 100; i++ {
+		c.Record("request_count", 1, now.Add(time.Duration(i)*time.Millisecond), labelsA)
+	}
+	for i := 0; i < 5; i++ {
+		c.Record("request_count", 1, now.Add(time.Duration(i)*time.Millisecond), labelsB)
+	}
+
+	sumA, ok := c.GetSeriesSum("request_count", labelsA)
+	if !ok || sumA != 100 {
+		t.Fatalf("expected exact series sum 100 for labelsA, got ok=%v sum=%v", ok, sumA)
+	}
+	sumB, ok := c.GetSeriesSum("request_count", labelsB)
+	if !ok || sumB != 5 {
+		t.Fatalf("expected exact series sum 5 for labelsB, got ok=%v sum=%v", ok, sumB)
+	}
+	if got := len(c.GetTimeSeries("request_count", labelsA)); got > 8 {
+		t.Fatalf("expected retained points downsampled <= 8, got %d", got)
+	}
+}
+
 func TestCollectorPercentilesAreRecomputedLazily(t *testing.T) {
 	t.Setenv("SIMD_METRIC_RESERVOIR_SIZE", "128")
 	c := NewCollector()
