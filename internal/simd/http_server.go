@@ -1484,7 +1484,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 								lastSentTimestamps[metricName] = make(map[string]time.Time)
 							}
 							if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
-								value := metricUpdateValue(metricName, points, latest)
+								value := metricUpdateValue(collector, metricName, nil, latest)
 								if err := s.sendSSEEvent(w, "metric_update", map[string]any{
 									"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 									"metric":    latest.Name,
@@ -1507,7 +1507,7 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 									lastSentTimestamps[metricName] = make(map[string]time.Time)
 								}
 								if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
-									value := metricUpdateValue(metricName, points, latest)
+									value := metricUpdateValue(collector, metricName, labels, latest)
 									if err := s.sendSSEEvent(w, "metric_update", map[string]any{
 										"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 										"metric":    latest.Name,
@@ -1627,8 +1627,8 @@ func createLabelKey(labels map[string]string) string {
 }
 
 // convertTimeseriesToCumulative returns a new slice of points where request_count and
-// request_error_count are converted to cumulative values per (metric, labels), matching
-// SSE metric_update semantics. Other metrics are returned unchanged.
+// request_error_count are converted to cumulative values per (metric, labels) using
+// the retained samples in this response window. Other metrics are returned unchanged.
 func convertTimeseriesToCumulative(points []*models.MetricPoint) []*models.MetricPoint {
 	if len(points) == 0 {
 		return points
@@ -1667,15 +1667,16 @@ func convertTimeseriesToCumulative(points []*models.MetricPoint) []*models.Metri
 }
 
 // metricUpdateValue returns the value to send in a metric_update event.
-// For request_count and request_error_count we send cumulative sum so the frontend can plot (timestamp, total) directly.
-// For other metrics we send the latest point value (gauges / per-observation).
-func metricUpdateValue(metricName string, points []*models.MetricPoint, latest *models.MetricPoint) float64 {
+// For request_count and request_error_count we send the true collector aggregate sum for
+// the exact (metric, labels) series so counters stay monotonic even when retained points
+// are downsampled. For other metrics we send the latest point value.
+func metricUpdateValue(collector *metrics.Collector, metricName string, labels map[string]string, latest *models.MetricPoint) float64 {
 	if metricName == metrics.MetricRequestCount || metricName == metrics.MetricRequestErrorCount {
-		sum := 0.0
-		for _, p := range points {
-			sum += p.Value
+		if collector != nil {
+			if sum, ok := collector.GetSeriesSum(metricName, labels); ok {
+				return sum
+			}
 		}
-		return sum
 	}
 	return latest.Value
 }
