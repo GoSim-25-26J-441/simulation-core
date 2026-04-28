@@ -113,7 +113,8 @@ func (g *Graph) dfs(key string, visited, recStack map[string]bool) error {
 	visited[key] = true
 	recStack[key] = true
 
-	for _, edge := range g.edges[key] {
+	for i := range g.edges[key] {
+		edge := &g.edges[key][i]
 		if edge.Call.IsAsync() {
 			continue
 		}

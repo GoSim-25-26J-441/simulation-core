@@ -24,7 +24,7 @@ func feasibleBatchMetrics() *simulationv1.RunMetrics {
 		LatencyP95Ms:  100,
 		LatencyP99Ms:  200,
 		ThroughputRps: 1000,
-		TotalRequests:   1000,
+		TotalRequests: 1000,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{ServiceName: "svc1", CpuUtilization: 0.55, MemoryUtilization: 0.55},
 		},

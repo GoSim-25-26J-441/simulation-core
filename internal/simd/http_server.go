@@ -1,15 +1,22 @@
 package simd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -20,6 +27,7 @@ type HTTPServer struct {
 	mux      *http.ServeMux
 	store    *RunStore
 	Executor *RunExecutor
+	started  time.Time
 }
 
 func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
@@ -27,41 +35,131 @@ func NewHTTPServer(store *RunStore, executor *RunExecutor) *HTTPServer {
 		mux:      http.NewServeMux(),
 		store:    store,
 		Executor: executor,
+		started:  time.Now(),
 	}
 
 	s.mux.HandleFunc("/healthz", s.handleHealthz)
 	s.mux.HandleFunc("/v1/runs", s.handleRuns)
 	s.mux.HandleFunc("/v1/runs/", s.handleRunByID)
 	s.mux.HandleFunc("/v1/scenarios:validate", s.handleValidateScenario)
+	s.mux.HandleFunc("/diagnostics/runtime", s.handleDiagnosticsRuntime)
 
 	return s
+}
+
+func (s *HTTPServer) handleDiagnosticsRuntime(w http.ResponseWriter, r *http.Request) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	runCounts := s.store.Counts()
+	lifecycle := s.store.LifecycleConfig()
+	activeProgress := []*RunProgress{}
+	limits := SimulationLimits{}
+	opt := OptimizationSafetyLimits{}
+	if s.Executor != nil {
+		activeProgress = s.Executor.ActiveProgress()
+		limits = s.Executor.LimitsSnapshot()
+		opt = s.Executor.OptimizationSafetySnapshot()
+	}
+	resp := map[string]any{
+		"uptime_seconds": time.Since(s.started).Seconds(),
+		"go_version":     runtime.Version(),
+		"goroutines":     runtime.NumGoroutine(),
+		"memstats": map[string]any{
+			"alloc":       mem.Alloc,
+			"heap_alloc":  mem.HeapAlloc,
+			"heap_sys":    mem.HeapSys,
+			"num_gc":      mem.NumGC,
+			"next_gc":     mem.NextGC,
+			"pause_total": mem.PauseTotalNs,
+		},
+		"active_runs": activeProgress,
+		"runstore_counts": map[string]any{
+			"active":                           runCounts.Active,
+			"completed_retained":               runCounts.CompletedRetained,
+			"failed_retained":                  runCounts.FailedRetained,
+			"cancelled_retained":               runCounts.CancelledRetained,
+			"optimization_candidates_retained": runCounts.OptimizationCandidates,
+		},
+		"limits":              limits,
+		"runstore_lifecycle":  lifecycle,
+		"optimization_safety": opt,
+		"note":                "Protect diagnostics endpoint via network controls in production.",
+	}
+	s.writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *HTTPServer) handleRunProgress(w http.ResponseWriter, runID string) {
+	if _, ok := s.store.Get(runID); !ok {
+		s.writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if s.Executor == nil {
+		s.writeError(w, http.StatusPreconditionFailed, "executor not available")
+		return
+	}
+	for _, p := range s.Executor.ActiveProgress() {
+		if p.RunID == runID {
+			s.writeJSON(w, http.StatusOK, map[string]any{"progress": p})
+			return
+		}
+	}
+	s.writeError(w, http.StatusPreconditionFailed, "progress not available")
 }
 
 // handleValidateScenario handles POST /v1/scenarios:validate.
 func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var req struct {
 		ScenarioYAML string `json:"scenario_yaml"`
+		Mode         string `json:"mode,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
+	mode := strings.TrimSpace(req.Mode)
+	if mode == "" {
+		mode = "preflight"
+	}
+	if mode != "preflight" {
+		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: preflight)")
+		return
+	}
 	if strings.TrimSpace(req.ScenarioYAML) == "" {
-		s.writeError(w, http.StatusBadRequest, "scenario_yaml is required")
+		z := ScenarioValidationSummary{}
+		s.writeJSON(w, http.StatusBadRequest, &ScenarioValidationResult{
+			Valid: false,
+			Errors: []ScenarioValidationIssue{{
+				Code:    "SCENARIO_YAML_REQUIRED",
+				Message: "scenario_yaml is required and must be non-empty after trimming whitespace",
+				Path:    "scenario_yaml",
+			}},
+			Warnings: []ScenarioValidationIssue{},
+			Summary:  &z,
+		})
 		return
 	}
 
 	result := ValidateScenarioPreflight(req.ScenarioYAML)
-	if !result.Valid {
-		s.writeJSON(w, http.StatusBadRequest, result)
-		return
+	status := scenarioValidateHTTPStatus(result)
+	s.writeJSON(w, status, result)
+}
+
+func scenarioValidateHTTPStatus(result *ScenarioValidationResult) int {
+	if result.Valid {
+		return http.StatusOK
 	}
-	s.writeJSON(w, http.StatusOK, result)
+	for _, e := range result.Errors {
+		if e.Code == "SCENARIO_PARSE_INVALID" {
+			return http.StatusBadRequest
+		}
+	}
+	return http.StatusUnprocessableEntity
 }
 
 func (s *HTTPServer) Handler() http.Handler {
@@ -158,6 +256,16 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// Check for /progress suffix
+	if strings.HasSuffix(path, "/progress") {
+		runID := strings.TrimSuffix(path, "/progress")
+		if r.Method == http.MethodGet {
+			s.handleRunProgress(w, runID)
+		} else {
+			s.writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
 
 	// Check for /online/renew-lease suffix
 	if strings.HasSuffix(path, "/online/renew-lease") {
@@ -208,12 +316,17 @@ func (s *HTTPServer) handleRunByID(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateRun handles POST /v1/runs
 func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
+	normalizedBody, err := normalizeCreateRunAliasesJSON(r.Body)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
 	var req struct {
 		RunID string                 `json:"run_id,omitempty"`
 		Input *simulationv1.RunInput `json:"input"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(normalizedBody, &req); err != nil {
 		s.writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -403,9 +516,9 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 	// 1. Rate update: {"pattern_key": "client:svc1:/test", "rate_rps": 50.0}
 	// 2. Pattern update: {"pattern_key": "client:svc1:/test", "pattern": {...}}
 	var req struct {
-		PatternKey string                  `json:"pattern_key"`
-		RateRPS    *float64                `json:"rate_rps,omitempty"`
-		Pattern    *config.WorkloadPattern `json:"pattern,omitempty"`
+		PatternKey string                      `json:"pattern_key"`
+		RateRPS    *float64                    `json:"rate_rps,omitempty"`
+		Pattern    *httpWorkloadPatternRequest `json:"pattern,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -442,7 +555,12 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 		err = s.Executor.UpdateWorkloadRate(runID, req.PatternKey, *req.RateRPS)
 	case req.Pattern != nil:
 		// Pattern update
-		err = s.Executor.UpdateWorkloadPattern(runID, req.PatternKey, *req.Pattern)
+		pattern, validateErr := req.Pattern.toConfigWorkloadPattern()
+		if validateErr != nil {
+			s.writeError(w, http.StatusBadRequest, validateErr.Error())
+			return
+		}
+		err = s.Executor.UpdateWorkloadPattern(runID, req.PatternKey, pattern)
 	default:
 		s.writeError(w, http.StatusBadRequest, "either rate_rps or pattern must be provided")
 		return
@@ -470,6 +588,94 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 		"run_id":      runID,
 		"pattern_key": req.PatternKey,
 	})
+}
+
+type httpWorkloadPatternRequest struct {
+	From         string                          `json:"from"`
+	SourceKind   string                          `json:"source_kind,omitempty"`
+	TrafficClass string                          `json:"traffic_class,omitempty"`
+	Metadata     map[string]string               `json:"metadata,omitempty"`
+	To           string                          `json:"to"`
+	Arrival      *httpWorkloadArrivalSpecRequest `json:"arrival"`
+}
+
+type httpWorkloadArrivalSpecRequest struct {
+	Type                 string  `json:"type"`
+	RateRPS              float64 `json:"rate_rps"`
+	StdDevRPS            float64 `json:"stddev_rps,omitempty"`
+	BurstRateRPS         float64 `json:"burst_rate_rps,omitempty"`
+	BurstDurationSeconds float64 `json:"burst_duration_seconds,omitempty"`
+	QuietDurationSeconds float64 `json:"quiet_duration_seconds,omitempty"`
+}
+
+func (p *httpWorkloadPatternRequest) toConfigWorkloadPattern() (config.WorkloadPattern, error) {
+	if p == nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern is required")
+	}
+	if strings.TrimSpace(p.From) == "" {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.from is required")
+	}
+	if strings.TrimSpace(p.To) == "" {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.to is required")
+	}
+	if _, _, err := interaction.ParseDownstreamTarget(p.To); err != nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.to is invalid: %w", err)
+	}
+	if p.Arrival == nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.arrival is required")
+	}
+	arrivalType, err := config.NormalizeArrivalType(p.Arrival.Type)
+	if err != nil {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.arrival.type is invalid: %w", err)
+	}
+	if p.Arrival.RateRPS <= 0 {
+		return config.WorkloadPattern{}, fmt.Errorf("pattern.arrival.rate_rps must be positive")
+	}
+	return config.WorkloadPattern{
+		From:         p.From,
+		SourceKind:   p.SourceKind,
+		TrafficClass: p.TrafficClass,
+		Metadata:     p.Metadata,
+		To:           p.To,
+		Arrival: config.ArrivalSpec{
+			Type:                 arrivalType,
+			RateRPS:              p.Arrival.RateRPS,
+			StdDevRPS:            p.Arrival.StdDevRPS,
+			BurstRateRPS:         p.Arrival.BurstRateRPS,
+			BurstDurationSeconds: p.Arrival.BurstDurationSeconds,
+			QuietDurationSeconds: p.Arrival.QuietDurationSeconds,
+		},
+	}, nil
+}
+
+func normalizeCreateRunAliasesJSON(bodyReader io.Reader) ([]byte, error) {
+	var body map[string]any
+	if err := json.NewDecoder(bodyReader).Decode(&body); err != nil {
+		return nil, err
+	}
+	applyCreateRunOptimizationAliases(body)
+	return json.Marshal(body)
+}
+
+func applyCreateRunOptimizationAliases(body map[string]any) {
+	input, ok := body["input"].(map[string]any)
+	if !ok || input == nil {
+		return
+	}
+	optimization, ok := input["optimization"].(map[string]any)
+	if !ok || optimization == nil {
+		return
+	}
+	if _, hasCanonical := optimization["drain_timeout_ms"]; !hasCanonical {
+		if aliasValue, hasAlias := optimization["host_drain_timeout_ms"]; hasAlias {
+			optimization["drain_timeout_ms"] = aliasValue
+		}
+	}
+	if _, hasCanonical := optimization["memory_downsize_headroom_mb"]; !hasCanonical {
+		if aliasValue, hasAlias := optimization["memory_headroom_mb"]; hasAlias {
+			optimization["memory_downsize_headroom_mb"] = aliasValue
+		}
+	}
 }
 
 // handleUpdateRunConfiguration handles PATCH /v1/runs/{id}/configuration
@@ -937,7 +1143,7 @@ func parseTime(timeStr string) (time.Time, error) {
 
 // sseWriteMetricsSnapshot sends a metrics_snapshot SSE event when persisted final metrics exist
 // or (for real-time runs) live aggregates from the collector.
-func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string, rec *RunRecord, streamLive, hasCollector bool, collector *metrics.Collector) {
+func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string, rec *RunRecord, streamLive, hasCollector bool, collector *metrics.Collector) error {
 	var metricsToSend *simulationv1.RunMetrics
 	if rec.Metrics != nil {
 		metricsToSend = rec.Metrics
@@ -951,7 +1157,7 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 		metricsToSend = convertMetricsToProto(engineMetrics)
 	}
 	if metricsToSend == nil {
-		return
+		return nil
 	}
 	cfg, cfgOk := s.Executor.GetRunConfiguration(runID)
 	if cfgOk && cfg != nil {
@@ -1019,10 +1225,10 @@ func (s *HTTPServer) sseWriteMetricsSnapshot(w http.ResponseWriter, runID string
 			payload["host_metrics"] = hostMetrics
 		}
 	}
-	s.sendSSEEvent(w, "metrics_snapshot", payload)
+	return s.sendSSEEvent(w, "metrics_snapshot", payload)
 }
 
-func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, []map[string]any, bool) {
+func (s *HTTPServer) brokerShardResourcesJSON(runID string) (queues []map[string]any, topics []map[string]any, ok bool) {
 	if s == nil || s.Executor == nil || runID == "" {
 		return nil, nil, false
 	}
@@ -1038,7 +1244,7 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 	}
 	queueSnaps := rm.QueueBrokerHealthSnapshots(snapshotAt)
 	topicSnaps := rm.TopicBrokerHealthSnapshots(snapshotAt)
-	queues := make([]map[string]any, 0, len(queueSnaps))
+	queues = make([]map[string]any, 0, len(queueSnaps))
 	for _, q := range queueSnaps {
 		queues = append(queues, map[string]any{
 			"broker_service":        q.BrokerID,
@@ -1053,8 +1259,9 @@ func (s *HTTPServer) brokerShardResourcesJSON(runID string) ([]map[string]any, [
 			"dlq_count":             q.DlqCount,
 		})
 	}
-	topics := make([]map[string]any, 0, len(topicSnaps))
-	for _, t := range topicSnaps {
+	topics = make([]map[string]any, 0, len(topicSnaps))
+	for i := range topicSnaps {
+		t := &topicSnaps[i]
 		topics = append(topics, map[string]any{
 			"broker_service":        t.BrokerID,
 			"topic":                 t.Topic,
@@ -1110,9 +1317,12 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 
 	// Send initial status event
 	previousStatus := rec.Run.Status
-	s.sendSSEEvent(w, "status_change", map[string]any{
+	if err := s.sendSSEEvent(w, "status_change", map[string]any{
 		"status": rec.Run.Status.String(),
-	})
+	}); err != nil {
+		s.logSSEWriteFailure(r.Context(), runID, "status_change", err)
+		return
+	}
 
 	// Parse interval from query parameter (default: 1s)
 	interval := 1 * time.Second
@@ -1152,9 +1362,11 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Get current run state
 			rec, ok := s.store.Get(runID)
 			if !ok {
-				s.sendSSEEvent(w, "error", map[string]any{
+				if err := s.sendSSEEvent(w, "error", map[string]any{
 					"error": "run not found",
-				})
+				}); err != nil {
+					s.logSSEWriteFailure(ctx, runID, "error", err)
+				}
 				return
 			}
 
@@ -1172,9 +1384,12 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 
 			// Check for status changes
 			if rec.Run.Status != previousStatus {
-				s.sendSSEEvent(w, "status_change", map[string]any{
+				if err := s.sendSSEEvent(w, "status_change", map[string]any{
 					"status": rec.Run.Status.String(),
-				})
+				}); err != nil {
+					s.logSSEWriteFailure(ctx, runID, "status_change", err)
+					return
+				}
 				previousStatus = rec.Run.Status
 
 				// Exit if terminal status
@@ -1186,10 +1401,16 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					if r2, ok2 := s.store.Get(runID); ok2 {
 						rec = r2
 					}
-					s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector)
-					s.sendSSEEvent(w, "complete", map[string]any{
+					if err := s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector); err != nil {
+						s.logSSEWriteFailure(ctx, runID, "metrics_snapshot", err)
+						return
+					}
+					if err := s.sendSSEEvent(w, "complete", map[string]any{
 						"status": rec.Run.Status.String(),
-					})
+					}); err != nil {
+						s.logSSEWriteFailure(ctx, runID, "complete", err)
+						return
+					}
 					if rc != nil {
 						if err := rc.SetWriteDeadline(time.Time{}); err != nil {
 							logger.Debug("SetWriteDeadline failed", "error", err)
@@ -1209,13 +1430,16 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					lastOptBestScore = rec.Run.BestScore
 					opt := rec.Input.Optimization
 					objective, unit := ObjectiveAndUnitForProgress(opt)
-					s.sendSSEEvent(w, "optimization_progress", map[string]any{
+					if err := s.sendSSEEvent(w, "optimization_progress", map[string]any{
 						"iteration":   rec.Run.Iterations,
 						"best_score":  rec.Run.BestScore,
 						"best_run_id": rec.Run.BestRunId,
 						"objective":   objective,
 						"unit":        unit,
-					})
+					}); err != nil {
+						s.logSSEWriteFailure(ctx, runID, "optimization_progress", err)
+						return
+					}
 				}
 				// Send new optimization steps (online controller config changes)
 				stepCount := len(rec.OptimizationHistory)
@@ -1223,7 +1447,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 					for i := lastOptStepCount; i < stepCount; i++ {
 						step := rec.OptimizationHistory[i]
 						if step != nil {
-							s.sendSSEEvent(w, "optimization_step", convertOptimizationStepToJSON(step))
+							if err := s.sendSSEEvent(w, "optimization_step", convertOptimizationStepToJSON(step)); err != nil {
+								s.logSSEWriteFailure(ctx, runID, "optimization_step", err)
+								return
+							}
 						}
 					}
 					lastOptStepCount = stepCount
@@ -1233,7 +1460,10 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 			// Send aggregated metrics snapshot: final metrics from store when persisted; during run, live
 			// collector snapshots only for real-time runs (non-real-time runs can take wall-clock time to
 			// finish simulation work without throttling — partial metrics would be misleading as "live").
-			s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector)
+			if err := s.sseWriteMetricsSnapshot(w, runID, rec, streamLive, hasCollector, collector); err != nil {
+				s.logSSEWriteFailure(ctx, runID, "metrics_snapshot", err)
+				return
+			}
 
 			// Send time-series metric updates if collector is available (real-time runs only)
 			if streamLive && hasCollector && collector != nil {
@@ -1255,12 +1485,15 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 							}
 							if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
 								value := metricUpdateValue(metricName, points, latest)
-								s.sendSSEEvent(w, "metric_update", map[string]any{
+								if err := s.sendSSEEvent(w, "metric_update", map[string]any{
 									"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 									"metric":    latest.Name,
 									"value":     value,
 									"labels":    latest.Labels,
-								})
+								}); err != nil {
+									s.logSSEWriteFailure(ctx, runID, "metric_update", err)
+									return
+								}
 								lastSentTimestamps[metricName][labelKey] = latest.Timestamp
 							}
 						}
@@ -1275,12 +1508,15 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 								}
 								if lastTs, exists := lastSentTimestamps[metricName][labelKey]; !exists || !latest.Timestamp.Equal(lastTs) {
 									value := metricUpdateValue(metricName, points, latest)
-									s.sendSSEEvent(w, "metric_update", map[string]any{
+									if err := s.sendSSEEvent(w, "metric_update", map[string]any{
 										"timestamp": latest.Timestamp.Format(time.RFC3339Nano),
 										"metric":    latest.Name,
 										"value":     value,
 										"labels":    latest.Labels,
-									})
+									}); err != nil {
+										s.logSSEWriteFailure(ctx, runID, "metric_update", err)
+										return
+									}
 									lastSentTimestamps[metricName][labelKey] = latest.Timestamp
 								}
 							}
@@ -1305,12 +1541,43 @@ func (s *HTTPServer) handleMetricsStream(w http.ResponseWriter, r *http.Request,
 }
 
 // sendSSEEvent sends a Server-Sent Event
-func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data map[string]any) {
+func isClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+		return true
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		if errors.Is(netErr.Err, syscall.EPIPE) || errors.Is(netErr.Err, syscall.ECONNRESET) {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset by peer")
+}
+
+func (s *HTTPServer) logSSEWriteFailure(ctx context.Context, runID, eventType string, err error) {
+	if err == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		logger.Debug("SSE client context done", "run_id", runID, "event_type", eventType, "error", ctx.Err())
+		return
+	}
+	if isClientDisconnect(err) {
+		logger.Debug("SSE client disconnected", "run_id", runID, "event_type", eventType, "error", err)
+		return
+	}
+	logger.Warn("SSE write failed", "run_id", runID, "event_type", eventType, "error", err)
+}
+
+func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data map[string]any) error {
 	// Format: event: <type>\ndata: <json>\n\n
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		logger.Error("failed to marshal SSE event data", "error", err)
-		return
+		return fmt.Errorf("marshal sse event %s: %w", eventType, err)
 	}
 
 	// Reset write deadline before EVERY write to prevent timeouts
@@ -1324,13 +1591,7 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 	// Write event in SSE format
 	// Note: Errors are logged but not returned as SSE streams are best-effort
 	if _, err := w.Write([]byte("event: " + eventType + "\n")); err != nil {
-		// Check if it's a timeout error - downgrade to warning if so
-		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
-			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
-		} else {
-			logger.Error("failed to write SSE event header", "error", err)
-		}
-		return
+		return fmt.Errorf("write sse event header %s: %w", eventType, err)
 	}
 
 	// Reset deadline again before writing data
@@ -1341,14 +1602,9 @@ func (s *HTTPServer) sendSSEEvent(w http.ResponseWriter, eventType string, data 
 	}
 
 	if _, err := w.Write([]byte("data: " + string(jsonData) + "\n\n")); err != nil {
-		// Check if it's a timeout error - downgrade to warning if so
-		if errStr := err.Error(); strings.Contains(errStr, "timeout") || strings.Contains(errStr, "i/o timeout") {
-			logger.Warn("SSE write timeout (client may be slow or connection lost)", "error", err)
-		} else {
-			logger.Error("failed to write SSE event data", "error", err)
-		}
-		return
+		return fmt.Errorf("write sse event data %s: %w", eventType, err)
 	}
+	return nil
 }
 
 // createLabelKey creates a key from labels for tracking
@@ -1438,7 +1694,8 @@ func serviceLabelsFromInput(input *simulationv1.RunInput) []map[string]string {
 		return nil
 	}
 	out := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		out = append(out, metrics.CreateServiceLabels(svc.ID))
 	}
 	return out
@@ -1790,6 +2047,12 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		"cross_zone_request_fraction":         metrics.CrossZoneRequestFraction,
 		"cross_zone_latency_penalty_ms_total": metrics.CrossZoneLatencyPenaltyMsTotal,
 		"cross_zone_latency_penalty_ms_mean":  metrics.CrossZoneLatencyPenaltyMsMean,
+		"same_zone_latency_penalty_ms_total":  metrics.SameZoneLatencyPenaltyMsTotal,
+		"same_zone_latency_penalty_ms_mean":   metrics.SameZoneLatencyPenaltyMsMean,
+		"external_latency_ms_total":           metrics.ExternalLatencyMsTotal,
+		"external_latency_ms_mean":            metrics.ExternalLatencyMsMean,
+		"topology_latency_penalty_ms_total":   metrics.TopologyLatencyPenaltyMsTotal,
+		"topology_latency_penalty_ms_mean":    metrics.TopologyLatencyPenaltyMsMean,
 	}
 
 	if len(metrics.ServiceMetrics) > 0 {
@@ -1835,6 +2098,73 @@ func convertMetricsToJSON(metrics *simulationv1.RunMetrics) map[string]any {
 		}
 		if len(hm) > 0 {
 			result["host_metrics"] = hm
+		}
+	}
+
+	if len(metrics.EndpointRequestStats) > 0 {
+		endpointStats := make([]map[string]any, 0, len(metrics.EndpointRequestStats))
+		for _, es := range metrics.EndpointRequestStats {
+			if es == nil {
+				continue
+			}
+			row := map[string]any{
+				"service_name":  es.ServiceName,
+				"endpoint_path": es.EndpointPath,
+				"request_count": es.RequestCount,
+				"error_count":   es.ErrorCount,
+			}
+			if es.LatencyP50Ms != nil {
+				row["latency_p50_ms"] = es.GetLatencyP50Ms()
+			}
+			if es.LatencyP95Ms != nil {
+				row["latency_p95_ms"] = es.GetLatencyP95Ms()
+			}
+			if es.LatencyP99Ms != nil {
+				row["latency_p99_ms"] = es.GetLatencyP99Ms()
+			}
+			if es.LatencyMeanMs != nil {
+				row["latency_mean_ms"] = es.GetLatencyMeanMs()
+			}
+			if es.RootLatencyP50Ms != nil {
+				row["root_latency_p50_ms"] = es.GetRootLatencyP50Ms()
+			}
+			if es.RootLatencyP95Ms != nil {
+				row["root_latency_p95_ms"] = es.GetRootLatencyP95Ms()
+			}
+			if es.RootLatencyP99Ms != nil {
+				row["root_latency_p99_ms"] = es.GetRootLatencyP99Ms()
+			}
+			if es.RootLatencyMeanMs != nil {
+				row["root_latency_mean_ms"] = es.GetRootLatencyMeanMs()
+			}
+			if es.QueueWaitP50Ms != nil {
+				row["queue_wait_p50_ms"] = es.GetQueueWaitP50Ms()
+			}
+			if es.QueueWaitP95Ms != nil {
+				row["queue_wait_p95_ms"] = es.GetQueueWaitP95Ms()
+			}
+			if es.QueueWaitP99Ms != nil {
+				row["queue_wait_p99_ms"] = es.GetQueueWaitP99Ms()
+			}
+			if es.QueueWaitMeanMs != nil {
+				row["queue_wait_mean_ms"] = es.GetQueueWaitMeanMs()
+			}
+			if es.ProcessingLatencyP50Ms != nil {
+				row["processing_latency_p50_ms"] = es.GetProcessingLatencyP50Ms()
+			}
+			if es.ProcessingLatencyP95Ms != nil {
+				row["processing_latency_p95_ms"] = es.GetProcessingLatencyP95Ms()
+			}
+			if es.ProcessingLatencyP99Ms != nil {
+				row["processing_latency_p99_ms"] = es.GetProcessingLatencyP99Ms()
+			}
+			if es.ProcessingLatencyMeanMs != nil {
+				row["processing_latency_mean_ms"] = es.GetProcessingLatencyMeanMs()
+			}
+			endpointStats = append(endpointStats, row)
+		}
+		if len(endpointStats) > 0 {
+			result["endpoint_request_stats"] = endpointStats
 		}
 	}
 

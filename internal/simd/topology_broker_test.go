@@ -134,10 +134,10 @@ func TestQueueConsumerUsesCallerHostZoneFallbackWhenProducerInstanceGone(t *test
 		ParentRequestID: "p3",
 		TraceID:         "t3",
 		Metadata: map[string]interface{}{
-			"instance_id":        "producer-instance-gone",
-			"caller_host_zone":   "zone-a",
-			"trace_depth":        1,
-			"async_depth":        1,
+			"instance_id":      "producer-instance-gone",
+			"caller_host_zone": "zone-a",
+			"trace_depth":      1,
+			"async_depth":      1,
 		},
 	})
 	eng.ScheduleAt(engine.EventTypeQueueDequeue, eng.GetSimTime(), nil, "queue", map[string]interface{}{
@@ -446,4 +446,3 @@ func TestDirectAsyncDownstreamDelayedSameZoneLatencyPenaltyAfterProducerRemoval(
 		t.Fatalf("expected same_zone_latency_penalty_ms on delayed async downstream with stable caller_host_id, got total=%v mean=%v", rmOut.SameZoneLatencyPenaltyMsTotal, rmOut.SameZoneLatencyPenaltyMsMean)
 	}
 }
-

@@ -3,6 +3,8 @@ package improvement
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -15,6 +17,12 @@ import (
 // maxEvaluations caps total simulation runs (0 = unlimited). The simd executor applies a
 // default cap when the client omits optimization.max_evaluations for batch runs.
 func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.Scenario, durationMs int64, pb *simulationv1.BatchOptimizationConfig, maxEvaluations int) (*ExperimentResult, error) {
+	if o.safety.MaxWallClockRuntime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.safety.MaxWallClockRuntime)
+		defer cancel()
+	}
+	atomic.StoreInt32(&o.failedCandidates, 0)
 	if initial == nil {
 		return nil, fmt.Errorf("initial configuration is required")
 	}
@@ -35,6 +43,9 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 
 	start := time.Now()
 	eval := func(sc *config.Scenario) (*simulationv1.RunMetrics, int, error) {
+		if int(atomic.LoadInt32(&o.failedCandidates)) >= o.safety.MaxFailedCandidates {
+			return nil, 0, fmt.Errorf("max failed candidates reached")
+		}
 		n := int(spec.ReevalPerCandidate)
 		if n < 1 {
 			n = 1
@@ -44,7 +55,11 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 			var seed int64
 			if spec.DeterministicCandidateSeeds {
 				h := batchspec.ConfigHash(sc)
-				seed = int64(h) ^ int64(i+1)
+				seedBase, err := strconv.ParseInt(strconv.FormatUint(h%maxInt64Uint64, 10), 10, 64)
+				if err != nil {
+					return nil, 0, err
+				}
+				seed = seedBase ^ int64(i+1)
 			}
 			m, err := o.evaluateConfigurationMetrics(ctx, sc, durationMs, cand, seed)
 			if err != nil {
@@ -100,3 +115,5 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 
 	return result, nil
 }
+
+const maxInt64Uint64 = ^uint64(0) >> 1

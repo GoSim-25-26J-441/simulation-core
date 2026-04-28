@@ -22,6 +22,16 @@ type InstancePlacement struct {
 	QueueLength       int32
 }
 
+func safeInt32FromInt(v int) int32 {
+	if v > int(^uint32(0)>>1) {
+		return int32(^uint32(0) >> 1)
+	}
+	if v < -int(^uint32(0)>>1)-1 {
+		return -int32(^uint32(0)>>1) - 1
+	}
+	return int32(v)
+}
+
 // GetInstancePlacements returns a stable-ordered snapshot of all instances (host_id, then instance_id).
 // CPU utilization is evaluated at simTime; zero simTime uses wall-clock now (avoid in DES paths).
 func (m *Manager) GetInstancePlacements(simTime time.Time) []InstancePlacement {
@@ -52,18 +62,28 @@ func (m *Manager) GetInstancePlacements(simTime time.Time) []InstancePlacement {
 			lc = "DRAINING"
 		}
 		out = append(out, InstancePlacement{
-			InstanceID:        r.id,
-			ServiceID:         inst.ServiceName(),
-			HostID:            inst.HostID(),
-			HostZone:          func() string { if h, ok := m.hosts[inst.HostID()]; ok && h != nil { return h.Zone() }; return "" }(),
-			HostLabels:        func() map[string]string { if h, ok := m.hosts[inst.HostID()]; ok && h != nil { return h.Labels() }; return nil }(),
+			InstanceID: r.id,
+			ServiceID:  inst.ServiceName(),
+			HostID:     inst.HostID(),
+			HostZone: func() string {
+				if h, ok := m.hosts[inst.HostID()]; ok && h != nil {
+					return h.Zone()
+				}
+				return ""
+			}(),
+			HostLabels: func() map[string]string {
+				if h, ok := m.hosts[inst.HostID()]; ok && h != nil {
+					return h.Labels()
+				}
+				return nil
+			}(),
 			Lifecycle:         lc,
 			CPUCores:          inst.CPUCores(),
 			MemoryMB:          inst.MemoryMB(),
 			CPUUtilization:    inst.CPUUtilizationAt(simTime),
 			MemoryUtilization: inst.MemoryUtilization(),
-			ActiveRequests:    int32(inst.ActiveRequests()),
-			QueueLength:       int32(inst.QueueLength()),
+			ActiveRequests:    safeInt32FromInt(inst.ActiveRequests()),
+			QueueLength:       safeInt32FromInt(inst.QueueLength()),
 		})
 	}
 	return out

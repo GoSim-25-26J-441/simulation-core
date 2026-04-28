@@ -53,7 +53,8 @@ func (g *Graph) ResolveDownstreamCalls(serviceID, path string) ([]ResolvedCall, 
 	}
 
 	resolved := make([]ResolvedCall, 0, len(edges))
-	for _, edge := range edges {
+	for i := range edges {
+		edge := &edges[i]
 		// Validate target service exists
 		if _, exists := g.GetService(edge.ToServiceID); !exists {
 			continue // Skip invalid downstream calls

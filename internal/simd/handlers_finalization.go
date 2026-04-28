@@ -47,6 +47,7 @@ func finalizeRequestCompletion(state *scenarioState, eng *engine.Engine, rm *eng
 		request.Status = models.RequestStatusCompleted
 		request.CompletionTime = simTime
 		request.Duration = simTime.Sub(request.ArrivalTime)
+		rm.FinalizeRequest(request)
 		return
 	}
 	if request.Status == models.RequestStatusFailed {
@@ -55,6 +56,7 @@ func finalizeRequestCompletion(state *scenarioState, eng *engine.Engine, rm *eng
 			request.CompletionTime = simTime
 			request.Duration = simTime.Sub(request.ArrivalTime)
 		}
+		rm.FinalizeRequest(request)
 		return
 	}
 	request.Metadata[metaDESFinalized] = true
@@ -95,6 +97,7 @@ func finalizeRequestCompletion(state *scenarioState, eng *engine.Engine, rm *eng
 	if request.ParentID != "" && !metadataBool(request.Metadata, metaDownstreamAsync) {
 		notifyParentSyncChildResolved(state, eng, rm, request, request.ParentID, simTime, false, "")
 	}
+	rm.FinalizeRequest(request)
 }
 
 // finalizeRequestFailure marks a request failed and propagates to sync parents when applicable.
@@ -132,6 +135,7 @@ func finalizeRequestFailure(state *scenarioState, eng *engine.Engine, rm *engine
 	if request.ParentID != "" && !metadataBool(request.Metadata, metaDownstreamAsync) {
 		notifyParentSyncChildResolved(state, eng, rm, request, request.ParentID, simTime, true, reason)
 	}
+	rm.FinalizeRequest(request)
 }
 
 func notifyParentSyncChildResolved(state *scenarioState, eng *engine.Engine, rm *engine.RunManager, child *models.Request, parentID string, simTime time.Time, childFailed bool, failureReason string) {

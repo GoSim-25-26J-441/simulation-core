@@ -220,7 +220,6 @@ func appendEpCompare(
 	pred float64,
 	predOK bool,
 	relTol float64,
-	mode compareMode,
 ) []MetricCheckResult {
 	if !ov.Present {
 		return out
@@ -231,13 +230,13 @@ func appendEpCompare(
 			Detail: "observation present but no matching predicted aggregate (see warnings)",
 		})
 	}
-	return append(out, compareOne(name, ov.Value, pred, relTol, 0, mode))
+	return append(out, compareOne(name, ov.Value, pred, relTol, 0, compareRel))
 }
 
 // validateEndpointLatencyAndQueue compares endpoint hop latency, queue wait, and processing latency
 // to predictions. Aggregates across seeds: mean for P50 and mean; max for P95 and P99.
 // Service-level fallbacks are warning-backed when endpoint label rollups are missing.
-func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) ([]MetricCheckResult, []string) {
+func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) (results []MetricCheckResult, warnings []string) {
 	var out []MetricCheckResult
 	var warns []string
 	if obs == nil || tol == nil {
@@ -259,7 +258,8 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 	})
 
 	var usedStar bool
-	for _, eo := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		eo := &obs.Endpoints[i]
 		if eo.ServiceID == "" {
 			continue
 		}
@@ -269,7 +269,7 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 			usedStar = true
 		}
 
-		if anyHopLatencyPresent(eo) {
+		if anyHopLatencyPresent(*eo) {
 			ph := predictHop(eo.ServiceID, path, star, hop, runs, rollup, &warns, "endpoint_hop_latency")
 			p50, ok50 := ph.meanP50()
 			pMean, okMean := ph.meanMean()
@@ -277,42 +277,44 @@ func validateEndpointLatencyAndQueue(obs *ObservedMetrics, runs []*models.RunMet
 			p99, ok99 := ph.tailP99()
 
 			nbase := fmt.Sprintf("endpoint_hop_latency:%s:%s", eo.ServiceID, eo.EndpointPath)
-			out = appendEpCompare(out, eo.LatencyP50Ms, nbase+":p50_ms", p50, ok50, tol.LatencyP50Rel, compareRel)
-			out = appendEpCompare(out, eo.LatencyMeanMs, nbase+":mean_ms", pMean, okMean, tol.LatencyP50Rel, compareRel)
-			out = appendEpCompare(out, eo.LatencyP95Ms, nbase+":p95_ms", p95, ok95, tol.LatencyP95Rel, compareRel)
-			out = appendEpCompare(out, eo.LatencyP99Ms, nbase+":p99_ms", p99, ok99, tol.LatencyP99Rel, compareRel)
+			out = appendEpCompare(out, eo.LatencyP50Ms, nbase+":p50_ms", p50, ok50, tol.LatencyP50Rel)
+			out = appendEpCompare(out, eo.LatencyMeanMs, nbase+":mean_ms", pMean, okMean, tol.LatencyP50Rel)
+			out = appendEpCompare(out, eo.LatencyP95Ms, nbase+":p95_ms", p95, ok95, tol.LatencyP95Rel)
+			out = appendEpCompare(out, eo.LatencyP99Ms, nbase+":p99_ms", p99, ok99, tol.LatencyP99Rel)
 		}
 
-		if anyQueueWaitPresent(eo) {
+		if anyQueueWaitPresent(*eo) {
 			pq := predictQueue(eo.ServiceID, path, star, qw, runs, rollup, &warns, "endpoint_queue_wait")
 			q50, qok50 := pq.meanP50()
 			qMean, qokMean := pq.meanMean()
 			q95, qok95 := pq.tailP95()
 			q99, qok99 := pq.tailP99()
 			qbase := fmt.Sprintf("endpoint_queue_wait:%s:%s", eo.ServiceID, eo.EndpointPath)
-			out = appendEpCompare(out, eo.QueueWaitP50Ms, qbase+":p50_ms", q50, qok50, tol.LatencyP50Rel, compareRel)
-			out = appendEpCompare(out, eo.QueueWaitMeanMs, qbase+":mean_ms", qMean, qokMean, tol.LatencyP50Rel, compareRel)
-			out = appendEpCompare(out, eo.QueueWaitP95Ms, qbase+":p95_ms", q95, qok95, tol.LatencyP95Rel, compareRel)
-			out = appendEpCompare(out, eo.QueueWaitP99Ms, qbase+":p99_ms", q99, qok99, tol.LatencyP99Rel, compareRel)
+			out = appendEpCompare(out, eo.QueueWaitP50Ms, qbase+":p50_ms", q50, qok50, tol.LatencyP50Rel)
+			out = appendEpCompare(out, eo.QueueWaitMeanMs, qbase+":mean_ms", qMean, qokMean, tol.LatencyP50Rel)
+			out = appendEpCompare(out, eo.QueueWaitP95Ms, qbase+":p95_ms", q95, qok95, tol.LatencyP95Rel)
+			out = appendEpCompare(out, eo.QueueWaitP99Ms, qbase+":p99_ms", q99, qok99, tol.LatencyP99Rel)
 		}
 
-		if anyProcessingLatencyPresent(eo) {
+		if anyProcessingLatencyPresent(*eo) {
 			pp := predictProc(eo.ServiceID, path, star, proc, runs, rollup, &warns, "endpoint_processing_latency")
 			pr50, pok50 := pp.meanP50()
 			prMean, pokMean := pp.meanMean()
 			pr95, pok95 := pp.tailP95()
 			pr99, pok99 := pp.tailP99()
 			pibase := fmt.Sprintf("endpoint_processing_latency:%s:%s", eo.ServiceID, eo.EndpointPath)
-			out = appendEpCompare(out, eo.ProcessingLatencyP50Ms, pibase+":p50_ms", pr50, pok50, tol.LatencyP50Rel, compareRel)
-			out = appendEpCompare(out, eo.ProcessingLatencyMeanMs, pibase+":mean_ms", prMean, pokMean, tol.LatencyP50Rel, compareRel)
-			out = appendEpCompare(out, eo.ProcessingLatencyP95Ms, pibase+":p95_ms", pr95, pok95, tol.LatencyP95Rel, compareRel)
-			out = appendEpCompare(out, eo.ProcessingLatencyP99Ms, pibase+":p99_ms", pr99, pok99, tol.LatencyP99Rel, compareRel)
+			out = appendEpCompare(out, eo.ProcessingLatencyP50Ms, pibase+":p50_ms", pr50, pok50, tol.LatencyP50Rel)
+			out = appendEpCompare(out, eo.ProcessingLatencyMeanMs, pibase+":mean_ms", prMean, pokMean, tol.LatencyP50Rel)
+			out = appendEpCompare(out, eo.ProcessingLatencyP95Ms, pibase+":p95_ms", pr95, pok95, tol.LatencyP95Rel)
+			out = appendEpCompare(out, eo.ProcessingLatencyP99Ms, pibase+":p99_ms", pr99, pok99, tol.LatencyP99Rel)
 		}
 	}
 	if usedStar {
 		warns = append(warns, "endpoint latency/queue/processing: at least one observation uses endpoint path \"*\" (service rollup) compared to service-level predicted aggregates")
 	}
-	return out, dedupeStrings(warns)
+	results = out
+	warnings = dedupeStrings(warns)
+	return results, warnings
 }
 
 func anyHopLatencyPresent(eo EndpointObservation) bool {

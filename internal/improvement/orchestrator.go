@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -17,16 +20,19 @@ import (
 
 // Orchestrator manages multi-run optimization experiments
 type Orchestrator struct {
-	store           *simd.RunStore
-	executor        *simd.RunExecutor
-	optimizer       *Optimizer
-	objective       ObjectiveFunction
-	mu              sync.RWMutex
-	activeRuns      map[string]*RunContext
-	maxParallelRuns int // Maximum number of parallel runs
+	store            *simd.RunStore
+	executor         *simd.RunExecutor
+	optimizer        *Optimizer
+	objective        ObjectiveFunction
+	mu               sync.RWMutex
+	activeRuns       map[string]*RunContext
+	maxParallelRuns  int // Maximum number of parallel runs
+	safety           OptimizationSafetyConfig
+	candidateSem     chan struct{}
+	failedCandidates int32
 
 	// batchCandidateStore is set only during RunBatchExperiment for hash→runID resolution.
-	batchCandMu       sync.Mutex
+	batchCandMu         sync.Mutex
 	batchCandidateStore *CandidateStore
 }
 
@@ -40,7 +46,22 @@ type RunContext struct {
 	Error       error
 	CreatedAt   time.Time
 	CompletedAt time.Time
+	Outcome     CandidateOutcome
+	Reason      string
+	Duration    time.Duration
+	HasMetrics  bool
 }
+
+type CandidateOutcome string
+
+const (
+	CandidateSucceeded     CandidateOutcome = "succeeded"
+	CandidateFailed        CandidateOutcome = "failed"
+	CandidateTimedOut      CandidateOutcome = "timed_out"
+	CandidateCancelled     CandidateOutcome = "cancelled"
+	CandidateLimitExceeded CandidateOutcome = "limit_exceeded"
+	CandidateInvalidConfig CandidateOutcome = "invalid_config"
+)
 
 // RunStatus represents the status of an optimization run
 type RunStatus string
@@ -75,13 +96,16 @@ type ExperimentResult struct {
 
 // NewOrchestrator creates a new optimization orchestrator
 func NewOrchestrator(store *simd.RunStore, executor *simd.RunExecutor, optimizer *Optimizer, objective ObjectiveFunction) *Orchestrator {
+	safety := OptimizationSafetyConfigFromEnv()
 	return &Orchestrator{
 		store:           store,
 		executor:        executor,
 		optimizer:       optimizer,
 		objective:       objective,
 		activeRuns:      make(map[string]*RunContext),
-		maxParallelRuns: 1, // Default to sequential execution
+		maxParallelRuns: 1,
+		safety:          safety,
+		candidateSem:    make(chan struct{}, safety.MaxConcurrentCandidates),
 	}
 }
 
@@ -96,6 +120,12 @@ func (o *Orchestrator) WithMaxParallelRuns(max int) *Orchestrator {
 
 // RunExperiment executes a full optimization experiment
 func (o *Orchestrator) RunExperiment(ctx context.Context, initialConfig *config.Scenario, durationMs int64) (*ExperimentResult, error) {
+	if o.safety.MaxWallClockRuntime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, o.safety.MaxWallClockRuntime)
+		defer cancel()
+	}
+	atomic.StoreInt32(&o.failedCandidates, 0)
 	if initialConfig == nil {
 		return nil, fmt.Errorf("initial configuration is required")
 	}
@@ -165,6 +195,25 @@ func (o *Orchestrator) evaluateConfiguration(ctx context.Context, scenario *conf
 // evaluateConfigurationMetrics runs one candidate simulation and returns metrics. When cand is non-nil,
 // registers ConfigHash(scenario)→runID for lookup. seed is passed to RunInput when > 0 (deterministic re-runs).
 func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenario *config.Scenario, durationMs int64, cand *CandidateStore, seed int64) (*simulationv1.RunMetrics, error) {
+	if int(atomic.LoadInt32(&o.failedCandidates)) >= o.safety.MaxFailedCandidates {
+		return nil, fmt.Errorf("max failed candidates reached")
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case o.candidateSem <- struct{}{}:
+	}
+	defer func() { <-o.candidateSem }()
+	if durationMs <= 0 {
+		durationMs = o.safety.DefaultEvaluationDuration
+	}
+	candidateCtx := ctx
+	var cancel context.CancelFunc
+	if o.safety.CandidateMaxWallClock > 0 {
+		candidateCtx, cancel = context.WithTimeout(ctx, o.safety.CandidateMaxWallClock)
+		defer cancel()
+	}
+	started := time.Now()
 	scenarioYAML, err := config.MarshalScenarioYAML(scenario)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal scenario: %w", err)
@@ -202,13 +251,18 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 	o.activeRuns[runID] = runCtx
 	o.mu.Unlock()
 
+	logger.Info("candidate started", "parent_context", "optimization", "candidate_run_id", runID)
 	_, err = o.executor.Start(runID)
 	if err != nil {
 		o.mu.Lock()
 		runCtx.Status = RunStatusFailed
 		runCtx.Error = err
+		runCtx.Outcome = CandidateFailed
+		runCtx.Reason = err.Error()
+		runCtx.Duration = time.Since(started)
 		runCtx.CompletedAt = time.Now()
 		o.mu.Unlock()
+		atomic.AddInt32(&o.failedCandidates, 1)
 		return nil, fmt.Errorf("failed to start run: %w", err)
 	}
 
@@ -228,7 +282,7 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 		timeout *= 2
 	}
 
-	completionCtx, cancel := context.WithTimeout(ctx, timeout)
+	completionCtx, cancel := context.WithTimeout(candidateCtx, timeout)
 	defer cancel()
 
 	pollInterval := 500 * time.Millisecond
@@ -248,13 +302,24 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 			}
 			o.mu.Lock()
 			runCtx.Status = RunStatusFailed
-			if ctx.Err() != nil {
-				runCtx.Error = ctx.Err()
-			} else {
+			switch {
+			case errors.Is(completionCtx.Err(), context.DeadlineExceeded):
+				runCtx.Error = completionCtx.Err()
+				runCtx.Outcome = CandidateTimedOut
+				runCtx.Reason = "candidate timeout"
+			case completionCtx.Err() != nil:
+				runCtx.Error = completionCtx.Err()
+				runCtx.Outcome = CandidateCancelled
+				runCtx.Reason = completionCtx.Err().Error()
+			default:
 				runCtx.Error = fmt.Errorf("run timed out or was cancelled")
+				runCtx.Outcome = CandidateFailed
+				runCtx.Reason = runCtx.Error.Error()
 			}
+			runCtx.Duration = time.Since(started)
 			runCtx.CompletedAt = time.Now()
 			o.mu.Unlock()
+			atomic.AddInt32(&o.failedCandidates, 1)
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
@@ -277,8 +342,12 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 					o.mu.Lock()
 					runCtx.Status = RunStatusFailed
 					runCtx.Error = fmt.Errorf("run completed but no metrics available")
+					runCtx.Outcome = CandidateFailed
+					runCtx.Reason = runCtx.Error.Error()
+					runCtx.Duration = time.Since(started)
 					runCtx.CompletedAt = time.Now()
 					o.mu.Unlock()
+					atomic.AddInt32(&o.failedCandidates, 1)
 					return nil, runCtx.Error
 				}
 				score, evalErr := o.evaluateRunScore(scenario, metrics)
@@ -286,14 +355,22 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 					o.mu.Lock()
 					runCtx.Status = RunStatusFailed
 					runCtx.Error = fmt.Errorf("failed to evaluate objective: %w", evalErr)
+					runCtx.Outcome = CandidateFailed
+					runCtx.Reason = runCtx.Error.Error()
+					runCtx.Duration = time.Since(started)
 					runCtx.CompletedAt = time.Now()
 					o.mu.Unlock()
+					atomic.AddInt32(&o.failedCandidates, 1)
 					return nil, evalErr
 				}
 				o.mu.Lock()
 				runCtx.Status = RunStatusCompleted
 				runCtx.Score = score
 				runCtx.Metrics = metrics
+				runCtx.Outcome = CandidateSucceeded
+				runCtx.Reason = ""
+				runCtx.Duration = time.Since(started)
+				runCtx.HasMetrics = true
 				runCtx.CompletedAt = time.Now()
 				o.mu.Unlock()
 
@@ -306,8 +383,16 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 				o.mu.Lock()
 				runCtx.Status = RunStatusFailed
 				runCtx.Error = fmt.Errorf("run failed: %s", rec.Run.Error)
+				runCtx.Duration = time.Since(started)
+				runCtx.Reason = rec.Run.Error
+				if strings.Contains(strings.ToLower(rec.Run.Error), "limit") {
+					runCtx.Outcome = CandidateLimitExceeded
+				} else {
+					runCtx.Outcome = CandidateFailed
+				}
 				runCtx.CompletedAt = time.Now()
 				o.mu.Unlock()
+				atomic.AddInt32(&o.failedCandidates, 1)
 				return nil, runCtx.Error
 
 			case simulationv1.RunStatus_RUN_STATUS_RUNNING,

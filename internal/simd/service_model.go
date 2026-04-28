@@ -14,7 +14,7 @@ type ServiceExecutionProfile struct {
 	CPUTimeMs        float64
 	NetworkLatencyMs float64
 	MemoryMB         float64
-	ConcurrencyCost float64
+	ConcurrencyCost  float64
 	QueueClass       string
 	// QueueMeanWorkMs is a deterministic mean service time (ms) for diagnostics / tuning
 	// (e.g. queue class hints). DES queue wait is modeled as sim time from ArrivalTime to
@@ -86,7 +86,7 @@ func resolveServiceExecutionProfile(svc *config.Service, ep *config.Endpoint, ds
 			cpu = ceiling
 		}
 		// Working-set pressure for datastores
-		mem = mem * 1.05
+		mem *= 1.05
 		if dsKind == "db" || kind == "database" {
 			net *= 1.02
 		}
@@ -123,11 +123,11 @@ func resolveServiceExecutionProfile(svc *config.Service, ep *config.Endpoint, ds
 	}
 
 	return ServiceExecutionProfile{
-		CPUTimeMs:         cpu,
-		NetworkLatencyMs:  net,
-		MemoryMB:          mem,
-		ConcurrencyCost: concurrencyCost,
-		QueueClass:        queueClass,
-		QueueMeanWorkMs:   queueMean,
+		CPUTimeMs:        cpu,
+		NetworkLatencyMs: net,
+		MemoryMB:         mem,
+		ConcurrencyCost:  concurrencyCost,
+		QueueClass:       queueClass,
+		QueueMeanWorkMs:  queueMean,
 	}
 }

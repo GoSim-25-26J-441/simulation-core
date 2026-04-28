@@ -2,6 +2,7 @@ package simd
 
 import (
 	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -358,13 +359,12 @@ func TestWorkloadStateStartInvalidTarget(t *testing.T) {
 	ws.Stop()
 }
 
-// TestWorkloadStatePreGenerateAllEvents verifies that when realTime is false,
-// Start pre-generates all arrival events up to endTime (so simulation-time runs
-// get full request count instead of only one lookahead batch).
-func TestWorkloadStatePreGenerateAllEvents(t *testing.T) {
+// TestWorkloadStateStandardModeStartsBoundedWindow verifies non-real-time start only
+// seeds a bounded lookahead chunk (instead of full-run pre-generation).
+func TestWorkloadStateStandardModeStartsBoundedWindow(t *testing.T) {
 	eng := engine.NewEngine("test-run")
 	startTime := eng.GetSimTime()
-	duration := 5 * time.Second
+	duration := 30 * time.Second
 	endTime := startTime.Add(duration)
 
 	scenario := &config.Scenario{
@@ -381,14 +381,171 @@ func TestWorkloadStatePreGenerateAllEvents(t *testing.T) {
 		t.Fatalf("Start(..., false) returned error: %v", err)
 	}
 
-	// Pre-generation should advance each pattern's NextEventTime to at least endTime
+	// The queue should contain only arrivals for one lookahead horizon + generation tick + sim end.
+	maxExpectedArrivals := int(EventGenerationLookaheadWindow.Seconds() * 10.0)
+	if eng.GetEventQueue().Size() > maxExpectedArrivals+3 {
+		t.Fatalf("expected bounded startup queue, got size=%d", eng.GetEventQueue().Size())
+	}
+
+	// Non-real-time mode tracks generated horizon incrementally.
 	patternState, ok := ws.GetPattern("client:svc1:/test")
 	if !ok {
 		t.Fatal("Pattern not found")
 	}
-	if patternState.NextEventTime.Before(endTime) {
-		t.Errorf("Pre-generate should schedule events up to endTime; NextEventTime=%v is before endTime=%v",
-			patternState.NextEventTime, endTime)
+	expectedInitialHorizon := startTime.Add(EventGenerationLookaheadWindow)
+	if expectedInitialHorizon.After(endTime) {
+		expectedInitialHorizon = endTime
+	}
+	if patternState.NextEventTime.Before(expectedInitialHorizon) {
+		t.Errorf("expected next event to advance at least to initial horizon %v, got %v",
+			expectedInitialHorizon, patternState.NextEventTime)
+	}
+}
+
+func TestWorkloadStateStandardModeLongHighRPSBoundedAtStartup(t *testing.T) {
+	eng := engine.NewEngine("bounded-high-rps")
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(2 * time.Hour)
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 16}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 5000}},
+		},
+	}
+	ws := NewWorkloadState("bounded-high-rps", eng, endTime, 123)
+	if err := ws.Start(scenario, startTime, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// 5000 rps * 10s lookahead = ~50k arrivals (+non-arrival events).
+	if got := eng.GetEventQueue().Size(); got > 55_000 {
+		t.Fatalf("expected bounded startup queue under ~55k events, got %d", got)
+	}
+}
+
+func TestWorkloadStateStandardModeTotalArrivalsMatchLegacyGeneration(t *testing.T) {
+	const seed int64 = 98765
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 10}},
+		},
+	}
+	legacyEngine := engine.NewEngine("legacy")
+	legacyStart := legacyEngine.GetSimTime()
+	legacyEnd := legacyStart.Add(12 * time.Second)
+	legacyWS := NewWorkloadState("legacy", legacyEngine, legacyEnd, seed)
+	legacyWS.mu.Lock()
+	if err := legacyWS.initPatternsLocked(scenario, legacyStart, false); err != nil {
+		legacyWS.mu.Unlock()
+		t.Fatalf("initPatternsLocked: %v", err)
+	}
+	legacyWS.mu.Unlock()
+	legacyWS.generateAllEventsUpToEndTime()
+	legacyArrivals := 0
+	for _, e := range drainEvents(legacyEngine) {
+		if e.Type == engine.EventTypeRequestArrival {
+			legacyArrivals++
+		}
+	}
+
+	incrementalEngine := engine.NewEngine("incremental")
+	start := incrementalEngine.GetSimTime()
+	end := start.Add(12 * time.Second)
+	ws := NewWorkloadState("incremental", incrementalEngine, end, seed)
+	if err := ws.Start(scenario, start, false); err != nil {
+		t.Fatalf("incremental Start: %v", err)
+	}
+	var arrivals int64
+	incrementalEngine.RegisterHandler(engine.EventTypeRequestArrival, func(_ *engine.Engine, _ *engine.Event) error {
+		atomic.AddInt64(&arrivals, 1)
+		return nil
+	})
+	if err := incrementalEngine.Run(12 * time.Second); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := int(atomic.LoadInt64(&arrivals)); got != legacyArrivals {
+		t.Fatalf("arrival count mismatch; incremental=%d legacy=%d", got, legacyArrivals)
+	}
+}
+
+func TestWorkloadStateStandardModeChunkBoundaryNoDuplicatesOrMisses(t *testing.T) {
+	eng := engine.NewEngine("chunk-boundary")
+	start := eng.GetSimTime()
+	end := start.Add(25 * time.Second)
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 1}},
+		},
+	}
+	ws := NewWorkloadState("chunk-boundary", eng, end, 42)
+	if err := ws.Start(scenario, start, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var times []time.Time
+	eng.RegisterHandler(engine.EventTypeRequestArrival, func(e *engine.Engine, _ *engine.Event) error {
+		times = append(times, e.GetSimTime())
+		return nil
+	})
+	if err := eng.Run(25 * time.Second); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(times) != 24 {
+		t.Fatalf("expected 24 arrivals for 25s @1rps (end exclusive), got %d", len(times))
+	}
+	for i := 1; i < len(times); i++ {
+		if !times[i].After(times[i-1]) {
+			t.Fatalf("expected strictly increasing arrivals, got %v then %v", times[i-1], times[i])
+		}
+	}
+}
+
+func TestWorkloadStateStandardModeStopsGenerationAfterCancellation(t *testing.T) {
+	eng := engine.NewEngine("cancel-generate")
+	start := eng.GetSimTime()
+	end := start.Add(60 * time.Second)
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 100}},
+		},
+	}
+	ws := NewWorkloadState("cancel-generate", eng, end, 42)
+	if err := ws.Start(scenario, start, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ws.Stop()
+	before := eng.GetEventQueue().Size()
+	generated := ws.generateUpToHorizon(start.Add(30 * time.Second))
+	after := eng.GetEventQueue().Size()
+	if generated != 0 || after != before {
+		t.Fatalf("expected no generation after stop; generated=%d size %d->%d", generated, before, after)
+	}
+}
+
+func TestWorkloadStateStandardModeStopsWhenLimitTrips(t *testing.T) {
+	eng := engine.NewEngine("limit-generate")
+	eng.SetRuntimeLimits(engine.RuntimeLimits{MaxEventsScheduled: 15})
+	start := eng.GetSimTime()
+	end := start.Add(60 * time.Second)
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 100}},
+		},
+	}
+	ws := NewWorkloadState("limit-generate", eng, end, 42)
+	_ = ws.Start(scenario, start, false)
+	if eng.GuardrailError() == nil {
+		_ = ws.generateUpToHorizon(start.Add(20 * time.Second))
+	}
+	if eng.GuardrailError() == nil {
+		t.Fatalf("expected guardrail error after generation pressure")
 	}
 }
 
@@ -541,6 +698,34 @@ func TestWorkloadStateUniformRealTimeDoesNotPreallocateFullHorizon(t *testing.T)
 	}
 }
 
+func TestWorkloadStateUniformStandardModeDoesNotPreallocateFullHorizon(t *testing.T) {
+	eng := engine.NewEngine("test-run-std-uniform")
+	startTime := eng.GetSimTime()
+	endTime := startTime.Add(8760 * time.Hour) // 1 year
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 100}},
+		},
+	}
+	ws := NewWorkloadState("test-run-std-uniform", eng, endTime, 0)
+	ws.generator = utils.NewRandSource(42)
+	if err := ws.Start(scenario, startTime, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	ps, ok := ws.GetPattern("client:svc1:/test")
+	if !ok {
+		t.Fatal("pattern missing")
+	}
+	if !ps.uniformLazy {
+		t.Fatal("expected standard-mode uniform to use lazy horizon generation")
+	}
+	if len(ps.uniformTimes) > 500_000 {
+		t.Fatalf("unexpected uniform preallocation in standard mode: %d points", len(ps.uniformTimes))
+	}
+}
+
 // TestLazyUniformLongRunRate001 verifies realtime lazy uniform does not round each 10s chunk
 // independently (which would yield zero arrivals at 0.01 RPS).
 func TestLazyUniformLongRunRate001(t *testing.T) {
@@ -618,6 +803,203 @@ func TestLazyUniformDeterministicSeed(t *testing.T) {
 		}
 		ws.ensureUniformHorizon(ps, start.Add(500*time.Second))
 		return append([]time.Time(nil), ps.uniformTimes...)
+	}
+	a := build()
+	b := build()
+	if len(a) != len(b) {
+		t.Fatalf("length mismatch: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if !a[i].Equal(b[i]) {
+			t.Fatalf("determinism broken at %d: %v vs %v", i, a[i], b[i])
+		}
+	}
+}
+
+func TestWorkloadStateStandardModeUniformDeterministicSeed(t *testing.T) {
+	fixedStart := time.Unix(1700000000, 0).UTC()
+	build := func() []time.Time {
+		eng := engine.NewEngineWithSimStart("std-uniform-det", fixedStart)
+		start := eng.GetSimTime()
+		end := start.Add(120 * time.Second)
+		ws := NewWorkloadState("std-uniform-det", eng, end, 42)
+		ws.generator = utils.NewRandSource(424242)
+		scenario := &config.Scenario{
+			Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+			Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+			Workload: []config.WorkloadPattern{
+				{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 7}},
+			},
+		}
+		if err := ws.Start(scenario, start, false); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		var times []time.Time
+		eng.RegisterHandler(engine.EventTypeRequestArrival, func(e *engine.Engine, _ *engine.Event) error {
+			times = append(times, e.GetSimTime())
+			return nil
+		})
+		if err := eng.Run(120 * time.Second); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return times
+	}
+	a := build()
+	b := build()
+	if len(a) != len(b) {
+		t.Fatalf("length mismatch: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if !a[i].Equal(b[i]) {
+			t.Fatalf("determinism broken at %d: %v vs %v", i, a[i], b[i])
+		}
+	}
+}
+
+func TestWorkloadStateStandardModeUniformTotalCountMatchesRoundContract(t *testing.T) {
+	eng := engine.NewEngine("std-uniform-round")
+	start := eng.GetSimTime()
+	end := start.Add(123 * time.Second)
+	const rate = 2.5
+	ws := NewWorkloadState("std-uniform-round", eng, end, 42)
+	ws.generator = utils.NewRandSource(76543)
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Endpoints: []config.Endpoint{{Path: "/test"}}}},
+		Workload: []config.WorkloadPattern{
+			{From: "client", To: "svc1:/test", Arrival: config.ArrivalSpec{Type: "uniform", RateRPS: rate}},
+		},
+	}
+	if err := ws.Start(scenario, start, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	var times []time.Time
+	eng.RegisterHandler(engine.EventTypeRequestArrival, func(e *engine.Engine, _ *engine.Event) error {
+		times = append(times, e.GetSimTime())
+		return nil
+	})
+	if err := eng.Run(end.Sub(start)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := int(math.Round(rate * end.Sub(start).Seconds()))
+	if len(times) != want {
+		t.Fatalf("expected %d arrivals (round contract), got %d", want, len(times))
+	}
+	for i := 1; i < len(times); i++ {
+		if !times[i].After(times[i-1]) {
+			t.Fatalf("expected strictly increasing arrivals, got %v then %v", times[i-1], times[i])
+		}
+	}
+}
+
+func TestLazyUniformCompactionKeepsScheduleBounded(t *testing.T) {
+	eng := engine.NewEngine("uniform-compact-bound")
+	start := eng.GetSimTime()
+	end := start.Add(600 * time.Second)
+	ws := NewWorkloadState("uniform-compact-bound", eng, end, 42)
+	ws.generator = utils.NewRandSource(123456)
+	ps := &WorkloadPatternState{
+		Pattern: config.WorkloadPattern{
+			From: "client", To: "svc1:/test",
+			Arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 20},
+		},
+		uniformLazy:            true,
+		uniformStreamWatermark: start,
+		Epoch:                  start,
+	}
+	ws.ensureUniformHorizon(ps, start.Add(EventGenerationLookaheadWindow))
+	if len(ps.uniformTimes) == 0 {
+		t.Fatal("expected initial uniform schedule")
+	}
+	ps.NextEventTime = ps.uniformTimes[0]
+
+	maxLen := len(ps.uniformTimes)
+	for i := 0; i < 6000; i++ {
+		if ps.NextEventTime.IsZero() || !ps.NextEventTime.Before(end) {
+			break
+		}
+		next := ws.advanceToNextArrival(ps, ps.NextEventTime)
+		ps.LastEventTime = ps.NextEventTime
+		ps.NextEventTime = next
+		if len(ps.uniformTimes) > maxLen {
+			maxLen = len(ps.uniformTimes)
+		}
+	}
+	// Expect bounded memory: compaction threshold + one lookahead window (~200 points @20rps).
+	if maxLen > uniformCompactionThreshold+1000 {
+		t.Fatalf("expected bounded uniform schedule, max len=%d", maxLen)
+	}
+}
+
+func TestLazyUniformCompactionNoMissesOrDuplicates(t *testing.T) {
+	eng := engine.NewEngine("uniform-compact-integrity")
+	start := eng.GetSimTime()
+	end := start.Add(400 * time.Second)
+	ws := NewWorkloadState("uniform-compact-integrity", eng, end, 42)
+	ws.generator = utils.NewRandSource(222333)
+	ps := &WorkloadPatternState{
+		Pattern: config.WorkloadPattern{
+			From: "client", To: "svc1:/test",
+			Arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 10},
+		},
+		uniformLazy:            true,
+		uniformStreamWatermark: start,
+		Epoch:                  start,
+	}
+	ws.ensureUniformHorizon(ps, start.Add(EventGenerationLookaheadWindow))
+	if len(ps.uniformTimes) == 0 {
+		t.Fatal("expected initial schedule")
+	}
+	ps.NextEventTime = ps.uniformTimes[0]
+
+	var times []time.Time
+	for ps.NextEventTime.Before(end) {
+		times = append(times, ps.NextEventTime)
+		next := ws.advanceToNextArrival(ps, ps.NextEventTime)
+		ps.LastEventTime = ps.NextEventTime
+		ps.NextEventTime = next
+	}
+	expected := int(math.Floor(10 * end.Sub(start).Seconds()))
+	if len(times) != expected {
+		t.Fatalf("expected %d arrivals, got %d", expected, len(times))
+	}
+	for i := 1; i < len(times); i++ {
+		if !times[i].After(times[i-1]) {
+			t.Fatalf("expected strictly increasing arrivals, got %v then %v", times[i-1], times[i])
+		}
+	}
+}
+
+func TestLazyUniformDeterministicSeedAfterCompaction(t *testing.T) {
+	fixedStart := time.Unix(1700000000, 0).UTC()
+	build := func() []time.Time {
+		eng := engine.NewEngineWithSimStart("lazy-compact-det", fixedStart)
+		start := eng.GetSimTime()
+		end := start.Add(500 * time.Second)
+		ws := NewWorkloadState("lazy-compact-det", eng, end, 42)
+		ws.generator = utils.NewRandSource(999111)
+		ps := &WorkloadPatternState{
+			Pattern: config.WorkloadPattern{
+				From: "client", To: "svc1:/test",
+				Arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 8},
+			},
+			uniformLazy:            true,
+			uniformStreamWatermark: start,
+			Epoch:                  start,
+		}
+		ws.ensureUniformHorizon(ps, start.Add(EventGenerationLookaheadWindow))
+		if len(ps.uniformTimes) == 0 {
+			t.Fatal("expected initial schedule")
+		}
+		ps.NextEventTime = ps.uniformTimes[0]
+		var out []time.Time
+		for ps.NextEventTime.Before(end) {
+			out = append(out, ps.NextEventTime)
+			next := ws.advanceToNextArrival(ps, ps.NextEventTime)
+			ps.LastEventTime = ps.NextEventTime
+			ps.NextEventTime = next
+		}
+		return out
 	}
 	a := build()
 	b := build()
@@ -778,6 +1160,15 @@ func drainArrivalTimes(eng *engine.Engine) []time.Time {
 		}
 	}
 	return times
+}
+
+func drainEvents(eng *engine.Engine) []*engine.Event {
+	q := eng.GetEventQueue()
+	out := make([]*engine.Event, 0, q.Size())
+	for q.Size() > 0 {
+		out = append(out, q.Next())
+	}
+	return out
 }
 
 // TestWorkloadStateBurstyNonRealTimeWindows asserts arrivals only land in burst windows

@@ -163,6 +163,86 @@ Check if the service is running.
 
 ---
 
+### Validate scenario YAML (preflight)
+
+**POST** `/v1/scenarios:validate`
+
+Validate generated or edited scenario YAML **before** creating a run. The backend (`go-sim-backend`, etc.) should call this over HTTP only (do not import `simulation-core` as a Go module).
+
+Validation order:
+
+1. **YAML syntax** — `gopkg.in/yaml.v3` unmarshal into a `Scenario` (see `pkg/config/scenario_types.go`).
+2. **Semantic / schema** — same rules as exported `config.ValidateScenario` in `pkg/config/loader.go`: hosts/services, duplicate IDs, workload and downstream target resolution, queue/topic `consumer_target` / DLQ references, etc.
+3. **Placement / capacity** — `resource.NewManager().InitializeFromScenario` (same path as run startup).
+
+**Request:**
+```json
+{
+  "scenario_yaml": "hosts:\n  - id: host-1\n    ...",
+  "mode": "preflight"
+}
+```
+
+`mode` is optional; when omitted it defaults to `"preflight"`. Any other value returns **400** with `{"error":"..."}`.
+
+**Response (valid, HTTP 200):**
+```json
+{
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}
+```
+
+(`summary` is omitted when valid.)
+
+**Response (invalid YAML syntax, HTTP 400):**
+```json
+{
+  "valid": false,
+  "errors": [{ "code": "SCENARIO_PARSE_INVALID", "message": "..." }],
+  "warnings": [],
+  "summary": { "hosts": 0, "services": 0, "workloads": 0 }
+}
+```
+
+**Response (semantic / graph / placement problems, HTTP 422):**
+```json
+{
+  "valid": false,
+  "errors": [
+    {
+      "code": "UNKNOWN_WORKLOAD_ENDPOINT",
+      "message": "workload target checkout:/write references missing endpoint /write on service checkout",
+      "path": "workload[0].to"
+    }
+  ],
+  "warnings": [],
+  "summary": { "hosts": 1, "services": 1, "workloads": 1 }
+}
+```
+
+Common `errors[].code` values include: `UNKNOWN_WORKLOAD_SERVICE`, `UNKNOWN_WORKLOAD_ENDPOINT`, `UNKNOWN_DOWNSTREAM_SERVICE`, `UNKNOWN_DOWNSTREAM_ENDPOINT`, `UNKNOWN_QUEUE_CONSUMER_TARGET`, `PLACEMENT_INFEASIBLE`, `INVALID_SCENARIO_SCHEMA`. Each error may include `path` (for UI), `service_id`, or `hint` where applicable.
+
+**Response (empty `scenario_yaml`, HTTP 400):**
+- `errors[0].code` is `SCENARIO_YAML_REQUIRED`, `path` is `scenario_yaml`.
+
+**Other status codes:**
+- `405 Method Not Allowed`: only **POST** is allowed; response body is `{"error":"method not allowed"}` and `Allow: POST` is set.
+- `400 Bad Request`: malformed JSON body uses `{"error":"..."}`.
+
+**HTTP semantics for backends:** treat **422** as user-fixable scenario content; treat **400** `SCENARIO_PARSE_INVALID` as bad YAML; use **502/503** only when the HTTP client cannot reach simulation-core or receives 5xx (map those in the backend, not here).
+
+**Local example (HTTP on port 8082):**
+```bash
+go run ./cmd/simd -http-addr :8082 -grpc-addr :50051
+curl -sS -X POST http://localhost:8082/v1/scenarios:validate \
+  -H 'Content-Type: application/json' \
+  -d "{\"scenario_yaml\": $(jq -Rs . < your-scenario.yaml)}"
+```
+
+---
+
 ### Create Simulation Run
 
 **POST** `/v1/runs`
@@ -603,15 +683,17 @@ When `callback_url` is set in the run input, the simulator sends an HTTP POST to
 | `status` | string | Terminal status (e.g. `RUN_STATUS_COMPLETED`, `RUN_STATUS_STOPPED`) |
 | `status_string` | string | Human-readable status |
 | `metrics` | object | Aggregated metrics (when available) |
-| `best_run_id` | string | (Optimization only) Best candidate run ID |
-| `best_score` | float | (Optimization only) Best objective score |
-| `iterations` | int | (Optimization only) Number of iterations |
-| `top_candidates` | string[] | (Optimization only) Up to 5 candidate run IDs, best first |
+| `best_run_id` | string | Best candidate/result run ID (ordinary runs use their own run ID) |
+| `best_score` | float | Best objective score (ordinary runs report `0`) |
+| `iterations` | int | Optimization iteration count (ordinary runs report `0`) |
+| `top_candidates` | string[] | Up to 5 candidate run IDs, best first (ordinary runs may contain only the run ID) |
 | `final_config` | object | (Online optimization only) Final/settled run configuration (services, workload, hosts) after controller updates. Omitted if no optimization steps. |
 
 For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (up to 5 run IDs). Batch runs support `optimization.objective` values: `p95_latency_ms`, `p99_latency_ms`, `mean_latency_ms`, `throughput_rps`, `error_rate`, `cost`, `cpu_utilization`, `memory_utilization`. For `cost`, candidate ranking is based on allocated infrastructure (`replicas * cpu_cores`, `replicas * memory_mb`, and replicas), so selected candidates align with provisioned resource changes. For `cpu_utilization` and `memory_utilization`, setting `optimization.target_util_low` and `optimization.target_util_high` (e.g. 0.4 and 0.7) makes the optimizer favor configs whose max utilization lies in that band; if omitted, the optimizer minimizes utilization (current behavior). `max_iterations` limits the number of improvement steps (each step may evaluate many neighbor configs). To cap total simulation runs, set `optimization.max_evaluations` to a positive value (e.g. 20); when reached, optimization stops. The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
 
 For **online optimization** runs, the completion callback may include `final_config` (the config the run settled on). The same config is available in run export as top-level `final_config`, or as the last entry's `current_config` in `run.optimization_history`.
+
+For **ordinary (non-optimization)** runs, the API surfaces the run itself as the single result candidate: `best_run_id = run_id`, `best_score = 0`, `iterations = 0`, and `top_candidates` may contain only `[run_id]`.
 
 **Getting the top candidate config:** For batch mode, use `best_run_id` and `GET /v1/runs/{best_run_id}/export` (e.g. `input.scenario_yaml`). For online mode, use the callback's `final_config`, or the export's top-level `final_config`, or the last step's `current_config` in `run.optimization_history`.
 

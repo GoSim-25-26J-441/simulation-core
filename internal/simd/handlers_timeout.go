@@ -6,7 +6,7 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
 )
 
-func handleDownstreamTimeout(state *scenarioState, eng *engine.Engine) engine.EventHandler {
+func handleDownstreamTimeout(state *scenarioState, _ *engine.Engine) engine.EventHandler {
 	return func(eng *engine.Engine, evt *engine.Event) error {
 		simTime := eng.GetSimTime()
 		state.rm.NoteSimTime(simTime)

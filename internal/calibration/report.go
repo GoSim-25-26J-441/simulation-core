@@ -21,6 +21,8 @@ type FieldChange struct {
 }
 
 // CalibrationReport documents what calibration considered and applied.
+//
+//revive:disable-next-line:exported
 type CalibrationReport struct {
 	Changes              []FieldChange
 	Warnings             []string

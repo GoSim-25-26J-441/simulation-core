@@ -10,9 +10,9 @@ import (
 func TestResolveServiceExecutionProfileDbLatencyCapsCPU(t *testing.T) {
 	svc := &config.Service{ID: "db", Kind: "database", Model: "db_latency"}
 	ep := &config.Endpoint{
-		Path:       "/q",
-		MeanCPUMs:  2,
-		CPUSigmaMs: 0,
+		Path:         "/q",
+		MeanCPUMs:    2,
+		CPUSigmaMs:   0,
 		NetLatencyMs: config.LatencySpec{Mean: 20, Sigma: 0},
 	}
 	rng := utils.NewRandSource(42)

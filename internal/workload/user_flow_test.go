@@ -122,3 +122,65 @@ func TestUserFlowGeneratorInvalidRate(t *testing.T) {
 		t.Fatalf("expected error for invalid rate")
 	}
 }
+
+func TestUserFlowGeneratorScheduleUserFlowsArrivalTypes(t *testing.T) {
+	steps := []FlowStep{
+		{ServiceID: "auth", Endpoint: "/login", Probability: 1.0},
+	}
+	startTime := time.Now()
+	endTime := startTime.Add(2 * time.Second)
+
+	tests := []struct {
+		name    string
+		arrival config.ArrivalSpec
+		wantErr bool
+	}{
+		{
+			name:    "uniform valid rate",
+			arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 2},
+		},
+		{
+			name:    "constant valid rate",
+			arrival: config.ArrivalSpec{Type: "constant", RateRPS: 2},
+		},
+		{
+			name:    "unknown type falls back to poisson",
+			arrival: config.ArrivalSpec{Type: "mystery", RateRPS: 2},
+		},
+		{
+			name:    "uniform invalid rate",
+			arrival: config.ArrivalSpec{Type: "uniform", RateRPS: 0},
+			wantErr: true,
+		},
+		{
+			name:    "constant invalid rate",
+			arrival: config.ArrivalSpec{Type: "constant", RateRPS: 0},
+			wantErr: true,
+		},
+		{
+			name:    "unknown type invalid rate",
+			arrival: config.ArrivalSpec{Type: "mystery", RateRPS: 0},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eng := engine.NewEngine("test-run")
+			g := NewUserFlowGenerator(12345)
+			err := g.ScheduleUserFlows(eng, startTime, endTime, tt.arrival, "flow", steps)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ScheduleUserFlows error: %v", err)
+			}
+			if eng.GetEventQueue().Size() == 0 {
+				t.Fatalf("expected at least one scheduled event")
+			}
+		})
+	}
+}

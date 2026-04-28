@@ -171,9 +171,16 @@ func (m *Manager) SelectInstanceForRequest(serviceName string, req *models.Reque
 			return m.selectRoundRobinLocked(serviceName, instances), RoutingRoundRobin, nil
 		}
 		h := fnv.New64a()
-		_, _ = h.Write([]byte(fmt.Sprint(v)))
-		idx := int(h.Sum64() % uint64(len(instances)))
-		return instances[idx], strategy, nil
+		_, _ = fmt.Fprint(h, v)
+		idx64 := h.Sum64() % uint64(len(instances))
+		var pos uint64
+		for _, inst := range instances {
+			if pos == idx64 {
+				return inst, strategy, nil
+			}
+			pos++
+		}
+		return instances[0], strategy, nil
 	default:
 		return nil, strategy, fmt.Errorf("unsupported routing strategy %q for service %s", strategy, serviceName)
 	}

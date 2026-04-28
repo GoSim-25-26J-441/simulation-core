@@ -30,17 +30,17 @@ type Run struct {
 
 // RunMetrics contains aggregated metrics for a simulation run
 type RunMetrics struct {
-	TotalRequests      int64                      `json:"total_requests"`
-	SuccessfulRequests int64                      `json:"successful_requests"`
-	FailedRequests     int64                      `json:"failed_requests"`
-	LatencyP50         float64                    `json:"latency_p50_ms"`
-	LatencyP95         float64                    `json:"latency_p95_ms"`
-	LatencyP99         float64                    `json:"latency_p99_ms"`
-	LatencyMean        float64                    `json:"latency_mean_ms"`
-	ThroughputRPS      float64                    `json:"throughput_rps"`
+	TotalRequests      int64   `json:"total_requests"`
+	SuccessfulRequests int64   `json:"successful_requests"`
+	FailedRequests     int64   `json:"failed_requests"`
+	LatencyP50         float64 `json:"latency_p50_ms"`
+	LatencyP95         float64 `json:"latency_p95_ms"`
+	LatencyP99         float64 `json:"latency_p99_ms"`
+	LatencyMean        float64 `json:"latency_mean_ms"`
+	ThroughputRPS      float64 `json:"throughput_rps"`
 	// IngressRequests counts workload arrivals (origin=ingress). InternalRequests counts downstream hops.
-	IngressRequests  int64   `json:"ingress_requests,omitempty"`
-	InternalRequests int64   `json:"internal_requests,omitempty"`
+	IngressRequests  int64 `json:"ingress_requests,omitempty"`
+	InternalRequests int64 `json:"internal_requests,omitempty"`
 	// IngressThroughputRPS is ingress RPS (SLOs, batch guardrails). ThroughputRPS remains aggregate work over all hops.
 	IngressThroughputRPS float64 `json:"ingress_throughput_rps,omitempty"`
 	// IngressFailedRequests counts user-visible root/ingress logical failures (one per failed external trace).
@@ -55,39 +55,39 @@ type RunMetrics struct {
 	TimeoutErrors    int64   `json:"timeout_errors,omitempty"`
 	// Broker queue rollups (counters sum all label series; queue_depth_sum sums latest gauge per label set).
 	QueueEnqueueCountTotal    int64   `json:"queue_enqueue_count_total,omitempty"`
-	QueueDequeueCountTotal      int64   `json:"queue_dequeue_count_total,omitempty"`
-	QueueDropCountTotal         int64   `json:"queue_drop_count_total,omitempty"`
-	QueueRedeliveryCountTotal   int64   `json:"queue_redelivery_count_total,omitempty"`
-	QueueDlqCountTotal          int64   `json:"queue_dlq_count_total,omitempty"`
-	QueueDepthSum               float64 `json:"queue_depth_sum,omitempty"`
+	QueueDequeueCountTotal    int64   `json:"queue_dequeue_count_total,omitempty"`
+	QueueDropCountTotal       int64   `json:"queue_drop_count_total,omitempty"`
+	QueueRedeliveryCountTotal int64   `json:"queue_redelivery_count_total,omitempty"`
+	QueueDlqCountTotal        int64   `json:"queue_dlq_count_total,omitempty"`
+	QueueDepthSum             float64 `json:"queue_depth_sum,omitempty"`
 	// Topic / pub-sub broker rollups (counters sum all label series; *_depth_sum sums latest gauge per label set).
-	TopicPublishCountTotal     int64   `json:"topic_publish_count_total,omitempty"`
-	TopicDeliverCountTotal     int64   `json:"topic_deliver_count_total,omitempty"`
-	TopicDropCountTotal        int64   `json:"topic_drop_count_total,omitempty"`
-	TopicRedeliveryCountTotal  int64   `json:"topic_redelivery_count_total,omitempty"`
-	TopicDlqCountTotal         int64   `json:"topic_dlq_count_total,omitempty"`
-	TopicBacklogDepthSum       float64 `json:"topic_backlog_depth_sum,omitempty"`
-	TopicConsumerLagSum        float64 `json:"topic_consumer_lag_sum,omitempty"`
-	QueueOldestMessageAgeMs    float64 `json:"queue_oldest_message_age_ms,omitempty"`
-	TopicOldestMessageAgeMs    float64 `json:"topic_oldest_message_age_ms,omitempty"`
-	MaxQueueDepth              float64 `json:"max_queue_depth,omitempty"`
-	MaxTopicBacklogDepth       float64 `json:"max_topic_backlog_depth,omitempty"`
-	MaxTopicConsumerLag        float64 `json:"max_topic_consumer_lag,omitempty"`
-	QueueDropRate              float64 `json:"queue_drop_rate,omitempty"`
-	TopicDropRate              float64 `json:"topic_drop_rate,omitempty"`
-	CPUUtilization   float64 `json:"cpu_utilization"`
-	MemoryUtilization  float64                    `json:"memory_utilization"`
-	ServiceMetrics     map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
-	HostMetrics        map[string]*HostMetrics    `json:"host_metrics,omitempty"`
+	TopicPublishCountTotal    int64                      `json:"topic_publish_count_total,omitempty"`
+	TopicDeliverCountTotal    int64                      `json:"topic_deliver_count_total,omitempty"`
+	TopicDropCountTotal       int64                      `json:"topic_drop_count_total,omitempty"`
+	TopicRedeliveryCountTotal int64                      `json:"topic_redelivery_count_total,omitempty"`
+	TopicDlqCountTotal        int64                      `json:"topic_dlq_count_total,omitempty"`
+	TopicBacklogDepthSum      float64                    `json:"topic_backlog_depth_sum,omitempty"`
+	TopicConsumerLagSum       float64                    `json:"topic_consumer_lag_sum,omitempty"`
+	QueueOldestMessageAgeMs   float64                    `json:"queue_oldest_message_age_ms,omitempty"`
+	TopicOldestMessageAgeMs   float64                    `json:"topic_oldest_message_age_ms,omitempty"`
+	MaxQueueDepth             float64                    `json:"max_queue_depth,omitempty"`
+	MaxTopicBacklogDepth      float64                    `json:"max_topic_backlog_depth,omitempty"`
+	MaxTopicConsumerLag       float64                    `json:"max_topic_consumer_lag,omitempty"`
+	QueueDropRate             float64                    `json:"queue_drop_rate,omitempty"`
+	TopicDropRate             float64                    `json:"topic_drop_rate,omitempty"`
+	CPUUtilization            float64                    `json:"cpu_utilization"`
+	MemoryUtilization         float64                    `json:"memory_utilization"`
+	ServiceMetrics            map[string]*ServiceMetrics `json:"service_metrics,omitempty"`
+	HostMetrics               map[string]*HostMetrics    `json:"host_metrics,omitempty"`
 	// EndpointRequestStats is optional per-endpoint request/error totals when collector labels include service+endpoint.
 	EndpointRequestStats []EndpointRequestStats `json:"endpoint_request_stats,omitempty"`
 	// InstanceRouteStats is optional per-instance routing selection totals.
 	InstanceRouteStats []InstanceRouteStats `json:"instance_route_stats,omitempty"`
 	// Topology routing rollups.
-	LocalityHitRate               float64 `json:"locality_hit_rate,omitempty"`
-	CrossZoneRequestCountTotal    int64   `json:"cross_zone_request_count_total,omitempty"`
-	SameZoneRequestCountTotal     int64   `json:"same_zone_request_count_total,omitempty"`
-	CrossZoneRequestFraction      float64 `json:"cross_zone_request_fraction,omitempty"`
+	LocalityHitRate            float64 `json:"locality_hit_rate,omitempty"`
+	CrossZoneRequestCountTotal int64   `json:"cross_zone_request_count_total,omitempty"`
+	SameZoneRequestCountTotal  int64   `json:"same_zone_request_count_total,omitempty"`
+	CrossZoneRequestFraction   float64 `json:"cross_zone_request_fraction,omitempty"`
 	// Cross-zone network penalty rollups (from cross_zone_latency_penalty_ms samples on downstream hops).
 	CrossZoneLatencyPenaltyMsTotal float64 `json:"cross_zone_latency_penalty_ms_total,omitempty"`
 	CrossZoneLatencyPenaltyMsMean  float64 `json:"cross_zone_latency_penalty_ms_mean,omitempty"`
@@ -115,14 +115,14 @@ type EndpointRequestStats struct {
 	LatencyP99Ms  *float64 `json:"latency_p99_ms,omitempty"`
 	LatencyMeanMs *float64 `json:"latency_mean_ms,omitempty"`
 	// RootRequestLatency for ingress roots only (same label subset when emitted).
-	RootLatencyP50Ms  *float64 `json:"root_latency_p50_ms,omitempty"`
-	RootLatencyP95Ms  *float64 `json:"root_latency_p95_ms,omitempty"`
-	RootLatencyP99Ms  *float64 `json:"root_latency_p99_ms,omitempty"`
-	RootLatencyMeanMs *float64 `json:"root_latency_mean_ms,omitempty"`
-	QueueWaitP50Ms  *float64 `json:"queue_wait_p50_ms,omitempty"`
-	QueueWaitP95Ms  *float64 `json:"queue_wait_p95_ms,omitempty"`
-	QueueWaitP99Ms  *float64 `json:"queue_wait_p99_ms,omitempty"`
-	QueueWaitMeanMs *float64 `json:"queue_wait_mean_ms,omitempty"`
+	RootLatencyP50Ms        *float64 `json:"root_latency_p50_ms,omitempty"`
+	RootLatencyP95Ms        *float64 `json:"root_latency_p95_ms,omitempty"`
+	RootLatencyP99Ms        *float64 `json:"root_latency_p99_ms,omitempty"`
+	RootLatencyMeanMs       *float64 `json:"root_latency_mean_ms,omitempty"`
+	QueueWaitP50Ms          *float64 `json:"queue_wait_p50_ms,omitempty"`
+	QueueWaitP95Ms          *float64 `json:"queue_wait_p95_ms,omitempty"`
+	QueueWaitP99Ms          *float64 `json:"queue_wait_p99_ms,omitempty"`
+	QueueWaitMeanMs         *float64 `json:"queue_wait_mean_ms,omitempty"`
 	ProcessingLatencyP50Ms  *float64 `json:"processing_latency_p50_ms,omitempty"`
 	ProcessingLatencyP95Ms  *float64 `json:"processing_latency_p95_ms,omitempty"`
 	ProcessingLatencyP99Ms  *float64 `json:"processing_latency_p99_ms,omitempty"`
@@ -140,9 +140,9 @@ type InstanceRouteStats struct {
 
 // HostMetrics holds utilization observed on a host (when the simulator records host-level gauges).
 type HostMetrics struct {
-	HostID              string  `json:"host_id"`
-	CPUUtilization      float64 `json:"cpu_utilization"`
-	MemoryUtilization   float64 `json:"memory_utilization"`
+	HostID            string  `json:"host_id"`
+	CPUUtilization    float64 `json:"cpu_utilization"`
+	MemoryUtilization float64 `json:"memory_utilization"`
 }
 
 // ServiceMetrics contains metrics for a specific service
@@ -161,9 +161,9 @@ type ServiceMetrics struct {
 	// QueueLength is the sum of the latest queue_length gauge per instance (current state).
 	QueueLength int `json:"queue_length"`
 	// Queue wait (DES ArrivalTime → StartTime) aggregates for this service (all endpoints).
-	QueueWaitP50Ms float64 `json:"queue_wait_p50_ms,omitempty"`
-	QueueWaitP95Ms float64 `json:"queue_wait_p95_ms,omitempty"`
-	QueueWaitP99Ms float64 `json:"queue_wait_p99_ms,omitempty"`
+	QueueWaitP50Ms  float64 `json:"queue_wait_p50_ms,omitempty"`
+	QueueWaitP95Ms  float64 `json:"queue_wait_p95_ms,omitempty"`
+	QueueWaitP99Ms  float64 `json:"queue_wait_p99_ms,omitempty"`
 	QueueWaitMeanMs float64 `json:"queue_wait_mean_ms,omitempty"`
 	// Processing latency (StartTime → completion, CPU + net for the hop) aggregates.
 	ProcessingLatencyP50Ms  float64 `json:"processing_latency_p50_ms,omitempty"`

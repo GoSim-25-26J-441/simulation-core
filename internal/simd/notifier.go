@@ -30,8 +30,8 @@ type NotificationPayload struct {
 
 	// Optimization result fields (populated when optimization was enabled and run completed)
 	BestRunID     string   `json:"best_run_id,omitempty"`
-	BestScore     float64  `json:"best_score,omitempty"`
-	Iterations    int32    `json:"iterations,omitempty"`
+	BestScore     *float64 `json:"best_score,omitempty"`
+	Iterations    *int32   `json:"iterations,omitempty"`
 	TopCandidates []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
 
 	// FinalConfig is the settled run configuration: prefer RunRecord.FinalConfig (snapshot before cleanup);
@@ -113,8 +113,10 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 	// Include optimization result when available (batch optimization completed)
 	if rec.Run.BestRunId != "" {
 		payload.BestRunID = rec.Run.BestRunId
-		payload.BestScore = rec.Run.BestScore
-		payload.Iterations = rec.Run.Iterations
+		bestScore := rec.Run.BestScore
+		iterations := rec.Run.Iterations
+		payload.BestScore = &bestScore
+		payload.Iterations = &iterations
 		// Include up to 5 top candidate run IDs (best first)
 		const maxCandidatesInCallback = 5
 		if len(rec.Run.CandidateRunIds) > 0 {

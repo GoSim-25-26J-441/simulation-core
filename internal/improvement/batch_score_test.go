@@ -128,7 +128,7 @@ func TestComputeBatchScoreIngressErrorRateViolation(t *testing.T) {
 		LatencyP95Ms:          1,
 		LatencyP99Ms:          1,
 		IngressRequests:       100,
-		IngressFailedRequests:   10,
+		IngressFailedRequests: 10,
 		FailedRequests:        10,
 		TotalRequests:         100,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
@@ -154,9 +154,9 @@ func TestComputeBatchScoreTopicLagViolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &simulationv1.RunMetrics{
-		LatencyP95Ms:         1,
-		LatencyP99Ms:         1,
-		TopicConsumerLagSum:  20,
+		LatencyP95Ms:        1,
+		LatencyP99Ms:        1,
+		TopicConsumerLagSum: 20,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{ServiceName: "svc1", CpuUtilization: 0.5, MemoryUtilization: 0.5},
 		},
@@ -184,10 +184,10 @@ func TestComputeBatchScoreTopologyGuardrailViolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := &simulationv1.RunMetrics{
-		LatencyP95Ms:               1,
-		LatencyP99Ms:               1,
-		LocalityHitRate:            0.5,
-		CrossZoneRequestFraction:   0.4,
+		LatencyP95Ms:                 1,
+		LatencyP99Ms:                 1,
+		LocalityHitRate:              0.5,
+		CrossZoneRequestFraction:     0.4,
 		TopologyLatencyPenaltyMsMean: 40,
 		ServiceMetrics: []*simulationv1.ServiceMetrics{
 			{ServiceName: "svc1", CpuUtilization: 0.5, MemoryUtilization: 0.5},

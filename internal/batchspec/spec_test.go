@@ -98,8 +98,8 @@ func TestParseBatchSpecTopologyGuardrails(t *testing.T) {
 		},
 	}
 	pb := &simulationv1.BatchOptimizationConfig{
-		MinLocalityHitRate:             0.85,
-		MaxCrossZoneRequestFraction:    0.2,
+		MinLocalityHitRate:              0.85,
+		MaxCrossZoneRequestFraction:     0.2,
 		MaxTopologyLatencyPenaltyMeanMs: 25,
 	}
 	spec, err := ParseBatchSpec(pb, base)
@@ -108,5 +108,49 @@ func TestParseBatchSpecTopologyGuardrails(t *testing.T) {
 	}
 	if spec.MinLocalityHitRate != 0.85 || spec.MaxCrossZoneRequestFraction != 0.2 || spec.MaxTopologyLatencyPenaltyMeanMs != 25 {
 		t.Fatalf("unexpected topology guardrails: %+v", spec)
+	}
+}
+
+func TestBatchSpecRefinementSpec(t *testing.T) {
+	s := &BatchSpec{
+		ReplicaStep:          3,
+		ServiceCPURatio:      0.04,
+		ServiceMemRatio:      0.06,
+		HostCPUStepCores:     4,
+		HostMemStepGB:        6,
+		MaxNeighborsPerState: 32,
+		AllowedActions: map[simulationv1.BatchScalingAction]struct{}{
+			simulationv1.BatchScalingAction_SERVICE_SCALE_OUT: {},
+		},
+		AllowedActionsOrdered: []simulationv1.BatchScalingAction{
+			simulationv1.BatchScalingAction_SERVICE_SCALE_OUT,
+		},
+	}
+	r := s.RefinementSpec()
+	if r == nil {
+		t.Fatalf("expected non-nil refinement")
+	}
+	if r.ReplicaStep != 1 {
+		t.Fatalf("expected replica step floor to 1, got %d", r.ReplicaStep)
+	}
+	if r.ServiceCPURatio != 0.02 || r.ServiceMemRatio != 0.03 {
+		t.Fatalf("expected ratio halving, got cpu=%v mem=%v", r.ServiceCPURatio, r.ServiceMemRatio)
+	}
+	if r.HostCPUStepCores != 2 || r.HostMemStepGB != 3 {
+		t.Fatalf("expected host step halving, got cpu=%d mem=%d", r.HostCPUStepCores, r.HostMemStepGB)
+	}
+	if r.MaxNeighborsPerState != 16 {
+		t.Fatalf("expected neighbors halved to 16, got %d", r.MaxNeighborsPerState)
+	}
+	s.AllowedActions[simulationv1.BatchScalingAction_HOST_SCALE_OUT] = struct{}{}
+	if len(r.AllowedActions) != 1 {
+		t.Fatalf("expected refinement allowed action map to be copied, got len=%d", len(r.AllowedActions))
+	}
+}
+
+func TestBatchSpecRefinementSpecNilReceiver(t *testing.T) {
+	var s *BatchSpec
+	if got := s.RefinementSpec(); got != nil {
+		t.Fatalf("expected nil refinement for nil receiver")
 	}
 }

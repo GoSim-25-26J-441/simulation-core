@@ -11,6 +11,7 @@ import (
 type ScenarioValidationIssue struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
+	Path      string `json:"path,omitempty"`
 	ServiceID string `json:"service_id,omitempty"`
 	Hint      string `json:"hint,omitempty"`
 }
@@ -22,18 +23,29 @@ type ScenarioValidationSummary struct {
 	Workloads int `json:"workloads"`
 }
 
-// ScenarioValidationResult contains parse + preflight feasibility outcomes.
+// ScenarioValidationResult contains parse + semantic + placement outcomes.
 type ScenarioValidationResult struct {
-	Valid    bool                      `json:"valid"`
-	Errors   []ScenarioValidationIssue `json:"errors"`
-	Warnings []ScenarioValidationIssue `json:"warnings"`
-	Summary  ScenarioValidationSummary `json:"summary"`
+	Valid    bool                       `json:"valid"`
+	Errors   []ScenarioValidationIssue  `json:"errors"`
+	Warnings []ScenarioValidationIssue  `json:"warnings"`
+	Summary  *ScenarioValidationSummary `json:"summary,omitempty"`
 }
 
 const placementHint = "Check required_zones, required_host_labels, max_replicas_per_host, and available host CPU/memory."
 
-// ValidateScenarioPreflight validates scenario YAML for both config semantics and
-// resource/placement feasibility. It is side-effect free.
+func summaryPtr(s *config.Scenario) *ScenarioValidationSummary {
+	if s == nil {
+		return nil
+	}
+	return &ScenarioValidationSummary{
+		Hosts:     len(s.Hosts),
+		Services:  len(s.Services),
+		Workloads: len(s.Workload),
+	}
+}
+
+// ValidateScenarioPreflight validates scenario YAML: YAML syntax, [config.ValidateScenario]
+// semantic graph checks, then resource/placement initialization. Side-effect free.
 func ValidateScenarioPreflight(scenarioYAML string) *ScenarioValidationResult {
 	result := &ScenarioValidationResult{
 		Valid:    false,
@@ -41,8 +53,10 @@ func ValidateScenarioPreflight(scenarioYAML string) *ScenarioValidationResult {
 		Warnings: make([]ScenarioValidationIssue, 0),
 	}
 
-	scenario, err := config.ParseScenarioYAMLString(scenarioYAML)
+	scenario, err := config.UnmarshalScenarioYAMLString(scenarioYAML)
 	if err != nil {
+		z := ScenarioValidationSummary{}
+		result.Summary = &z
 		result.Errors = append(result.Errors, ScenarioValidationIssue{
 			Code:    "SCENARIO_PARSE_INVALID",
 			Message: err.Error(),
@@ -50,11 +64,18 @@ func ValidateScenarioPreflight(scenarioYAML string) *ScenarioValidationResult {
 		return result
 	}
 
-	result.Summary = ScenarioValidationSummary{
-		Hosts:     len(scenario.Hosts),
-		Services:  len(scenario.Services),
-		Workloads: len(scenario.Workload),
+	if err := config.ValidateScenario(scenario); err != nil {
+		code, path, msg := config.SemanticIssueFromValidateError(err)
+		result.Summary = summaryPtr(scenario)
+		result.Errors = append(result.Errors, ScenarioValidationIssue{
+			Code:    code,
+			Message: msg,
+			Path:    path,
+		})
+		return result
 	}
+
+	result.Summary = summaryPtr(scenario)
 
 	rm := resource.NewManager()
 	if err := rm.InitializeFromScenario(scenario); err != nil {
@@ -72,6 +93,8 @@ func ValidateScenarioPreflight(scenarioYAML string) *ScenarioValidationResult {
 	}
 
 	result.Valid = true
+	result.Summary = nil
+	result.Errors = []ScenarioValidationIssue{}
 	return result
 }
 

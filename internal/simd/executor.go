@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -46,8 +47,11 @@ func effectiveRunSeed(input *simulationv1.RunInput) int64 {
 
 // RunExecutor manages asynchronous run execution and per-run cancellation.
 type RunExecutor struct {
-	store    *RunStore
-	notifier *Notifier
+	store     *RunStore
+	notifier  *Notifier
+	limits    SimulationLimits
+	optSafety OptimizationSafetyLimits
+	limitsErr error
 
 	optimizationRunner OptimizationRunner // optional; when set, optimization runs use it
 
@@ -60,6 +64,34 @@ type RunExecutor struct {
 	onlineLeaseDeadline    map[string]time.Time         // wall-clock heartbeat deadline per run
 	// runScenarios holds the parsed scenario per active run for configuration/metadata export.
 	runScenarios map[string]*config.Scenario
+	progress     map[string]*RunProgress
+}
+
+type RunProgress struct {
+	RunID                          string    `json:"run_id"`
+	Status                         string    `json:"status"`
+	Mode                           string    `json:"mode"`
+	Realtime                       bool      `json:"realtime"`
+	IsOptimization                 bool      `json:"is_optimization"`
+	StartedAt                      time.Time `json:"started_at"`
+	LastProgressAt                 time.Time `json:"last_progress_at"`
+	CurrentSimTime                 time.Time `json:"current_sim_time"`
+	RequestedDurationMs            int64     `json:"requested_duration_ms"`
+	PercentComplete                float64   `json:"percent_complete"`
+	EventsScheduled                int64     `json:"events_scheduled"`
+	EventsProcessed                int64     `json:"events_processed"`
+	CurrentEventQueueLength        int       `json:"current_event_queue_length"`
+	MaxEventQueueLengthSeen        int64     `json:"max_event_queue_length_seen"`
+	ActiveRequestCount             int       `json:"active_request_count"`
+	TotalRequestCount              int64     `json:"total_request_count"`
+	RetainedCompletedRequestTraces int       `json:"retained_completed_request_traces"`
+	MetricSeriesCount              int       `json:"metric_series_count"`
+	MetricSampleCount              int       `json:"metric_sample_count"`
+	GenerationHorizon              string    `json:"generation_horizon,omitempty"`
+	CancellationReason             string    `json:"cancellation_reason,omitempty"`
+	LastError                      string    `json:"last_error,omitempty"`
+	MemoryAllocBytes               uint64    `json:"memory_alloc_bytes"`
+	GoroutineCount                 int       `json:"goroutine_count"`
 }
 
 // SetOptimizationRunner sets the optimization runner for multi-run experiments.
@@ -93,9 +125,13 @@ var (
 )
 
 func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
+	limits, limitsErr := simulationLimitsFromEnv()
 	return &RunExecutor{
 		store:                  store,
 		notifier:               NewNotifierWithWhitelist(callbackWhitelist),
+		limits:                 limits,
+		optSafety:              optimizationSafetyLimitsFromEnv(),
+		limitsErr:              limitsErr,
 		cancels:                make(map[string]context.CancelFunc),
 		workloadStates:         make(map[string]*WorkloadState),
 		resourceManagers:       make(map[string]*resource.Manager),
@@ -103,6 +139,7 @@ func NewRunExecutor(store *RunStore, callbackWhitelist []string) *RunExecutor {
 		onlineCompletionReason: make(map[string]string),
 		onlineLeaseDeadline:    make(map[string]time.Time),
 		runScenarios:           make(map[string]*config.Scenario),
+		progress:               make(map[string]*RunProgress),
 	}
 }
 
@@ -115,6 +152,25 @@ func (e *RunExecutor) Start(runID string) (*RunRecord, error) {
 
 	updated, err := e.store.SetStatusRunningWithOnlineConcurrencyGuard(runID)
 	if err != nil {
+		return nil, err
+	}
+	if e.limitsErr != nil {
+		err := fmt.Errorf("invalid SIMD guardrail configuration: %w", e.limitsErr)
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after limits config error", "run_id", runID, "error", serr)
+		}
+		return nil, err
+	}
+	if err := e.limits.validatePreStart(updated.Input); err != nil {
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after prestart guardrail rejection", "run_id", runID, "error", serr)
+		}
+		return nil, err
+	}
+	if err := validateOptimizationPreStart(updated.Input, e.optSafety); err != nil {
+		if _, serr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); serr != nil {
+			logger.Error("failed to set failed status after optimization prestart rejection", "run_id", runID, "error", serr)
+		}
 		return nil, err
 	}
 	if opt := updated.Input.GetOptimization(); opt != nil && opt.Online {
@@ -194,9 +250,38 @@ func (e *RunExecutor) cleanup(runID string) {
 	delete(e.resourceManagers, runID)
 	delete(e.policyManagers, runID)
 	delete(e.runScenarios, runID)
+	delete(e.progress, runID)
 	delete(e.onlineCompletionReason, runID)
 	delete(e.onlineLeaseDeadline, runID)
 	e.mu.Unlock()
+}
+
+func (e *RunExecutor) updateProgress(runID string, p *RunProgress) {
+	if p == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.progress[runID] = p
+}
+
+func (e *RunExecutor) ActiveProgress() []*RunProgress {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]*RunProgress, 0, len(e.progress))
+	for _, p := range e.progress {
+		cp := *p
+		out = append(out, &cp)
+	}
+	return out
+}
+
+func (e *RunExecutor) LimitsSnapshot() SimulationLimits {
+	return e.limits
+}
+
+func (e *RunExecutor) OptimizationSafetySnapshot() OptimizationSafetyLimits {
+	return e.optSafety
 }
 
 // signalOnlineLeaseEnd requests a normal completion for an online run (COMPLETED + online_completion_reason).
@@ -336,7 +421,8 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 			})
 		}
 		topics := make([]map[string]any, 0, len(topicSnaps))
-		for _, t := range topicSnaps {
+		for i := range topicSnaps {
+			t := &topicSnaps[i]
 			topics = append(topics, map[string]any{
 				"broker_service":        t.BrokerID,
 				"topic":                 t.Topic,
@@ -363,10 +449,19 @@ func (e *RunExecutor) sendNotificationIfConfigured(rec *RunRecord) {
 
 func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	defer e.cleanup(runID)
+	if e.optSafety.MaxWallClockRuntime > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.optSafety.MaxWallClockRuntime)
+		defer cancel()
+	}
 
 	rec, ok := e.store.Get(runID)
 	if !ok {
 		logger.Error("run not found", "run_id", runID)
+		return
+	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
 		return
 	}
 
@@ -430,7 +525,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 		durationMs = opt.EvaluationDurationMs
 	}
 	if durationMs <= 0 {
-		durationMs = 10000 // 10 seconds default
+		durationMs = e.optSafety.DefaultEvaluationDuration
 	}
 
 	logger.Info("starting optimization run", "run_id", runID, "objective", params.Objective,
@@ -454,6 +549,7 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	if err := e.store.SetOptimizationResult(runID, bestRunID, bestScore, iterations, candidateRunIDs); err != nil {
 		logger.Error("failed to set optimization result", "run_id", runID, "error", err)
 	}
+	e.store.TrimOptimizationCandidates(runID, bestRunID)
 
 	// Copy the best run's metrics onto the parent optimization run so GET /metrics
 	// and SSE metrics_snapshot (on the next tick before complete) expose them.
@@ -480,13 +576,15 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *config.Scenario, rm *resource.Manager, metricsCollector *metrics.Collector, onlineReason string, simDuration time.Duration) {
 	metricsCollector.Stop()
 	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
 	engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels, e.runMetricsOptsForRun(runID))
 	attachHostMetrics(scenario, rm, engineMetrics, metricsCollector)
 	applyThroughputFromSimDuration(engineMetrics, simDuration)
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
 			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 		}
@@ -533,6 +631,10 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 		logger.Error("run not found", "run_id", runID)
 		return
 	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
+		return
+	}
 
 	if rec.Input == nil || rec.Input.Optimization == nil {
 		logger.Error("online optimization requested without optimization config", "run_id", runID)
@@ -557,6 +659,21 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Create engine
 	eng := engine.NewEngine(runID)
+	eng.SetRuntimeLimits(e.limits.toEngineRuntimeLimits())
+	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	eng.GetRunManager().SetMaxTotalRequests(e.limits.MaxTotalRequests, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_total_requests",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested
 	if rec.Input.RealTimeMode {
@@ -587,6 +704,20 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetLimitCallback(func(limit string, currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: limit,
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_metric_points",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.Start()
 
 	// Store collector reference for later access
@@ -670,14 +801,14 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 	// Run simulation; wall-clock limits use signalOnlineLeaseEnd; explicit stop uses StopRun.
 	logger.Info("starting online optimization run", "run_id", runID, "duration", onlineRunDuration)
 	if err := eng.Run(onlineRunDuration); err != nil {
+		// If a graceful online completion reason was already signaled (e.g. heartbeat
+		// expiry), finalize as COMPLETED even if engine stop races context cancellation.
+		if reason := e.takeOnlineCompletionReason(runID); reason != "" {
+			e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason, eng.GetSimTime().Sub(startTime))
+			return
+		}
 		// If cancelled, handle based on current run status.
 		if ctx.Err() != nil {
-			reason := e.takeOnlineCompletionReason(runID)
-			if reason != "" {
-				e.finalizeOnlineOptimizationRun(runID, scenario, rm, metricsCollector, reason, eng.GetSimTime().Sub(startTime))
-				return
-			}
-
 			rec, ok := e.store.Get(runID)
 			if !ok {
 				logger.Info("online simulation cancelled; run record not found", "run_id", runID)
@@ -693,13 +824,15 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 				metricsCollector.Stop()
 
 				serviceLabels := make([]map[string]string, 0, len(scenario.Services))
-				for _, svc := range scenario.Services {
+				for i := range scenario.Services {
+					svc := &scenario.Services[i]
 					serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 				}
 				engineMetrics := metrics.ConvertToRunMetrics(metricsCollector, serviceLabels, e.runMetricsOptsForRun(runID))
 				attachHostMetrics(scenario, rm, engineMetrics, metricsCollector)
 				applyThroughputFromSimDuration(engineMetrics, eng.GetSimTime().Sub(startTime))
-				for _, svc := range scenario.Services {
+				for i := range scenario.Services {
+					svc := &scenario.Services[i]
 					if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
 						sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 					}
@@ -759,6 +892,10 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 		logger.Error("run not found", "run_id", runID)
 		return
 	}
+	if rec.Input == nil {
+		logger.Info("run input unavailable; skipping execution", "run_id", runID, "status", rec.Run.Status.String())
+		return
+	}
 
 	// Parse scenario YAML
 	scenario, err := config.ParseScenarioYAMLString(rec.Input.ScenarioYaml)
@@ -781,6 +918,21 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Create engine
 	eng := engine.NewEngine(runID)
+	eng.SetRuntimeLimits(e.limits.toEngineRuntimeLimits())
+	eng.GetRunManager().SetMaxRequestsTracked(e.limits.MaxRequestsTracked, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_requests_tracked",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	eng.GetRunManager().SetMaxTotalRequests(e.limits.MaxTotalRequests, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_total_requests",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 
 	// Enable real-time mode if requested (for real-time dashboards/monitoring)
 	if rec.Input.RealTimeMode {
@@ -808,6 +960,20 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Initialize metrics collector
 	metricsCollector := metrics.NewCollector()
+	metricsCollector.SetLimitCallback(func(limit string, currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: limit,
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
+	metricsCollector.SetMaxPoints(e.limits.MaxMetricPoints, func(currentCount, max int) {
+		eng.TriggerLimitExceeded(&engine.LimitExceededError{
+			Limit: "max_metric_points",
+			Value: int64(currentCount),
+			Max:   int64(max),
+		})
+	})
 	metricsCollector.Start()
 
 	// Store collector reference for later access
@@ -870,15 +1036,45 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 
 	// Run simulation
 	logger.Info("starting simulation", "run_id", runID, "duration", duration)
+	progressCtx, progressCancel := context.WithCancel(ctx)
+	defer progressCancel()
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-progressCtx.Done():
+				return
+			case <-t.C:
+				p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, "")
+				e.updateProgress(runID, p)
+				logger.Info("Run progress",
+					"run_id", p.RunID,
+					"sim_time", p.CurrentSimTime,
+					"percent_complete", p.PercentComplete,
+					"events_processed", p.EventsProcessed,
+					"queue_length", p.CurrentEventQueueLength,
+					"active_requests", p.ActiveRequestCount,
+					"metric_series", p.MetricSeriesCount,
+					"memory_alloc_bytes", p.MemoryAllocBytes,
+					"goroutines", p.GoroutineCount,
+				)
+			}
+		}
+	}()
 	if err := eng.Run(duration); err != nil {
 		// Check if it was cancelled
 		if ctx.Err() != nil {
 			logger.Info("simulation cancelled", "run_id", runID)
+			p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, "cancelled")
+			e.updateProgress(runID, p)
 			rec, _ := e.store.Get(runID)
 			e.sendNotificationIfConfigured(rec)
 			return
 		}
 		logger.Error("simulation failed", "run_id", runID, "error", err)
+		p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, err.Error())
+		e.updateProgress(runID, p)
 		if updated, setErr := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_FAILED, err.Error()); setErr != nil {
 			logger.Error("failed to set failed status", "run_id", runID, "error", setErr)
 		} else {
@@ -893,13 +1089,16 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	logger.Info("simulation completed", "run_id", runID,
 		"simulation_duration", simDuration,
 		"expected_duration", duration)
+	p := e.buildRunProgress(runID, rec, startTime, duration, eng, metricsCollector, workloadState, "")
+	e.updateProgress(runID, p)
 
 	// Stop metrics collection
 	metricsCollector.Stop()
 
 	// Build service labels for metrics conversion
 	serviceLabels := make([]map[string]string, 0)
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
 
@@ -911,7 +1110,8 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	applyThroughputFromSimDuration(engineMetrics, simDuration)
 
 	// Populate ActiveReplicas from the resource manager (live routable count)
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		if sm := engineMetrics.ServiceMetrics[svc.ID]; sm != nil {
 			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 		}
@@ -928,6 +1128,13 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 	// Mark as completed if still running
 	rec, ok = e.store.Get(runID)
 	if ok && rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		// For ordinary (non-optimization) runs, expose the run itself as the single
+		// candidate/result run for API-contract consistency with optimization flows.
+		if rec.Input == nil || rec.Input.Optimization == nil {
+			if err := e.store.SetOptimizationResult(runID, runID, 0, 0, []string{runID}); err != nil {
+				logger.Error("failed to set self optimization result for ordinary run", "run_id", runID, "error", err)
+			}
+		}
 		e.snapshotFinalConfiguration(runID)
 		if updated, err := e.store.SetStatus(runID, simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
 			logger.Error("failed to set completed status", "run_id", runID, "error", err)
@@ -937,6 +1144,68 @@ func (e *RunExecutor) runSimulation(ctx context.Context, runID string) {
 				"throughput_rps", pbMetrics.ThroughputRps)
 			e.sendNotificationIfConfigured(updated)
 		}
+	}
+}
+
+func (e *RunExecutor) buildRunProgress(runID string, rec *RunRecord, startTime time.Time, requested time.Duration, eng *engine.Engine, collector *metrics.Collector, ws *WorkloadState, reason string) *RunProgress {
+	if rec == nil {
+		rec, _ = e.store.Get(runID)
+	}
+	snap := eng.ProgressSnapshot(startTime.Add(requested))
+	cs := collector.Snapshot()
+	rm := eng.GetRunManager().Snapshot()
+	percent := 0.0
+	if requested > 0 {
+		percent = 100 * float64(snap.SimTime.Sub(startTime)) / float64(requested)
+		if percent < 0 {
+			percent = 0
+		}
+	}
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	mode := "standard"
+	realtime := rec != nil && rec.Input != nil && rec.Input.RealTimeMode
+	if realtime {
+		mode = "realtime"
+	}
+	horizon := ""
+	if ws != nil {
+		h := ws.GeneratedHorizon()
+		if !h.IsZero() {
+			horizon = h.Format(time.RFC3339Nano)
+		}
+	}
+	status := ""
+	isOpt := false
+	if rec != nil && rec.Run != nil {
+		status = rec.Run.Status.String()
+		isOpt = rec.Input != nil && rec.Input.Optimization != nil
+	}
+	return &RunProgress{
+		RunID:                          runID,
+		Status:                         status,
+		Mode:                           mode,
+		Realtime:                       realtime,
+		IsOptimization:                 isOpt,
+		StartedAt:                      startTime,
+		LastProgressAt:                 time.Now(),
+		CurrentSimTime:                 snap.SimTime,
+		RequestedDurationMs:            int64(requested / time.Millisecond),
+		PercentComplete:                percent,
+		EventsScheduled:                snap.EventsScheduled,
+		EventsProcessed:                snap.EventsProcessed,
+		CurrentEventQueueLength:        snap.QueueLength,
+		MaxEventQueueLengthSeen:        snap.MaxQueueSeen,
+		ActiveRequestCount:             rm.ActiveRequests,
+		TotalRequestCount:              rm.TotalRequests,
+		RetainedCompletedRequestTraces: rm.RetainedCompletedSamples,
+		MetricSeriesCount:              cs.SeriesCount,
+		MetricSampleCount:              cs.TotalPoints,
+		GenerationHorizon:              horizon,
+		CancellationReason:             reason,
+		LastError:                      snap.LastError,
+		MemoryAllocBytes:               mem.Alloc,
+		GoroutineCount:                 runtime.NumGoroutine(),
 	}
 }
 
@@ -1020,7 +1289,9 @@ func brokerPressureByConsumerService(rm *resource.Manager, now time.Time) map[st
 		svc := targetServiceIDFromConsumerTarget(q.ConsumerTarget)
 		acc(svc, "queue_pressure", q.Depth, q.InFlight > 0, q.OldestMessageAgeMs, q.DropCount > 0, q.DlqCount > 0)
 	}
-	for _, t := range rm.TopicBrokerHealthSnapshots(now) {
+	topicSnaps := rm.TopicBrokerHealthSnapshots(now)
+	for i := range topicSnaps {
+		t := &topicSnaps[i]
 		svc := targetServiceIDFromConsumerTarget(t.ConsumerTarget)
 		acc(svc, "topic_pressure", t.Depth, t.InFlight > 0, t.OldestMessageAgeMs, t.DropCount > 0, t.DlqCount > 0)
 	}
@@ -1057,7 +1328,7 @@ func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, s
 
 // onlineTopologyGuard is a compatibility helper for topology-aware scale-down checks.
 // It returns a stable reason string so tests and audit messages can assert decisions.
-func onlineTopologyGuard(runMetrics *models.RunMetrics, _ *config.Scenario, _ string, _ *resource.Manager, opt *simulationv1.OptimizationConfig, _ int) (bool, string) {
+func onlineTopologyGuard(runMetrics *models.RunMetrics, _ *config.Scenario, _ string, _ *resource.Manager, opt *simulationv1.OptimizationConfig, _ int) (guarded bool, reason string) {
 	if runMetrics == nil || opt == nil {
 		return false, ""
 	}
@@ -1166,7 +1437,8 @@ func (e *RunExecutor) runOnlineController(
 
 	// Precompute service labels for metrics conversion.
 	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
-	for _, svc := range scenario.Services {
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
 		serviceLabels = append(serviceLabels, metrics.CreateServiceLabels(svc.ID))
 	}
 
@@ -1478,7 +1750,8 @@ func (e *RunExecutor) runOnlineController(
 				cpuStep = 1.0
 			}
 
-			for _, svc := range scenario.Services {
+			for i := range scenario.Services {
+				svc := &scenario.Services[i]
 				// Current replicas from resource manager.
 				currentReplicas := rm.ActiveReplicas(svc.ID)
 				if currentReplicas < 1 {
@@ -1538,21 +1811,21 @@ func (e *RunExecutor) runOnlineController(
 					// util < targetLow and P95 guardrail allows (do not scale down if P95 would exceed target).
 					switch {
 					case brokerPressure[svc.ID].HasBacklog || brokerPressure[svc.ID].HasInFlight || brokerPressure[svc.ID].MaxOldestAgeMs > 0:
-						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
+						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
 							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(&svc) {
+						} else if config.ServiceAllowsHorizontalScaling(svc) {
 							newReplicas = currentReplicas + step
 						}
 					case util > targetUtilHigh:
-						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
+						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
 							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(&svc) {
+						} else if config.ServiceAllowsHorizontalScaling(svc) {
 							newReplicas = currentReplicas + step
 						}
 					case util < targetUtilLow && currentReplicas > 1 && p95OkForDown:
-						if config.ServiceAllowsHorizontalScaling(&svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
+						if config.ServiceAllowsHorizontalScaling(svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
 							newReplicas = currentReplicas - 1
 						}
 					}
@@ -1560,28 +1833,28 @@ func (e *RunExecutor) runOnlineController(
 					// P95-primary (default): scale up on P95 above target, scale down on P95 below target with utilization gates.
 					switch {
 					case brokerPressure[svc.ID].HasBacklog || brokerPressure[svc.ID].HasInFlight || brokerPressure[svc.ID].MaxOldestAgeMs > 0:
-						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
+						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
 							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(&svc) {
+						} else if config.ServiceAllowsHorizontalScaling(svc) {
 							newReplicas = currentReplicas + step
 						}
 					case p95Guard && currentP95 > targetP95*1.05:
-						if config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil >= cpuHighThreshold {
+						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
 							newCPUCores = currentCores + cpuStep
 							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(&svc) {
+						} else if config.ServiceAllowsHorizontalScaling(svc) {
 							newReplicas = currentReplicas + step
 						}
 					case p95Guard && currentP95 < targetP95*0.7 && currentReplicas > 1:
-						if config.ServiceAllowsHorizontalScaling(&svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
+						if config.ServiceAllowsHorizontalScaling(svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
 							newReplicas = currentReplicas - 1
 						}
 					}
 				}
 
 				// Utilization-primary: vertical CPU/memory downscale (stabilized like replica drain).
-				wantVertCPU := primaryTarget == "cpu_utilization" && config.ServiceAllowsVerticalCPU(&svc) && svcCPUUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
+				wantVertCPU := primaryTarget == "cpu_utilization" && config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
 					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
 				var targetVertCPU float64
@@ -1607,7 +1880,7 @@ func (e *RunExecutor) runOnlineController(
 					stableVertCPUDown[svc.ID] = 0
 				}
 
-				wantVertMem := primaryTarget == "memory_utilization" && config.ServiceAllowsVerticalMemory(&svc) && svcMemUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
+				wantVertMem := primaryTarget == "memory_utilization" && config.ServiceAllowsVerticalMemory(svc) && svcMemUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
 					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
 					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
 				var targetVertMem float64
@@ -1661,7 +1934,7 @@ func (e *RunExecutor) runOnlineController(
 							"error", err)
 						// Fallback: if we were trying to add capacity and vertical scaling
 						// failed (e.g., host capacity), fall back to horizontal scale-up.
-						if config.ServiceAllowsHorizontalScaling(&svc) {
+						if config.ServiceAllowsHorizontalScaling(svc) {
 							if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
 								newReplicas = currentReplicas + step
 							} else if p95Guard && currentP95 > targetP95*1.05 {
@@ -1914,7 +2187,8 @@ func convertMetricsToProto(engineMetrics *models.RunMetrics) *simulationv1.RunMe
 	}
 	if len(engineMetrics.EndpointRequestStats) > 0 {
 		pbMetrics.EndpointRequestStats = make([]*simulationv1.EndpointRequestStats, 0, len(engineMetrics.EndpointRequestStats))
-		for _, e := range engineMetrics.EndpointRequestStats {
+		for i := range engineMetrics.EndpointRequestStats {
+			e := &engineMetrics.EndpointRequestStats[i]
 			row := &simulationv1.EndpointRequestStats{
 				ServiceName:             e.ServiceName,
 				EndpointPath:            e.EndpointPath,

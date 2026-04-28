@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
@@ -35,6 +36,157 @@ func TestRunStoreCreateAndGet(t *testing.T) {
 	}
 	if got.Run.Id != rec.Run.Id {
 		t.Fatalf("expected same run id")
+	}
+}
+
+func TestRunStoreCompletedRunDropsCollectorByDefault(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	_, err := store.Create("run-collector-drop", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	c := metrics.NewCollector()
+	c.Start()
+	if err := store.SetCollector("run-collector-drop", c); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+	if _, err := store.SetStatus("run-collector-drop", simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		t.Fatalf("SetStatus completed error: %v", err)
+	}
+	if _, ok := store.GetCollector("run-collector-drop"); ok {
+		t.Fatalf("expected collector to be dropped for completed run")
+	}
+}
+
+func TestRunStoreRunningRunKeepsCollector(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	_, err := store.Create("run-collector-live", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	c := metrics.NewCollector()
+	c.Start()
+	if err := store.SetCollector("run-collector-live", c); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+	if _, err := store.SetStatus("run-collector-live", simulationv1.RunStatus_RUN_STATUS_RUNNING, ""); err != nil {
+		t.Fatalf("SetStatus running error: %v", err)
+	}
+	if _, ok := store.GetCollector("run-collector-live"); !ok {
+		t.Fatalf("expected collector while run is running")
+	}
+}
+
+func TestRunStoreMetricsRemainAfterCollectorDropped(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	_, err := store.Create("run-final-metrics", &simulationv1.RunInput{ScenarioYaml: "x"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	c := metrics.NewCollector()
+	c.Start()
+	if err := store.SetCollector("run-final-metrics", c); err != nil {
+		t.Fatalf("SetCollector error: %v", err)
+	}
+	final := &simulationv1.RunMetrics{TotalRequests: 42}
+	if err := store.SetMetrics("run-final-metrics", final); err != nil {
+		t.Fatalf("SetMetrics error: %v", err)
+	}
+	if _, err := store.SetStatus("run-final-metrics", simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		t.Fatalf("SetStatus completed error: %v", err)
+	}
+	rec, ok := store.Get("run-final-metrics")
+	if !ok || rec.Metrics == nil || rec.Metrics.TotalRequests != 42 {
+		t.Fatalf("expected final metrics preserved, got %+v", rec)
+	}
+}
+
+func TestRunStoreCleanupNowAppliesTTLOnlyToTerminalRuns(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	store.lifecycle.TTL = time.Millisecond
+	store.lifecycle.MaxTerminalRuns = 1000
+	_, _ = store.Create("run-terminal", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("run-active", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.SetStatus("run-terminal", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	_, _ = store.SetStatus("run-active", simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	time.Sleep(2 * time.Millisecond)
+	store.CleanupNow()
+	if _, ok := store.Get("run-terminal"); ok {
+		t.Fatalf("expected terminal run to be evicted by TTL")
+	}
+	if _, ok := store.Get("run-active"); !ok {
+		t.Fatalf("expected active run to remain")
+	}
+}
+
+func TestRunStoreCleanupNowAppliesMaxTerminalRetention(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	store.lifecycle.TTL = 24 * time.Hour
+	store.lifecycle.MaxTerminalRuns = 2
+	_, _ = store.Create("r1", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("r2", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("r3", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.SetStatus("r1", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	time.Sleep(2 * time.Millisecond)
+	_, _ = store.SetStatus("r2", simulationv1.RunStatus_RUN_STATUS_FAILED, "")
+	time.Sleep(2 * time.Millisecond)
+	_, _ = store.SetStatus("r3", simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	store.CleanupNow()
+	if _, ok := store.Get("r1"); ok {
+		t.Fatalf("expected oldest terminal run to be evicted")
+	}
+	if _, ok := store.Get("r2"); !ok {
+		t.Fatalf("expected r2 retained")
+	}
+	if _, ok := store.Get("r3"); !ok {
+		t.Fatalf("expected r3 retained")
+	}
+}
+
+func TestRunStoreTrimOptimizationCandidatesDropsNonTopChildren(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	store.lifecycle.MaxOptimizationCandidates = 1
+	_, _ = store.Create("parent", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_ = store.SetOptimizationResult("parent", "opt-a", 1.0, 1, []string{"opt-a", "opt-b", "opt-c"})
+	for _, id := range []string{"opt-a", "opt-b", "opt-c"} {
+		_, _ = store.Create(id, &simulationv1.RunInput{ScenarioYaml: "x"})
+		_, _ = store.SetStatus(id, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	}
+	store.TrimOptimizationCandidates("parent", "opt-a")
+	if _, ok := store.Get("opt-a"); !ok {
+		t.Fatalf("expected best candidate retained")
+	}
+	if _, ok := store.Get("opt-b"); ok {
+		t.Fatalf("expected non-top candidate to be removed")
+	}
+	if _, ok := store.Get("opt-c"); ok {
+		t.Fatalf("expected non-top candidate to be removed")
+	}
+}
+
+func TestRunStoreCountsByStatus(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	_, _ = store.Create("a", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("b", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("c", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.Create("opt-d", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_, _ = store.SetStatus("a", simulationv1.RunStatus_RUN_STATUS_RUNNING, "")
+	_, _ = store.SetStatus("b", simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	_, _ = store.SetStatus("c", simulationv1.RunStatus_RUN_STATUS_FAILED, "")
+	_, _ = store.SetStatus("opt-d", simulationv1.RunStatus_RUN_STATUS_CANCELLED, "")
+	counts := store.Counts()
+	if counts.Active != 1 || counts.CompletedRetained != 1 || counts.FailedRetained != 1 || counts.CancelledRetained != 1 {
+		t.Fatalf("unexpected counts: %+v", counts)
+	}
+	if counts.OptimizationCandidates != 1 {
+		t.Fatalf("expected 1 optimization candidate, got %+v", counts)
 	}
 }
 
@@ -570,5 +722,43 @@ services:
 	_, err := store.SetStatusRunningWithOnlineConcurrencyGuard("run-b")
 	if !errors.Is(err, ErrOnlineRunConcurrencyLimit) {
 		t.Fatalf("expected ErrOnlineRunConcurrencyLimit, got %v", err)
+	}
+}
+
+func TestRunStoreOnlineLimitsRoundTrip(t *testing.T) {
+	store := NewRunStore()
+	limits := OnlineRunLimits{
+		MaxConcurrentOnlineRuns: 3,
+	}
+	store.SetOnlineLimits(limits)
+	got := store.OnlineLimits()
+	if got.MaxConcurrentOnlineRuns != 3 {
+		t.Fatalf("expected MaxConcurrentOnlineRuns=3, got %d", got.MaxConcurrentOnlineRuns)
+	}
+}
+
+func TestRunStoreSetBatchRecommendation(t *testing.T) {
+	store := NewRunStore()
+	if _, err := store.Create("run-batch-summary", &simulationv1.RunInput{ScenarioYaml: "hosts: []"}); err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetBatchRecommendation("run-batch-summary", true, 0.1, 0.9, "all constraints satisfied"); err != nil {
+		t.Fatalf("SetBatchRecommendation error: %v", err)
+	}
+	rec, ok := store.Get("run-batch-summary")
+	if !ok {
+		t.Fatal("expected run to exist")
+	}
+	if !rec.Run.BatchRecommendationFeasible {
+		t.Fatalf("expected feasible recommendation")
+	}
+	if rec.Run.BatchViolationScore != 0.1 || rec.Run.BatchEfficiencyScore != 0.9 {
+		t.Fatalf("unexpected batch scores: violation=%f efficiency=%f", rec.Run.BatchViolationScore, rec.Run.BatchEfficiencyScore)
+	}
+	if rec.Run.BatchRecommendationSummary != "all constraints satisfied" {
+		t.Fatalf("unexpected recommendation summary: %q", rec.Run.BatchRecommendationSummary)
+	}
+	if err := store.SetBatchRecommendation("missing-run", false, 1, 0, "missing"); err == nil {
+		t.Fatal("expected error for unknown run")
 	}
 }

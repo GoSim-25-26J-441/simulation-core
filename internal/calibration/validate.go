@@ -222,28 +222,28 @@ func maxFloat(a, b float64) float64 {
 }
 
 type aggRuns struct {
-	IngressMean        float64
-	LatencyP50Mean     float64
-	LatencyMeanMean    float64
-	LatencyP95Max      float64
-	LatencyP99Max      float64
-	IngressErrMax      float64
-	MaxServiceCPU      float64
-	MaxServiceMem      float64
-	QueueWaitMeanMax   float64
-	QueueDepthSumMax   float64
-	QueueDropRateMax   float64
-	TopicDropRateMax   float64
-	TopicBacklogSumMax float64
-	TopicLagSumMax     float64
-	QueueDlqMax        int64
-	TopicDlqMax        int64
-	QueueOldestAgeMax  float64
-	TopicOldestAgeMax  float64
-	RetryMax           int64
-	TimeoutMax         int64
-	LocalityHitRateMean   float64
-	CrossZoneFractionMean float64
+	IngressMean                     float64
+	LatencyP50Mean                  float64
+	LatencyMeanMean                 float64
+	LatencyP95Max                   float64
+	LatencyP99Max                   float64
+	IngressErrMax                   float64
+	MaxServiceCPU                   float64
+	MaxServiceMem                   float64
+	QueueWaitMeanMax                float64
+	QueueDepthSumMax                float64
+	QueueDropRateMax                float64
+	TopicDropRateMax                float64
+	TopicBacklogSumMax              float64
+	TopicLagSumMax                  float64
+	QueueDlqMax                     int64
+	TopicDlqMax                     int64
+	QueueOldestAgeMax               float64
+	TopicOldestAgeMax               float64
+	RetryMax                        int64
+	TimeoutMax                      int64
+	LocalityHitRateMean             float64
+	CrossZoneFractionMean           float64
 	CrossZoneLatencyPenaltyMeanMean float64
 	TopologyLatencyPenaltyMeanMean  float64
 }
@@ -331,28 +331,28 @@ func aggregateRunsConservative(runs []*models.RunMetrics) aggRuns {
 	}
 	n := float64(len(runs))
 	return aggRuns{
-		IngressMean:        sumIngress / n,
-		LatencyP50Mean:     sumP50 / n,
-		LatencyMeanMean:    sumMean / n,
-		LatencyP95Max:      maxP95,
-		LatencyP99Max:      maxP99,
-		IngressErrMax:      maxErr,
-		MaxServiceCPU:      maxCPU,
-		MaxServiceMem:      maxMem,
-		QueueWaitMeanMax:   maxQW,
-		QueueDepthSumMax:   maxQD,
-		QueueDropRateMax:   maxDrop,
-		TopicDropRateMax:   maxTDrop,
-		TopicBacklogSumMax: maxTB,
-		TopicLagSumMax:     maxTL,
-		QueueDlqMax:        maxQDlq,
-		TopicDlqMax:        maxTDlq,
-		QueueOldestAgeMax:  maxQAge,
-		TopicOldestAgeMax:  maxTAge,
-		RetryMax:           maxRetry,
-		TimeoutMax:         maxTimeout,
-		LocalityHitRateMean:   sumLocalityHit / n,
-		CrossZoneFractionMean: sumCrossZoneFrac / n,
+		IngressMean:                     sumIngress / n,
+		LatencyP50Mean:                  sumP50 / n,
+		LatencyMeanMean:                 sumMean / n,
+		LatencyP95Max:                   maxP95,
+		LatencyP99Max:                   maxP99,
+		IngressErrMax:                   maxErr,
+		MaxServiceCPU:                   maxCPU,
+		MaxServiceMem:                   maxMem,
+		QueueWaitMeanMax:                maxQW,
+		QueueDepthSumMax:                maxQD,
+		QueueDropRateMax:                maxDrop,
+		TopicDropRateMax:                maxTDrop,
+		TopicBacklogSumMax:              maxTB,
+		TopicLagSumMax:                  maxTL,
+		QueueDlqMax:                     maxQDlq,
+		TopicDlqMax:                     maxTDlq,
+		QueueOldestAgeMax:               maxQAge,
+		TopicOldestAgeMax:               maxTAge,
+		RetryMax:                        maxRetry,
+		TimeoutMax:                      maxTimeout,
+		LocalityHitRateMean:             sumLocalityHit / n,
+		CrossZoneFractionMean:           sumCrossZoneFrac / n,
 		CrossZoneLatencyPenaltyMeanMean: sumCrossZonePenMean / n,
 		TopologyLatencyPenaltyMeanMean:  sumTopoPenMean / n,
 	}
@@ -411,7 +411,7 @@ func endpointRollupAvailable(runs []*models.RunMetrics) bool {
 	return false
 }
 
-func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics, svcErr, endpErr map[string]float64, tol *ValidationTolerances) ([]MetricCheckResult, []string) {
+func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics, svcErr, endpErr map[string]float64, tol *ValidationTolerances) (results []MetricCheckResult, warnings []string) {
 	var out []MetricCheckResult
 	var warns []string
 	if obs == nil {
@@ -422,7 +422,8 @@ func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics,
 		warns = append(warns, "endpoint error rates: RunMetrics.EndpointRequestStats is empty; predictions use service-level max error rate only")
 	}
 	var usedStarPath bool
-	for _, eo := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		eo := &obs.Endpoints[i]
 		if eo.ServiceID == "" {
 			continue
 		}
@@ -455,7 +456,9 @@ func validateEndpointErrorRates(obs *ObservedMetrics, runs []*models.RunMetrics,
 	if usedStarPath {
 		warns = append(warns, "endpoint error rates: at least one observation uses endpoint path \"*\" (service rollup) compared to service-level max predicted error rate")
 	}
-	return out, dedupeStrings(warns)
+	results = out
+	warnings = dedupeStrings(warns)
+	return results, warnings
 }
 
 func dedupeStrings(in []string) []string {
@@ -511,7 +514,8 @@ func meanQueueWaitPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var sum float64
 	var n float64
-	for _, e := range obs.Endpoints {
+	for i := range obs.Endpoints {
+		e := &obs.Endpoints[i]
 		if !e.QueueWaitMeanMs.Present {
 			continue
 		}
@@ -530,7 +534,8 @@ func sumQueueDepthPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var s float64
 	var any bool
-	for _, q := range obs.QueueBrokers {
+	for i := range obs.QueueBrokers {
+		q := &obs.QueueBrokers[i]
 		if !q.DepthMean.Present {
 			continue
 		}
@@ -546,7 +551,8 @@ func sumTopicBacklogPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var s float64
 	var any bool
-	for _, t := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		t := &obs.TopicBrokers[i]
 		if !t.BacklogDepth.Present {
 			continue
 		}
@@ -562,7 +568,8 @@ func sumTopicLagPresent(obs *ObservedMetrics) (float64, bool) {
 	}
 	var s float64
 	var any bool
-	for _, t := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		t := &obs.TopicBrokers[i]
 		if !t.ConsumerLag.Present {
 			continue
 		}
@@ -581,7 +588,8 @@ func aggregateQueueDropRateObserved(obs *ObservedMetrics) (rate float64, ok bool
 	var dropSum, attemptSum int64
 	approx := false
 	sawDrop := false
-	for _, q := range obs.QueueBrokers {
+	for i := range obs.QueueBrokers {
+		q := &obs.QueueBrokers[i]
 		if !q.DropCount.Present {
 			continue
 		}
@@ -618,7 +626,8 @@ func aggregateTopicDropRateObserved(obs *ObservedMetrics) (rate float64, ok bool
 	}
 	var dropSum, attemptSum int64
 	sawDrop := false
-	for _, t := range obs.TopicBrokers {
+	for i := range obs.TopicBrokers {
+		t := &obs.TopicBrokers[i]
 		if !t.DropCount.Present {
 			continue
 		}
@@ -643,7 +652,8 @@ func aggregateTopicDropRateObserved(obs *ObservedMetrics) (rate float64, ok bool
 func sumPresentIntQueue(rows []QueueBrokerObservation, pick func(QueueBrokerObservation) ObservedValue[int64]) (int64, bool) {
 	var s int64
 	var any bool
-	for _, q := range rows {
+	for i := range rows {
+		q := rows[i]
 		ov := pick(q)
 		if !ov.Present {
 			continue
@@ -657,7 +667,8 @@ func sumPresentIntQueue(rows []QueueBrokerObservation, pick func(QueueBrokerObse
 func sumPresentIntTopic(rows []TopicBrokerObservation, pick func(TopicBrokerObservation) ObservedValue[int64]) (int64, bool) {
 	var s int64
 	var any bool
-	for _, t := range rows {
+	for i := range rows {
+		t := rows[i]
 		ov := pick(t)
 		if !ov.Present {
 			continue
@@ -671,7 +682,8 @@ func sumPresentIntTopic(rows []TopicBrokerObservation, pick func(TopicBrokerObse
 func maxPresentFloatQueue(rows []QueueBrokerObservation, pick func(QueueBrokerObservation) ObservedValue[float64]) (float64, bool) {
 	var m float64
 	var any bool
-	for _, q := range rows {
+	for i := range rows {
+		q := rows[i]
 		ov := pick(q)
 		if !ov.Present {
 			continue
@@ -687,7 +699,8 @@ func maxPresentFloatQueue(rows []QueueBrokerObservation, pick func(QueueBrokerOb
 func maxPresentFloatTopicOldest(rows []TopicBrokerObservation) (float64, bool) {
 	var m float64
 	var any bool
-	for _, t := range rows {
+	for i := range rows {
+		t := rows[i]
 		if !t.OldestAgeMs.Present {
 			continue
 		}
@@ -704,12 +717,10 @@ type routeSkewAgg struct {
 	total           float64
 }
 
-func validateInstanceRoutingSkew(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) ([]MetricCheckResult, []string) {
+func validateInstanceRoutingSkew(obs *ObservedMetrics, runs []*models.RunMetrics, tol *ValidationTolerances) (checks []MetricCheckResult, warnings []string) {
 	if obs == nil || len(obs.InstanceRouting) == 0 {
 		return nil, nil
 	}
-	var checks []MetricCheckResult
-	var warnings []string
 	byRoute := aggregatePredictedRouteDistributions(runs)
 	for _, r := range obs.InstanceRouting {
 		if strings.TrimSpace(r.ServiceID) == "" || strings.TrimSpace(r.EndpointPath) == "" || strings.TrimSpace(r.InstanceID) == "" {
@@ -785,7 +796,7 @@ func aggregatePredictedRouteDistributions(runs []*models.RunMetrics) map[string]
 		for inst, c := range agg.countByInstance {
 			agg.countByInstance[inst] = c / nRuns
 		}
-		agg.total = agg.total / nRuns
+		agg.total /= nRuns
 		byRoute[k] = agg
 	}
 	return byRoute

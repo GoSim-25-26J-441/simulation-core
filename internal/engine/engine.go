@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"log/slog"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -19,8 +21,46 @@ type Engine struct {
 	handlers      map[EventType]EventHandler
 	logger        *slog.Logger
 	eventCounter  int64
+	processed     int64
+	limits        RuntimeLimits
+	guardMu       sync.Mutex
+	guardErr      error
 	realTimeStart time.Time // Real-time start for throttling
 	realTimeMode  bool      // If true, throttle simulation to run in real-time
+	maxQueueSeen  int64
+}
+
+// RuntimeLimits are optional guardrails for simulation execution.
+// Any non-positive value disables that specific limit.
+type RuntimeLimits struct {
+	MaxEventsScheduled int64
+	MaxEventsProcessed int64
+	MaxEventQueueSize  int64
+	MaxWallClockRun    time.Duration
+}
+
+type ProgressSnapshot struct {
+	RunID            string    `json:"run_id"`
+	SimTime          time.Time `json:"sim_time"`
+	RequestedEndTime time.Time `json:"requested_end_time"`
+	EventsScheduled  int64     `json:"events_scheduled"`
+	EventsProcessed  int64     `json:"events_processed"`
+	QueueLength      int       `json:"queue_length"`
+	MaxQueueSeen     int64     `json:"max_queue_seen"`
+	ActiveRequests   int       `json:"active_requests"`
+	TotalRequests    int64     `json:"total_requests"`
+	LastError        string    `json:"last_error,omitempty"`
+}
+
+// LimitExceededError describes a guardrail failure.
+type LimitExceededError struct {
+	Limit string
+	Value int64
+	Max   int64
+}
+
+func (e *LimitExceededError) Error() string {
+	return fmt.Sprintf("limit exceeded: %s (%d > %d)", e.Limit, e.Value, e.Max)
 }
 
 // EventHandler is a function that handles a specific event type
@@ -68,6 +108,25 @@ func (e *Engine) ScheduleEvent(event *Event) {
 	if event.Sequence == 0 {
 		event.Sequence = counter
 	}
+	if e.limits.MaxEventsScheduled > 0 && counter > e.limits.MaxEventsScheduled {
+		e.triggerGuardFailure(&LimitExceededError{
+			Limit: "max_events_scheduled",
+			Value: counter,
+			Max:   e.limits.MaxEventsScheduled,
+		})
+		return
+	}
+	if e.limits.MaxEventQueueSize > 0 {
+		nextQueueSize := int64(e.eventQueue.Size()) + 1
+		if nextQueueSize > e.limits.MaxEventQueueSize {
+			e.triggerGuardFailure(&LimitExceededError{
+				Limit: "max_event_queue_size",
+				Value: nextQueueSize,
+				Max:   e.limits.MaxEventQueueSize,
+			})
+			return
+		}
+	}
 	e.eventQueue.Schedule(event)
 
 	e.logger.Debug("Event scheduled",
@@ -75,6 +134,16 @@ func (e *Engine) ScheduleEvent(event *Event) {
 		"type", event.Type,
 		"time", event.Time,
 		"queue_size", e.eventQueue.Size())
+}
+
+// SetRuntimeLimits applies runtime guardrails.
+func (e *Engine) SetRuntimeLimits(limits RuntimeLimits) {
+	e.limits = limits
+}
+
+// TriggerLimitExceeded fails and cancels the run from outside the engine loop.
+func (e *Engine) TriggerLimitExceeded(err error) {
+	e.triggerGuardFailure(err)
 }
 
 // ScheduleAt schedules an event at a specific simulation time
@@ -121,6 +190,7 @@ func (e *Engine) Run(duration time.Duration) error {
 	startTime := e.simTime.Now()
 	endTime := startTime.Add(duration)
 	e.realTimeStart = time.Now() // Track real-time start for throttling
+	wallStart := time.Now()
 
 	// Schedule simulation end event
 	e.ScheduleAt(EventTypeSimulationEnd, endTime, nil, "", nil)
@@ -129,18 +199,43 @@ func (e *Engine) Run(duration time.Duration) error {
 		"end_time", endTime,
 		"duration", duration)
 
+	lastProgressLog := time.Now()
+	lastProgressEvents := int64(0)
 	// Event loop - continue until simulation end event is processed
 	for {
+		if e.limits.MaxWallClockRun > 0 {
+			elapsed := time.Since(wallStart)
+			if elapsed > e.limits.MaxWallClockRun {
+				e.triggerGuardFailure(&LimitExceededError{
+					Limit: "max_wall_clock_runtime",
+					Value: elapsed.Milliseconds(),
+					Max:   e.limits.MaxWallClockRun.Milliseconds(),
+				})
+			}
+		}
+		if err := e.guardrailErr(); err != nil {
+			return err
+		}
 		// Check if context is cancelled
 		select {
 		case <-e.runManager.Context().Done():
 			e.logger.Info("Simulation cancelled")
+			if err := e.guardrailErr(); err != nil {
+				return err
+			}
 			return fmt.Errorf("simulation cancelled")
 		default:
 		}
 
 		// Get next event
 		event := e.eventQueue.Next()
+		qLen := e.eventQueue.Size()
+		for {
+			seen := atomic.LoadInt64(&e.maxQueueSeen)
+			if int64(qLen) <= seen || atomic.CompareAndSwapInt64(&e.maxQueueSeen, seen, int64(qLen)) {
+				break
+			}
+		}
 
 		// If queue is empty, check if we should end the simulation
 		if event == nil {
@@ -187,6 +282,15 @@ func (e *Engine) Run(duration time.Duration) error {
 		// Advance simulation time to event time
 		// This is the key: simulation time only advances when processing events
 		previousSimTime := e.simTime.Now()
+		processed := atomic.AddInt64(&e.processed, 1)
+		if e.limits.MaxEventsProcessed > 0 && processed > e.limits.MaxEventsProcessed {
+			e.triggerGuardFailure(&LimitExceededError{
+				Limit: "max_events_processed",
+				Value: processed,
+				Max:   e.limits.MaxEventsProcessed,
+			})
+			return e.guardrailErr()
+		}
 
 		// For simulation end event, ensure we don't process it before we should
 		if event.Type == EventTypeSimulationEnd {
@@ -313,6 +417,32 @@ func (e *Engine) Run(duration time.Duration) error {
 				"error", err)
 			// Continue processing other events
 		}
+		now := time.Now()
+		if now.Sub(lastProgressLog) >= 10*time.Second || (processed-lastProgressEvents) >= 100000 {
+			lastProgressLog = now
+			lastProgressEvents = processed
+			snap := e.ProgressSnapshot(endTime)
+			percent := 0.0
+			totalDur := endTime.Sub(startTime)
+			if totalDur > 0 {
+				percent = 100 * float64(snap.SimTime.Sub(startTime)) / float64(totalDur)
+			}
+			var mem runtime.MemStats
+			runtime.ReadMemStats(&mem)
+			e.logger.Info("Simulation progress",
+				"run_id", snap.RunID,
+				"sim_time", snap.SimTime,
+				"duration", totalDur.String(),
+				"percent_complete", percent,
+				"events_scheduled", snap.EventsScheduled,
+				"events_processed", snap.EventsProcessed,
+				"queue_length", snap.QueueLength,
+				"active_requests", snap.ActiveRequests,
+				"memory_alloc_bytes", mem.Alloc,
+				"goroutines", runtime.NumGoroutine(),
+				"elapsed_wall_clock", now.Sub(wallStart).String(),
+			)
+		}
 	}
 
 	e.logger.Info("Simulation completed",
@@ -321,6 +451,26 @@ func (e *Engine) Run(duration time.Duration) error {
 		"events_processed", atomic.LoadInt64(&e.eventCounter))
 
 	return nil
+}
+
+func (e *Engine) ProgressSnapshot(requestedEnd time.Time) ProgressSnapshot {
+	rmSnap := e.runManager.Snapshot()
+	lastErr := ""
+	if err := e.GuardrailError(); err != nil {
+		lastErr = err.Error()
+	}
+	return ProgressSnapshot{
+		RunID:            e.runManager.GetRun().ID,
+		SimTime:          e.simTime.Now(),
+		RequestedEndTime: requestedEnd,
+		EventsScheduled:  atomic.LoadInt64(&e.eventCounter),
+		EventsProcessed:  atomic.LoadInt64(&e.processed),
+		QueueLength:      e.eventQueue.Size(),
+		MaxQueueSeen:     atomic.LoadInt64(&e.maxQueueSeen),
+		ActiveRequests:   rmSnap.ActiveRequests,
+		TotalRequests:    rmSnap.TotalRequests,
+		LastError:        lastErr,
+	}
 }
 
 // GetSimTime returns the current simulation time
@@ -345,12 +495,38 @@ func (e *Engine) Stop() {
 	e.logger.Debug("Engine stopped (cleanup)")
 }
 
+func (e *Engine) triggerGuardFailure(err error) {
+	if err == nil {
+		return
+	}
+	e.guardMu.Lock()
+	alreadySet := e.guardErr != nil
+	if !alreadySet {
+		e.guardErr = err
+	}
+	e.guardMu.Unlock()
+	if !alreadySet {
+		e.runManager.Cancel()
+	}
+}
+
+func (e *Engine) guardrailErr() error {
+	e.guardMu.Lock()
+	defer e.guardMu.Unlock()
+	return e.guardErr
+}
+
+// GuardrailError returns the currently latched runtime guardrail error, if any.
+func (e *Engine) GuardrailError() error {
+	return e.guardrailErr()
+}
+
 // GetStats returns current simulation statistics
 func (e *Engine) GetStats() map[string]interface{} {
 	stats := e.runManager.GetStats()
 	stats["sim_time"] = e.simTime.Now().Format(time.RFC3339)
 	stats["events_in_queue"] = e.eventQueue.Size()
-	stats["events_processed"] = atomic.LoadInt64(&e.eventCounter)
+	stats["events_processed"] = atomic.LoadInt64(&e.processed)
 	return stats
 }
 
