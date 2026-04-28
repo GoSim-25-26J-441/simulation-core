@@ -24,6 +24,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
+EnvironmentFile=${INSTALL_DIR}/.env
 ExecStart=${BIN} -http-addr :8082 -grpc-addr :50051 -log-level info
 Restart=on-failure
 RestartSec=5
