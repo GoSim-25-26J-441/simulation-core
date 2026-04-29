@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +34,7 @@ type NotificationPayload struct {
 	BestRunID     string   `json:"best_run_id,omitempty"`
 	BestScore     *float64 `json:"best_score,omitempty"`
 	Iterations    *int32   `json:"iterations,omitempty"`
-	TopCandidates []string `json:"top_candidates,omitempty"` // Up to 5 candidate run IDs (best first)
+	TopCandidates []string `json:"top_candidates,omitempty"` // Candidate run IDs included in callback (best first)
 
 	// FinalConfig is the settled run configuration: prefer RunRecord.FinalConfig (snapshot before cleanup);
 	// otherwise last optimization step's current_config when optimization history exists.
@@ -46,7 +48,13 @@ type Notifier struct {
 	maxRetries            int
 	baseDelay             time.Duration
 	CallbackHostWhitelist []string // optional; hostnames or IPs allowed for callbacks even if private
+	callbackTopCandidates int      // default 5; 0 means include all candidate_run_ids
 }
+
+const (
+	defaultCallbackTopCandidates = 5
+	envCallbackTopCandidates     = "SIMD_CALLBACK_TOP_CANDIDATES"
+)
 
 // NewNotifier creates a new notification service (no callback host whitelist)
 func NewNotifier() *Notifier {
@@ -68,6 +76,7 @@ func NewNotifierWithWhitelist(whitelist []string) *Notifier {
 		maxRetries:            3,
 		baseDelay:             1 * time.Second,
 		CallbackHostWhitelist: copyList,
+		callbackTopCandidates: callbackTopCandidatesFromEnv(),
 	}
 }
 
@@ -117,15 +126,8 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 		iterations := rec.Run.Iterations
 		payload.BestScore = &bestScore
 		payload.Iterations = &iterations
-		// Include up to 5 top candidate run IDs (best first)
-		const maxCandidatesInCallback = 5
 		if len(rec.Run.CandidateRunIds) > 0 {
-			n := maxCandidatesInCallback
-			if n > len(rec.Run.CandidateRunIds) {
-				n = len(rec.Run.CandidateRunIds)
-			}
-			payload.TopCandidates = make([]string, n)
-			copy(payload.TopCandidates, rec.Run.CandidateRunIds[:n])
+			payload.TopCandidates = topCandidatesForCallback(rec.Run.CandidateRunIds, n.callbackTopCandidates)
 		}
 	}
 
@@ -149,6 +151,42 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 
 	// Send notification asynchronously
 	go n.sendNotification(finalURL, callbackSecret, payload)
+}
+
+func callbackTopCandidatesFromEnv() int {
+	v := strings.TrimSpace(os.Getenv(envCallbackTopCandidates))
+	if v == "" {
+		return defaultCallbackTopCandidates
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return defaultCallbackTopCandidates
+	}
+	return n
+}
+
+// topCandidatesForCallback returns a deduplicated candidate list preserving order.
+// limit semantics: >0 => include up to limit; 0 => include all.
+func topCandidatesForCallback(candidateRunIDs []string, limit int) []string {
+	if len(candidateRunIDs) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(candidateRunIDs))
+	var out []string
+	for _, id := range candidateRunIDs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
 }
 
 // sendNotification performs the actual HTTP POST with retry logic

@@ -2853,6 +2853,62 @@ func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
 	}
 }
 
+func TestHTTPServerExportRunRetainsOptimizationChildInputAfterTrimWhenEnabled(t *testing.T) {
+	store := NewRunStore()
+	store.lifecycle.KeepCandidateInputAfterCleanup = true
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+
+	if _, err := store.Create("parent-export-retain", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 100}); err != nil {
+		t.Fatalf("Create parent error: %v", err)
+	}
+	if err := store.SetOptimizationResult("parent-export-retain", "opt-export-a", 1.0, 1, []string{"opt-export-a"}); err != nil {
+		t.Fatalf("SetOptimizationResult error: %v", err)
+	}
+
+	candidateInput := &simulationv1.RunInput{
+		ScenarioYaml: "hosts:\n  - id: retained-host\n    cores: 2\n",
+		DurationMs:   100,
+	}
+	if _, err := store.Create("opt-export-a", candidateInput); err != nil {
+		t.Fatalf("Create candidate error: %v", err)
+	}
+	if err := store.SetFinalConfiguration("opt-export-a", &simulationv1.RunConfiguration{
+		Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 3}},
+	}); err != nil {
+		t.Fatalf("SetFinalConfiguration error: %v", err)
+	}
+	if _, err := store.SetStatus("opt-export-a", simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		t.Fatalf("SetStatus completed error: %v", err)
+	}
+
+	// Ensure lifecycle trim path still retains input/final_config for kept candidates.
+	store.TrimOptimizationCandidates("parent-export-retain", "opt-export-a")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/opt-export-a/export", nil)
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var export map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &export); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+
+	inputData, ok := export["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input in export for retained optimization child")
+	}
+	if inputData["scenario_yaml"] != candidateInput.ScenarioYaml {
+		t.Fatalf("expected retained scenario_yaml, got %v", inputData["scenario_yaml"])
+	}
+	if _, ok := export["final_config"].(map[string]any); !ok {
+		t.Fatalf("expected final_config in export for retained optimization child")
+	}
+}
+
 func TestHTTPServerExportRunIncludesTopologyGuardReasonDetails(t *testing.T) {
 	store := NewRunStore()
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))

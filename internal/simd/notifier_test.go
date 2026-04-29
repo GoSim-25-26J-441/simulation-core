@@ -407,6 +407,237 @@ func TestNotifierNotify_OptimizationPayloadIncludesTopCandidates(t *testing.T) {
 	}
 }
 
+func TestNotifierNotify_OptimizationPayloadTopCandidatesEnvLimit(t *testing.T) {
+	t.Setenv("SIMD_CALLBACK_TOP_CANDIDATES", "3")
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "opt-run-env-limit",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+			BestRunId:       "opt-cand-best",
+			BestScore:       10.5,
+			Iterations:      4,
+			CandidateRunIds: []string{"opt-cand-best", "opt-cand-2", "opt-cand-3", "opt-cand-4"},
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+	}
+	NewNotifier().Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		topCandidates, ok := payload["top_candidates"].([]interface{})
+		if !ok || len(topCandidates) != 3 {
+			t.Fatalf("expected top_candidates length 3, got %v", payload["top_candidates"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
+func TestNotifierNotify_OptimizationPayloadTopCandidatesEnvZeroIncludesAll(t *testing.T) {
+	t.Setenv("SIMD_CALLBACK_TOP_CANDIDATES", "0")
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "opt-run-env-zero",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+			BestRunId:       "opt-cand-best",
+			CandidateRunIds: []string{"opt-cand-best", "opt-cand-2", "opt-cand-3", "opt-cand-4", "opt-cand-5", "opt-cand-6"},
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+	}
+	NewNotifier().Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		topCandidates, ok := payload["top_candidates"].([]interface{})
+		if !ok || len(topCandidates) != 6 {
+			t.Fatalf("expected all 6 candidates when env=0, got %v", payload["top_candidates"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
+func TestNotifierNotify_OptimizationPayloadTopCandidatesInvalidOrNegativeFallsBackToDefault(t *testing.T) {
+	for _, envVal := range []string{"abc", "-2"} {
+		t.Run(envVal, func(t *testing.T) {
+			t.Setenv("SIMD_CALLBACK_TOP_CANDIDATES", envVal)
+			payloadCh := make(chan []byte, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				payloadCh <- body
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			serverURL, _ := url.Parse(server.URL)
+			callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+			rec := &RunRecord{
+				Run: &simulationv1.Run{
+					Id:              "opt-run-env-fallback",
+					Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+					CreatedAtUnixMs: time.Now().UnixMilli(),
+					EndedAtUnixMs:   time.Now().UnixMilli(),
+					BestRunId:       "opt-cand-best",
+					CandidateRunIds: []string{"opt-cand-best", "opt-cand-2", "opt-cand-3", "opt-cand-4", "opt-cand-5", "opt-cand-6"},
+				},
+				Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+			}
+			NewNotifier().Notify(callbackURL, "", rec)
+
+			select {
+			case body := <-payloadCh:
+				var payload map[string]interface{}
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("failed to unmarshal payload: %v", err)
+				}
+				topCandidates, ok := payload["top_candidates"].([]interface{})
+				if !ok || len(topCandidates) != 5 {
+					t.Fatalf("expected fallback default of 5 candidates, got %v", payload["top_candidates"])
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timeout waiting for notification")
+			}
+		})
+	}
+}
+
+func TestNotifierNotify_OptimizationPayloadTopCandidatesSendsAllWhenFewerThanLimit(t *testing.T) {
+	t.Setenv("SIMD_CALLBACK_TOP_CANDIDATES", "10")
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "opt-run-fewer-than-limit",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+			BestRunId:       "opt-cand-best",
+			CandidateRunIds: []string{"opt-cand-best", "opt-cand-2", "opt-cand-3"},
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+	}
+	NewNotifier().Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		topCandidates, ok := payload["top_candidates"].([]interface{})
+		if !ok || len(topCandidates) != 3 {
+			t.Fatalf("expected all 3 available candidates, got %v", payload["top_candidates"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
+func TestNotifierNotify_OptimizationPayloadTopCandidatesDeduplicatesIDs(t *testing.T) {
+	t.Setenv("SIMD_CALLBACK_TOP_CANDIDATES", "0")
+	payloadCh := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		payloadCh <- body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	serverURL, _ := url.Parse(server.URL)
+	callbackURL := "http://localhost:" + serverURL.Port() + "/callback"
+	rec := &RunRecord{
+		Run: &simulationv1.Run{
+			Id:              "opt-run-dedupe",
+			Status:          simulationv1.RunStatus_RUN_STATUS_COMPLETED,
+			CreatedAtUnixMs: time.Now().UnixMilli(),
+			EndedAtUnixMs:   time.Now().UnixMilli(),
+			BestRunId:       "opt-cand-best",
+			CandidateRunIds: []string{"opt-cand-best", "opt-cand-best", "opt-cand-2", "opt-cand-2", "opt-cand-3"},
+		},
+		Input: &simulationv1.RunInput{CallbackUrl: callbackURL},
+	}
+	NewNotifier().Notify(callbackURL, "", rec)
+
+	select {
+	case body := <-payloadCh:
+		var payload map[string]interface{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal payload: %v", err)
+		}
+		topCandidates, ok := payload["top_candidates"].([]interface{})
+		if !ok || len(topCandidates) != 3 {
+			t.Fatalf("expected 3 deduplicated candidates, got %v", payload["top_candidates"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for notification")
+	}
+}
+
 func TestNotifierNotify_OnlineOptimizationIncludesFinalConfig(t *testing.T) {
 	payloadCh := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
