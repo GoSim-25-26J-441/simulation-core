@@ -869,6 +869,8 @@ docker run -d \
 
 **Simd server environment variables:**
 - `SIMD_OPTIMIZATION_TOP_CANDIDATES`: For optimization runs, limit `candidate_run_ids` to the top N candidates by score (e.g. `10`). The best run is always included. Unset or `0` = return all candidates.
+- `SIMD_RUNSTORE_KEEP_COLLECTOR_AFTER_COMPLETION`: Retain per-run in-memory collectors after terminal completion (default `false`).
+- `SIMD_RUNSTORE_KEEP_CANDIDATE_INPUT_AFTER_CLEANUP`: Retain optimization child `input`/`final_config` after terminal cleanup so `GET /v1/runs/{candidate_id}/export` still includes `input.scenario_yaml` (default `false`).
 
 ### Docker Compose
 

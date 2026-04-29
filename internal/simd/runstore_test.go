@@ -39,6 +39,17 @@ func TestRunStoreCreateAndGet(t *testing.T) {
 	}
 }
 
+func TestRunStoreLifecycleConfigFromEnvParsesKeepCandidateInputAfterCleanup(t *testing.T) {
+	t.Setenv("SIMD_RUNSTORE_KEEP_CANDIDATE_INPUT_AFTER_CLEANUP", "true")
+	cfg := runStoreLifecycleConfigFromEnv()
+	if !cfg.KeepCandidateInputAfterCleanup {
+		t.Fatalf("expected KeepCandidateInputAfterCleanup=true from env")
+	}
+	if cfg.KeepCollectorAfterCompletion {
+		t.Fatalf("expected KeepCollectorAfterCompletion to remain default false")
+	}
+}
+
 func TestRunStoreCompletedRunDropsCollectorByDefault(t *testing.T) {
 	store := NewRunStore()
 	defer store.Stop()
@@ -167,6 +178,91 @@ func TestRunStoreTrimOptimizationCandidatesDropsNonTopChildren(t *testing.T) {
 	}
 	if _, ok := store.Get("opt-c"); ok {
 		t.Fatalf("expected non-top candidate to be removed")
+	}
+}
+
+func TestRunStoreOptimizationChildDropsInputAndFinalConfigByDefault(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	_, err := store.Create("opt-default-drop", &simulationv1.RunInput{ScenarioYaml: "hosts: []"})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetFinalConfiguration("opt-default-drop", &simulationv1.RunConfiguration{
+		Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 1}},
+	}); err != nil {
+		t.Fatalf("SetFinalConfiguration error: %v", err)
+	}
+	if _, err := store.SetStatus("opt-default-drop", simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		t.Fatalf("SetStatus completed error: %v", err)
+	}
+	rec, ok := store.Get("opt-default-drop")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Input != nil {
+		t.Fatalf("expected optimization child input to be dropped by default")
+	}
+	if rec.FinalConfig != nil {
+		t.Fatalf("expected optimization child final config to be dropped by default")
+	}
+}
+
+func TestRunStoreOptimizationChildKeepsInputAndFinalConfigWhenEnabled(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	store.lifecycle.KeepCandidateInputAfterCleanup = true
+
+	_, err := store.Create("opt-keep-input", &simulationv1.RunInput{
+		ScenarioYaml: "hosts:\n  - id: h1\n    cores: 2\n",
+		DurationMs:   1000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetFinalConfiguration("opt-keep-input", &simulationv1.RunConfiguration{
+		Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 2}},
+	}); err != nil {
+		t.Fatalf("SetFinalConfiguration error: %v", err)
+	}
+	if _, err := store.SetStatus("opt-keep-input", simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		t.Fatalf("SetStatus completed error: %v", err)
+	}
+	rec, ok := store.Get("opt-keep-input")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Input == nil || rec.Input.GetScenarioYaml() == "" {
+		t.Fatalf("expected optimization child input to be retained when enabled")
+	}
+	if rec.FinalConfig == nil || len(rec.FinalConfig.Services) != 1 {
+		t.Fatalf("expected final config to be retained when enabled")
+	}
+}
+
+func TestRunStoreTrimOptimizationCandidatesRemovesNonRetainedChildren(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	store.lifecycle.MaxOptimizationCandidates = 2
+
+	_, _ = store.Create("parent-trim", &simulationv1.RunInput{ScenarioYaml: "x"})
+	_ = store.SetOptimizationResult("parent-trim", "opt-1", 1.0, 1, []string{"opt-1", "opt-2"})
+
+	for _, id := range []string{"opt-1", "opt-2", "opt-3", "opt-4"} {
+		_, _ = store.Create(id, &simulationv1.RunInput{ScenarioYaml: "x"})
+		_, _ = store.SetStatus(id, simulationv1.RunStatus_RUN_STATUS_COMPLETED, "")
+	}
+	store.TrimOptimizationCandidates("parent-trim", "opt-1")
+
+	for _, id := range []string{"opt-1", "opt-2"} {
+		if _, ok := store.Get(id); !ok {
+			t.Fatalf("expected retained child %s to remain", id)
+		}
+	}
+	for _, id := range []string{"opt-3", "opt-4"} {
+		if _, ok := store.Get(id); ok {
+			t.Fatalf("expected trimmed child %s to be removed", id)
+		}
 	}
 }
 

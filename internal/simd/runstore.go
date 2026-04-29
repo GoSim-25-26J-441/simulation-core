@@ -68,6 +68,9 @@ func runStoreLifecycleConfigFromEnv() RunStoreLifecycleConfig {
 	if b, ok := parseRunStoreBoolEnv("SIMD_RUNSTORE_KEEP_COLLECTOR_AFTER_COMPLETION"); ok {
 		cfg.KeepCollectorAfterCompletion = b
 	}
+	if b, ok := parseRunStoreBoolEnv("SIMD_RUNSTORE_KEEP_CANDIDATE_INPUT_AFTER_CLEANUP"); ok {
+		cfg.KeepCandidateInputAfterCleanup = b
+	}
 	return cfg
 }
 
