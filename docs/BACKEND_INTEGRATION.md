@@ -163,17 +163,22 @@ Check if the service is running.
 
 ---
 
-### Validate scenario YAML (preflight)
+### Validate scenario YAML (draft / preflight)
 
 **POST** `/v1/scenarios:validate`
 
 Validate generated or edited scenario YAML **before** creating a run. The backend (`go-sim-backend`, etc.) should call this over HTTP only (do not import `simulation-core` as a Go module).
 
-Validation order:
+**Modes:**
+
+- **`preflight`** (default): YAML parse → `config.ValidateScenario` → placement/capacity via `resource.NewManager().InitializeFromScenario` (same path as run startup).
+- **`draft`**: YAML parse → `config.ValidateScenario` only (no placement/capacity). Use when saving work-in-progress scenarios that may not yet fit hosts.
+
+Validation steps for **`preflight`**:
 
 1. **YAML syntax** — `gopkg.in/yaml.v3` unmarshal into a `Scenario` (see `pkg/config/scenario_types.go`).
 2. **Semantic / schema** — same rules as exported `config.ValidateScenario` in `pkg/config/loader.go`: hosts/services, duplicate IDs, workload and downstream target resolution, queue/topic `consumer_target` / DLQ references, etc.
-3. **Placement / capacity** — `resource.NewManager().InitializeFromScenario` (same path as run startup).
+3. **Placement / capacity** — `resource.NewManager().InitializeFromScenario`.
 
 **Request:**
 ```json
@@ -183,7 +188,7 @@ Validation order:
 }
 ```
 
-`mode` is optional; when omitted it defaults to `"preflight"`. Any other value returns **400** with `{"error":"..."}`.
+`mode` is optional; when omitted it defaults to `"preflight"`. Supported values are **`draft`** and **`preflight`**; any other value returns **400** with `{"error":"..."}` mentioning supported modes.
 
 **Response (valid, HTTP 200):**
 ```json
@@ -206,7 +211,7 @@ Validation order:
 }
 ```
 
-**Response (semantic / graph / placement problems, HTTP 422):**
+**Response (semantic / graph problems, HTTP 422)** — also used for **`preflight`** placement failures (`PLACEMENT_INFEASIBLE`):
 ```json
 {
   "valid": false,

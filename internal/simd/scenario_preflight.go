@@ -33,6 +33,41 @@ type ScenarioValidationResult struct {
 
 const placementHint = "Check required_zones, required_host_labels, max_replicas_per_host, and available host CPU/memory."
 
+// validateScenarioYAMLThroughSemantics parses YAML and runs config.ValidateScenario (graph/schema/reference checks).
+// On failure it returns (nil, result) with Valid=false and the same issue mapping as preflight/draft APIs.
+// On success it returns (scenario, nil).
+func validateScenarioYAMLThroughSemantics(scenarioYAML string) (*config.Scenario, *ScenarioValidationResult) {
+	scenario, err := config.UnmarshalScenarioYAMLString(scenarioYAML)
+	if err != nil {
+		z := ScenarioValidationSummary{}
+		return nil, &ScenarioValidationResult{
+			Valid: false,
+			Errors: []ScenarioValidationIssue{{
+				Code:    "SCENARIO_PARSE_INVALID",
+				Message: err.Error(),
+			}},
+			Warnings: []ScenarioValidationIssue{},
+			Summary:  &z,
+		}
+	}
+
+	if err := config.ValidateScenario(scenario); err != nil {
+		code, path, msg := config.SemanticIssueFromValidateError(err)
+		return nil, &ScenarioValidationResult{
+			Valid: false,
+			Errors: []ScenarioValidationIssue{{
+				Code:    code,
+				Message: msg,
+				Path:    path,
+			}},
+			Warnings: []ScenarioValidationIssue{},
+			Summary:  summaryPtr(scenario),
+		}
+	}
+
+	return scenario, nil
+}
+
 func summaryPtr(s *config.Scenario) *ScenarioValidationSummary {
 	if s == nil {
 		return nil
@@ -44,35 +79,32 @@ func summaryPtr(s *config.Scenario) *ScenarioValidationSummary {
 	}
 }
 
+// ValidateScenarioDraft validates YAML parse and semantic/schema/reference checks via [config.ValidateScenario]
+// without resource placement or capacity initialization.
+func ValidateScenarioDraft(scenarioYAML string) *ScenarioValidationResult {
+	if _, bad := validateScenarioYAMLThroughSemantics(scenarioYAML); bad != nil {
+		return bad
+	}
+	return &ScenarioValidationResult{
+		Valid:    true,
+		Errors:   []ScenarioValidationIssue{},
+		Warnings: []ScenarioValidationIssue{},
+		Summary:  nil,
+	}
+}
+
 // ValidateScenarioPreflight validates scenario YAML: YAML syntax, [config.ValidateScenario]
 // semantic graph checks, then resource/placement initialization. Side-effect free.
 func ValidateScenarioPreflight(scenarioYAML string) *ScenarioValidationResult {
+	scenario, bad := validateScenarioYAMLThroughSemantics(scenarioYAML)
+	if bad != nil {
+		return bad
+	}
+
 	result := &ScenarioValidationResult{
 		Valid:    false,
 		Errors:   make([]ScenarioValidationIssue, 0),
 		Warnings: make([]ScenarioValidationIssue, 0),
-	}
-
-	scenario, err := config.UnmarshalScenarioYAMLString(scenarioYAML)
-	if err != nil {
-		z := ScenarioValidationSummary{}
-		result.Summary = &z
-		result.Errors = append(result.Errors, ScenarioValidationIssue{
-			Code:    "SCENARIO_PARSE_INVALID",
-			Message: err.Error(),
-		})
-		return result
-	}
-
-	if err := config.ValidateScenario(scenario); err != nil {
-		code, path, msg := config.SemanticIssueFromValidateError(err)
-		result.Summary = summaryPtr(scenario)
-		result.Errors = append(result.Errors, ScenarioValidationIssue{
-			Code:    code,
-			Message: msg,
-			Path:    path,
-		})
-		return result
 	}
 
 	result.Summary = summaryPtr(scenario)

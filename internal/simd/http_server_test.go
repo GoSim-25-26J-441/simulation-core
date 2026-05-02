@@ -398,6 +398,71 @@ func TestHTTPServerValidateScenario_ModeUnsupported(t *testing.T) {
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	msg, _ := resp["error"].(string)
+	if msg == "" || !strings.Contains(msg, "draft") || !strings.Contains(msg, "preflight") {
+		t.Fatalf("expected error mentioning draft and preflight, got %q", msg)
+	}
+}
+
+func TestHTTPServerValidateScenario_Draft_Valid(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{"scenario_yaml": testScenarioYAML, "mode": "draft"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	if resp["valid"] != true {
+		t.Fatalf("expected valid=true, got %#v", resp["valid"])
+	}
+	if _, has := resp["summary"]; has {
+		t.Fatalf("expected summary omitted, got %#v", resp["summary"])
+	}
+	errs, _ := resp["errors"].([]any)
+	if errs != nil && len(errs) != 0 {
+		t.Fatalf("expected errors empty or absent, got %#v", resp["errors"])
+	}
+	warns, _ := resp["warnings"].([]any)
+	if warns != nil && len(warns) != 0 {
+		t.Fatalf("expected warnings empty or absent, got %#v", resp["warnings"])
+	}
+}
+
+func TestHTTPServerValidateScenario_Draft_WorkloadUnknownEndpoint(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	reqBody := map[string]any{"scenario_yaml": workloadMissingEndpointYAML, "mode": "draft"}
+	bodyBytes, _ := json.Marshal(reqBody)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/scenarios:validate", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	errs := resp["errors"].([]any)[0].(map[string]any)
+	if errs["code"] != "UNKNOWN_WORKLOAD_ENDPOINT" {
+		t.Fatalf("code=%v", errs["code"])
+	}
+	if errs["path"] != "workload[0].to" {
+		t.Fatalf("path=%v", errs["path"])
+	}
 }
 
 func TestHTTPServerGetRun(t *testing.T) {

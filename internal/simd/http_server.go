@@ -129,8 +129,8 @@ func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Reque
 	if mode == "" {
 		mode = "preflight"
 	}
-	if mode != "preflight" {
-		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: preflight)")
+	if mode != "preflight" && mode != "draft" {
+		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: draft, preflight)")
 		return
 	}
 	if strings.TrimSpace(req.ScenarioYAML) == "" {
@@ -148,7 +148,13 @@ func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result := ValidateScenarioPreflight(req.ScenarioYAML)
+	var result *ScenarioValidationResult
+	switch mode {
+	case "draft":
+		result = ValidateScenarioDraft(req.ScenarioYAML)
+	default:
+		result = ValidateScenarioPreflight(req.ScenarioYAML)
+	}
 	status := scenarioValidateHTTPStatus(result)
 	s.writeJSON(w, status, result)
 }
