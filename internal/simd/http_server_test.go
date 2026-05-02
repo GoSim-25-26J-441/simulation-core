@@ -431,11 +431,11 @@ func TestHTTPServerValidateScenario_Draft_Valid(t *testing.T) {
 		t.Fatalf("expected summary omitted, got %#v", resp["summary"])
 	}
 	errs, _ := resp["errors"].([]any)
-	if errs != nil && len(errs) != 0 {
+	if len(errs) != 0 {
 		t.Fatalf("expected errors empty or absent, got %#v", resp["errors"])
 	}
 	warns, _ := resp["warnings"].([]any)
-	if warns != nil && len(warns) != 0 {
+	if len(warns) != 0 {
 		t.Fatalf("expected warnings empty or absent, got %#v", resp["warnings"])
 	}
 }

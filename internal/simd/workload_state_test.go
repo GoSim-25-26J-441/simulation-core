@@ -1291,7 +1291,16 @@ func TestWorkloadStateBurstyBurstQuietParamsChangeVolume(t *testing.T) {
 		if err := ws.Start(scenario, startTime, false); err != nil {
 			t.Fatalf("Start: %v", err)
 		}
-		return len(drainArrivalTimes(eng))
+		defer ws.Stop()
+		var arrivals int
+		eng.RegisterHandler(engine.EventTypeRequestArrival, func(*engine.Engine, *engine.Event) error {
+			arrivals++
+			return nil
+		})
+		if err := eng.Run(duration); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return arrivals
 	}
 
 	nLongQuiet := run(18)
