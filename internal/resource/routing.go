@@ -114,16 +114,7 @@ func (m *Manager) SelectInstanceForRequest(serviceName string, req *models.Reque
 		}
 		return best, strategy, nil
 	case RoutingLeastQueue:
-		best := instances[0]
-		bestVal := best.QueueLength()
-		for i := 1; i < len(instances); i++ {
-			v := instances[i].QueueLength()
-			if v < bestVal {
-				best = instances[i]
-				bestVal = v
-			}
-		}
-		return best, strategy, nil
+		return m.selectLeastQueueLocked(leastQueueTieKey(serviceName, req), instances, simTime), strategy, nil
 	case RoutingLeastCPU:
 		best := instances[0]
 		bestVal := best.CPUUtilizationAt(simTime)
@@ -206,4 +197,65 @@ func (m *Manager) selectRoundRobinLocked(serviceName string, instances []*Servic
 	selected := instances[idx]
 	m.roundRobinIdx[serviceName] = (idx + 1) % len(instances)
 	return selected
+}
+
+type leastQueueRoutingKey struct {
+	queue   int
+	backlog int64 // nanoseconds of CPUBacklogDurationAt at routing time
+	active  int
+}
+
+func leastQueueRoutingKeyFor(inst *ServiceInstance, simTime time.Time) leastQueueRoutingKey {
+	return leastQueueRoutingKey{
+		queue:   inst.QueueLength(),
+		backlog: inst.CPUBacklogDurationAt(simTime).Nanoseconds(),
+		active:  inst.ActiveRequests(),
+	}
+}
+
+func lessLeastQueueKey(a, b leastQueueRoutingKey) bool {
+	if a.queue != b.queue {
+		return a.queue < b.queue
+	}
+	if a.backlog != b.backlog {
+		return a.backlog < b.backlog
+	}
+	return a.active < b.active
+}
+
+// selectLeastQueueLocked picks the instance with minimum (queue depth, CPU scheduler backlog, active requests).
+// Equal scores rotate among tied instances deterministically (stable instance order, advancing tie cursor).
+func leastQueueTieKey(serviceName string, req *models.Request) string {
+	if req == nil || strings.TrimSpace(req.Endpoint) == "" {
+		return serviceName
+	}
+	return serviceName + ":" + strings.TrimSpace(req.Endpoint)
+}
+
+func (m *Manager) selectLeastQueueLocked(tieKey string, instances []*ServiceInstance, simTime time.Time) *ServiceInstance {
+	if len(instances) == 0 {
+		return nil
+	}
+	if len(instances) == 1 {
+		return instances[0]
+	}
+	best := leastQueueRoutingKeyFor(instances[0], simTime)
+	tie := []*ServiceInstance{instances[0]}
+	for i := 1; i < len(instances); i++ {
+		inst := instances[i]
+		k := leastQueueRoutingKeyFor(inst, simTime)
+		if lessLeastQueueKey(k, best) {
+			best = k
+			tie = []*ServiceInstance{inst}
+		} else if k == best {
+			tie = append(tie, inst)
+		}
+	}
+	if len(tie) == 1 {
+		return tie[0]
+	}
+	cursor := m.leastQueueTieRRIdx[tieKey]
+	chosen := tie[cursor%len(tie)]
+	m.leastQueueTieRRIdx[tieKey] = cursor + 1
+	return chosen
 }

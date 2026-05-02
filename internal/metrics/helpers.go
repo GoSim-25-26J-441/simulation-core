@@ -22,12 +22,14 @@ const (
 	MetricQueueLength              = "queue_length"
 	MetricThroughputRPS            = "throughput_rps"
 	MetricConcurrentRequests       = "concurrent_requests"
-	MetricRouteSelectionCount      = "route_selection_count"
-	MetricRouteRejectionCount      = "route_rejection_count"
-	MetricLocalityRouteHitCount    = "locality_route_hit_count"
-	MetricLocalityRouteMissCount   = "locality_route_miss_count"
-	MetricCrossZoneRequestCount    = "cross_zone_request_count"
-	MetricSameZoneRequestCount     = "same_zone_request_count"
+	// MetricCPUSchedulerBacklogMs is simulated CPU admission backlog (cpuNextFree - now), ms per instance gauge.
+	MetricCPUSchedulerBacklogMs  = "cpu_scheduler_backlog_ms"
+	MetricRouteSelectionCount    = "route_selection_count"
+	MetricRouteRejectionCount    = "route_rejection_count"
+	MetricLocalityRouteHitCount  = "locality_route_hit_count"
+	MetricLocalityRouteMissCount = "locality_route_miss_count"
+	MetricCrossZoneRequestCount  = "cross_zone_request_count"
+	MetricSameZoneRequestCount   = "same_zone_request_count"
 	// MetricCrossZoneLatencyPenalty records applied inter-zone network penalty (ms) per downstream hop.
 	MetricCrossZoneLatencyPenalty = "cross_zone_latency_penalty_ms"
 	// MetricSameZoneLatencyPenalty records same-zone, different-host network penalty (ms).
@@ -128,6 +130,11 @@ func RecordThroughput(collector *Collector, rps float64, timestamp time.Time, la
 // RecordConcurrentRequests records the current in-flight request count (gauge) per instance.
 func RecordConcurrentRequests(collector *Collector, count float64, timestamp time.Time, labels map[string]string) {
 	collector.Record(MetricConcurrentRequests, count, timestamp, labels)
+}
+
+// RecordCPUSchedulerBacklogMs records simulated CPU FIFO backlog before new work can start (milliseconds).
+func RecordCPUSchedulerBacklogMs(collector *Collector, backlogMs float64, timestamp time.Time, labels map[string]string) {
+	collector.Record(MetricCPUSchedulerBacklogMs, backlogMs, timestamp, labels)
 }
 
 // RecordRouteSelectionCount records instance routing decisions by strategy.

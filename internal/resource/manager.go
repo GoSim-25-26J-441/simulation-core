@@ -32,6 +32,7 @@ type Manager struct {
 	instances             map[string]*ServiceInstance
 	hostToInstances       map[string][]string              // host ID -> instance IDs
 	roundRobinIdx         map[string]int                   // service name -> last selected instance index
+	leastQueueTieRRIdx    map[string]int                   // service:endpoint -> least_queue tie-break round-robin counter
 	weightedRoundRobinIdx map[string]int                   // service name -> weighted RR cursor
 	sortedServiceInstMap  map[string][]*ServiceInstance    // service name -> sorted instances (cached); scale-down only shrinks this
 	serviceRouting        map[string]*config.RoutingPolicy // service id -> routing policy
@@ -54,6 +55,7 @@ func NewManager() *Manager {
 		instances:             make(map[string]*ServiceInstance),
 		hostToInstances:       make(map[string][]string),
 		roundRobinIdx:         make(map[string]int),
+		leastQueueTieRRIdx:    make(map[string]int),
 		weightedRoundRobinIdx: make(map[string]int),
 		sortedServiceInstMap:  make(map[string][]*ServiceInstance),
 		serviceRouting:        make(map[string]*config.RoutingPolicy),

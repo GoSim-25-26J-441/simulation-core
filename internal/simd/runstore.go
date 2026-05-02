@@ -45,7 +45,7 @@ func defaultRunStoreLifecycleConfig() RunStoreLifecycleConfig {
 		MaxTerminalRuns:                500,
 		MaxOptimizationCandidates:      200,
 		KeepCollectorAfterCompletion:   false,
-		KeepCandidateInputAfterCleanup: false,
+		KeepCandidateInputAfterCleanup: true,
 	}
 }
 

@@ -49,6 +49,59 @@ func TestRoutingMetricsRecordedOnSelection(t *testing.T) {
 	}
 }
 
+func TestLeastQueueDistributesIngressUnderCPUBacklog(t *testing.T) {
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 16, MemoryGB: 32}},
+		Services: []config.Service{{
+			ID: "gateway", Replicas: 2, Model: "cpu", CPUCores: 1,
+			Routing: &config.RoutingPolicy{Strategy: "least_queue"},
+			Endpoints: []config.Endpoint{{
+				Path: "/api", MeanCPUMs: 35, CPUSigmaMs: 0, NetLatencyMs: config.LatencySpec{Mean: 0, Sigma: 0},
+			}},
+		}},
+		Workload: []config.WorkloadPattern{{
+			From: "c", To: "gateway:/api",
+			Arrival: config.ArrivalSpec{Type: "constant", RateRPS: 55},
+		}},
+	}
+	dur := 1500 * time.Millisecond
+	rm, err := RunScenarioForMetrics(sc, dur, 77, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sel0, sel1 int64
+	for _, row := range rm.InstanceRouteStats {
+		if row.ServiceName != "gateway" || row.EndpointPath != "/api" || row.Strategy != "least_queue" {
+			continue
+		}
+		switch row.InstanceID {
+		case "gateway-instance-0":
+			sel0 = row.SelectionCount
+		case "gateway-instance-1":
+			sel1 = row.SelectionCount
+		}
+	}
+	total := sel0 + sel1
+	if total < 40 {
+		t.Fatalf("expected enough routing samples, total=%d stats=%v", total, rm.InstanceRouteStats)
+	}
+	maxSel := sel0
+	if sel1 > maxSel {
+		maxSel = sel1
+	}
+	maxShare := float64(maxSel) / float64(total)
+	if maxShare > 0.88 {
+		t.Fatalf("routing skew too high (want spread across replicas): instance-0=%d instance-1=%d maxShare=%.3f",
+			sel0, sel1, maxShare)
+	}
+	if rm.LatencyP95 <= 0 {
+		t.Fatal("expected aggregate latency rollup")
+	}
+	if rm.LatencyP95 > 120_000 {
+		t.Fatalf("latency unexpectedly extreme p95=%v ms", rm.LatencyP95)
+	}
+}
+
 func TestRoutingStrategyAffectsTailLatency(t *testing.T) {
 	base := func(strategy string, weights map[string]float64) *config.Scenario {
 		return &config.Scenario{

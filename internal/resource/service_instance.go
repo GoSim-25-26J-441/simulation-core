@@ -327,6 +327,18 @@ func (s *ServiceInstance) HasCapacityAt(at time.Time) bool {
 	return !s.cpuNextFree.After(at)
 }
 
+// CPUBacklogDurationAt returns how long (simulation time) until the CPU scheduler can
+// start new work at at, i.e. max(0, cpuNextFree-at) when the reservation tail is in the
+// future. Zero when there is no outstanding CPU tail or it is not after at.
+func (s *ServiceInstance) CPUBacklogDurationAt(at time.Time) time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.cpuNextFree.IsZero() || !s.cpuNextFree.After(at) {
+		return 0
+	}
+	return s.cpuNextFree.Sub(at)
+}
+
 // ReserveCPUWork schedules one FIFO CPU service interval for cpuDemandMs of work.
 // Service duration in simulation time is cpuDemandMs / max(cpuCores, ε) (single logical
 // server with rate proportional to cores). Commits cpuNextFree to cpuEnd.

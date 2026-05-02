@@ -432,6 +432,72 @@ func TestHTTPServerGetRun(t *testing.T) {
 	}
 }
 
+func TestHTTPServerGetRunIncludesOptimizationReplayMetadata(t *testing.T) {
+	store := NewRunStore()
+	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
+	rec, err := store.Create("opt-replay-http-run", &simulationv1.RunInput{
+		ScenarioYaml:   testScenarioYAML,
+		DurationMs:     250,
+		CallbackSecret: "do-not-echo",
+		Optimization: &simulationv1.OptimizationConfig{
+			Objective:      "p95_latency_ms",
+			MaxEvaluations: 3,
+			Batch: &simulationv1.BatchOptimizationConfig{
+				BeamWidth:                 1,
+				MaxSearchDepth:            1,
+				MaxNeighborsPerState:      2,
+				ReevaluationsPerCandidate: 1,
+				MaxP95LatencyMs:           500,
+				MaxP99LatencyMs:           1000,
+				MaxErrorRate:              0.05,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/"+rec.Run.Id, nil)
+	srv.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid json: %v", err)
+	}
+	run := resp["run"].(map[string]any)
+	replay, ok := run["optimization_replay"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected optimization_replay in run JSON, got %#v", run)
+	}
+	if replay["scenario_yaml_sha256"] == "" {
+		t.Fatalf("expected scenario_yaml_sha256, got %#v", replay)
+	}
+	if replay["scenario_config_hash"] == "" {
+		t.Fatalf("expected scenario_config_hash, got %#v", replay)
+	}
+	if replay["callback_secret_omitted"] != true {
+		t.Fatalf("expected callback_secret_omitted=true, got %#v", replay)
+	}
+	payload, ok := replay["normalized_create_run_request"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected normalized_create_run_request object, got %#v", replay["normalized_create_run_request"])
+	}
+	input, ok := payload["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected replay input object, got %#v", payload)
+	}
+	if input["callback_secret"] != nil {
+		t.Fatalf("callback_secret must not be exposed in replay payload: %#v", input)
+	}
+	if _, ok := input["optimization"].(map[string]any); !ok {
+		t.Fatalf("expected replay optimization object, got %#v", input["optimization"])
+	}
+}
+
 func TestHTTPServerGetRunCompletedOrdinaryIncludesSelfCandidateFields(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store, nil)
@@ -2853,9 +2919,8 @@ func TestHTTPServerExportRunWithOptimizationHistory(t *testing.T) {
 	}
 }
 
-func TestHTTPServerExportRunRetainsOptimizationChildInputAfterTrimWhenEnabled(t *testing.T) {
+func TestHTTPServerExportRunRetainsOptimizationChildInputAfterTrimByDefault(t *testing.T) {
 	store := NewRunStore()
-	store.lifecycle.KeepCandidateInputAfterCleanup = true
 	srv := NewHTTPServer(store, NewRunExecutor(store, nil))
 
 	if _, err := store.Create("parent-export-retain", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 100}); err != nil {
