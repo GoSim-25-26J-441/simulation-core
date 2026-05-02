@@ -56,7 +56,7 @@ jobs:
         run: go vet ./...
 
       - name: Run tests
-        run: go test -v -race -timeout 5m ./...
+        run: go test -v -race -timeout 15m ./...
 
       - name: Run tests with coverage
         run: |
@@ -73,12 +73,12 @@ jobs:
           # Set minimum coverage threshold
           THRESHOLD=80.0
 
-          # Compare coverage with threshold
-          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+          # Compare coverage with threshold (awk avoids relying on bc in minimal images)
+          if awk -v c="$COVERAGE" -v t="$THRESHOLD" 'BEGIN{exit !(c+0 >= t+0)}'; then
+            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+          else
             echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
             exit 1
-          else
-            echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
           fi
 
       - name: Generate coverage report

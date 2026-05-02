@@ -1889,7 +1889,9 @@ type OptimizationConfig struct {
 	// Stop the online run after this many consecutive control intervals with no
 	// configuration change (converged). When 0, the server applies a default based
 	// on control_interval_ms (at least 20 intervals and ~60s of wall time at the
-	// control cadence). Set to -1 to disable convergence-based stop.
+	// control cadence), except for realtime interactive runs (run_input.real_time_mode
+	// with optimization.online), which default to -1 so the simulation stays RUNNING.
+	// Set to -1 explicitly to disable convergence-based stop.
 	MaxNoopIntervals int32 `protobuf:"varint,28,opt,name=max_noop_intervals,json=maxNoopIntervals,proto3" json:"max_noop_intervals,omitempty"`
 	// Wall-clock lease period (milliseconds) for heartbeat renewal. Required when
 	// effective max_online_duration_ms exceeds the server's heartbeat threshold (e.g. 10m)

@@ -23,10 +23,10 @@ echo ""
 echo "Total coverage: ${COVERAGE}%"
 echo "Threshold: ${THRESHOLD}%"
 
-if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
-  echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
-  exit 1
-else
+if awk -v c="$COVERAGE" -v t="$THRESHOLD" 'BEGIN{exit !(c+0 >= t+0)}'; then
   echo "✅ Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
   exit 0
+else
+  echo "❌ Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+  exit 1
 fi
