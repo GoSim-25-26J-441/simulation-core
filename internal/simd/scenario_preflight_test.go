@@ -60,3 +60,32 @@ func TestValidateScenarioPreflight_PlacementInfeasible(t *testing.T) {
 		t.Fatalf("expected parsed counts before placement failure, got %#v", res.Summary)
 	}
 }
+
+func TestValidateScenarioDraft_ValidMinimal(t *testing.T) {
+	yaml := strings.TrimSpace(testScenarioYAML)
+	res := ValidateScenarioDraft(yaml)
+	if !res.Valid {
+		t.Fatalf("expected valid draft, errors=%#v", res.Errors)
+	}
+	if len(res.Errors) != 0 || len(res.Warnings) != 0 {
+		t.Fatalf("expected empty errors/warnings, got errors=%#v warnings=%#v", res.Errors, res.Warnings)
+	}
+	if res.Summary != nil {
+		t.Fatalf("expected summary omitted for valid draft, got %#v", res.Summary)
+	}
+}
+
+func TestValidateScenarioDraft_PlacementInfeasibleSkipped(t *testing.T) {
+	yaml := strings.TrimSpace(infeasiblePlacementScenarioYAML)
+	draft := ValidateScenarioDraft(yaml)
+	if !draft.Valid {
+		t.Fatalf("draft should skip placement and accept semantically valid scenario, got %#v", draft)
+	}
+	pre := ValidateScenarioPreflight(yaml)
+	if pre.Valid {
+		t.Fatal("preflight must still fail placement for same YAML")
+	}
+	if len(pre.Errors) != 1 || pre.Errors[0].Code != "PLACEMENT_INFEASIBLE" {
+		t.Fatalf("preflight errors: %#v", pre.Errors)
+	}
+}

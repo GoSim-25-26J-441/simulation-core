@@ -16,6 +16,7 @@ import (
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
+	"google.golang.org/protobuf/proto"
 )
 
 // NotificationPayload represents the JSON payload sent to the callback URL
@@ -80,6 +81,37 @@ func NewNotifierWithWhitelist(whitelist []string) *Notifier {
 	}
 }
 
+// cloneRunRecordForAsyncNotify returns a deep snapshot of protobuf fields read while building
+// or JSON-encoding the notification payload. The HTTP POST runs in a goroutine; without this,
+// concurrent updates to the live RunRecord trigger races under -race.
+func cloneRunRecordForAsyncNotify(src *RunRecord) *RunRecord {
+	if src == nil {
+		return nil
+	}
+	out := &RunRecord{IsOptimizationChild: src.IsOptimizationChild}
+	if src.Run != nil {
+		out.Run = proto.Clone(src.Run).(*simulationv1.Run)
+	}
+	if src.Input != nil {
+		out.Input = proto.Clone(src.Input).(*simulationv1.RunInput)
+	}
+	if src.Metrics != nil {
+		out.Metrics = proto.Clone(src.Metrics).(*simulationv1.RunMetrics)
+	}
+	if src.FinalConfig != nil {
+		out.FinalConfig = proto.Clone(src.FinalConfig).(*simulationv1.RunConfiguration)
+	}
+	if len(src.OptimizationHistory) > 0 {
+		out.OptimizationHistory = make([]*simulationv1.OptimizationStep, len(src.OptimizationHistory))
+		for i, step := range src.OptimizationHistory {
+			if step != nil {
+				out.OptimizationHistory[i] = proto.Clone(step).(*simulationv1.OptimizationStep)
+			}
+		}
+	}
+	return out
+}
+
 // Notify sends a notification to the callback URL asynchronously
 // This method returns immediately and performs the notification in a goroutine
 func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *RunRecord, resources ...map[string]any) {
@@ -87,8 +119,7 @@ func (n *Notifier) Notify(callbackURL string, callbackSecret string, runRecord *
 		return
 	}
 
-	// Clone the run record to avoid race conditions
-	rec := runRecord
+	rec := cloneRunRecordForAsyncNotify(runRecord)
 	if rec == nil || rec.Run == nil {
 		logger.Warn("cannot notify: invalid run record", "callback_url", callbackURL)
 		return

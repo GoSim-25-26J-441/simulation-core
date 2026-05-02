@@ -163,17 +163,22 @@ Check if the service is running.
 
 ---
 
-### Validate scenario YAML (preflight)
+### Validate scenario YAML (draft / preflight)
 
 **POST** `/v1/scenarios:validate`
 
 Validate generated or edited scenario YAML **before** creating a run. The backend (`go-sim-backend`, etc.) should call this over HTTP only (do not import `simulation-core` as a Go module).
 
-Validation order:
+**Modes:**
+
+- **`preflight`** (default): YAML parse → `config.ValidateScenario` → placement/capacity via `resource.NewManager().InitializeFromScenario` (same path as run startup).
+- **`draft`**: YAML parse → `config.ValidateScenario` only (no placement/capacity). Use when saving work-in-progress scenarios that may not yet fit hosts.
+
+Validation steps for **`preflight`**:
 
 1. **YAML syntax** — `gopkg.in/yaml.v3` unmarshal into a `Scenario` (see `pkg/config/scenario_types.go`).
 2. **Semantic / schema** — same rules as exported `config.ValidateScenario` in `pkg/config/loader.go`: hosts/services, duplicate IDs, workload and downstream target resolution, queue/topic `consumer_target` / DLQ references, etc.
-3. **Placement / capacity** — `resource.NewManager().InitializeFromScenario` (same path as run startup).
+3. **Placement / capacity** — `resource.NewManager().InitializeFromScenario`.
 
 **Request:**
 ```json
@@ -183,7 +188,7 @@ Validation order:
 }
 ```
 
-`mode` is optional; when omitted it defaults to `"preflight"`. Any other value returns **400** with `{"error":"..."}`.
+`mode` is optional; when omitted it defaults to `"preflight"`. Supported values are **`draft`** and **`preflight`**; any other value returns **400** with `{"error":"..."}` mentioning supported modes.
 
 **Response (valid, HTTP 200):**
 ```json
@@ -206,7 +211,7 @@ Validation order:
 }
 ```
 
-**Response (semantic / graph / placement problems, HTTP 422):**
+**Response (semantic / graph problems, HTTP 422)** — also used for **`preflight`** placement failures (`PLACEMENT_INFEASIBLE`):
 ```json
 {
   "valid": false,
@@ -691,11 +696,13 @@ When `callback_url` is set in the run input, the simulator sends an HTTP POST to
 
 For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (count controlled by `SIMD_CALLBACK_TOP_CANDIDATES`; default 5). Batch runs support `optimization.objective` values: `p95_latency_ms`, `p99_latency_ms`, `mean_latency_ms`, `throughput_rps`, `error_rate`, `cost`, `cpu_utilization`, `memory_utilization`. For `cost`, candidate ranking is based on allocated infrastructure (`replicas * cpu_cores`, `replicas * memory_mb`, and replicas), so selected candidates align with provisioned resource changes. For `cpu_utilization` and `memory_utilization`, setting `optimization.target_util_low` and `optimization.target_util_high` (e.g. 0.4 and 0.7) makes the optimizer favor configs whose max utilization lies in that band; if omitted, the optimizer minimizes utilization (current behavior). `max_iterations` limits the number of improvement steps (each step may evaluate many neighbor configs). To cap total simulation runs, set `optimization.max_evaluations` to a positive value (e.g. 20); when reached, optimization stops. The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
 
+For replay/audit, `GET /v1/runs/{run_id}` includes `optimization_replay` for optimization parent runs. It contains hashes such as `scenario_yaml_sha256` and `scenario_config_hash`, plus a sanitized `normalized_create_run_request` with callback secrets omitted. The backend should persist that object together with `best_run_id`, ordered candidate IDs, parent metrics, and top-candidate exports.
+
 For **online optimization** runs, the completion callback may include `final_config` (the config the run settled on). The same config is available in run export as top-level `final_config`, or as the last entry's `current_config` in `run.optimization_history`.
 
 For **ordinary (non-optimization)** runs, the API surfaces the run itself as the single result candidate: `best_run_id = run_id`, `best_score = 0`, `iterations = 0`, and `top_candidates` may contain only `[run_id]`.
 
-**Getting the top candidate config:** For batch mode, use `best_run_id` and `GET /v1/runs/{best_run_id}/export` (e.g. `input.scenario_yaml`). For online mode, use the callback's `final_config`, or the export's top-level `final_config`, or the last step's `current_config` in `run.optimization_history`.
+**Getting the top candidate config:** For batch mode, use `best_run_id` and `GET /v1/runs/{best_run_id}/export` (e.g. `input.scenario_yaml`). Candidate exports include a sanitized full `input` object and retained `final_config` when available. For online mode, use the callback's `final_config`, or the export's top-level `final_config`, or the last step's `current_config` in `run.optimization_history`.
 
 ---
 
@@ -871,7 +878,7 @@ docker run -d \
 - `SIMD_OPTIMIZATION_TOP_CANDIDATES`: For optimization runs, limit `candidate_run_ids` to the top N candidates by score (e.g. `10`). The best run is always included. Unset or `0` = return all candidates.
 - `SIMD_CALLBACK_TOP_CANDIDATES`: For completion callbacks, limit `top_candidates` to the first N retained candidate IDs (best-first order). Default `5`; set `0` to include all retained candidate IDs. Invalid/negative values fall back to `5`.
 - `SIMD_RUNSTORE_KEEP_COLLECTOR_AFTER_COMPLETION`: Retain per-run in-memory collectors after terminal completion (default `false`).
-- `SIMD_RUNSTORE_KEEP_CANDIDATE_INPUT_AFTER_CLEANUP`: Retain optimization child `input`/`final_config` after terminal cleanup so `GET /v1/runs/{candidate_id}/export` still includes `input.scenario_yaml` (default `false`).
+- `SIMD_RUNSTORE_KEEP_CANDIDATE_INPUT_AFTER_CLEANUP`: Retain optimization child `input`/`final_config` after terminal cleanup so `GET /v1/runs/{candidate_id}/export` still includes replayable input and final config (default `true`; set `false` only for lower memory use when backend replay capture is not required).
 
 ### Docker Compose
 

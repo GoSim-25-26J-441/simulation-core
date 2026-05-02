@@ -50,6 +50,13 @@ func TestRunStoreLifecycleConfigFromEnvParsesKeepCandidateInputAfterCleanup(t *t
 	}
 }
 
+func TestRunStoreLifecycleConfigDefaultsKeepCandidateInputAfterCleanup(t *testing.T) {
+	cfg := defaultRunStoreLifecycleConfig()
+	if !cfg.KeepCandidateInputAfterCleanup {
+		t.Fatalf("expected retained optimization candidate inputs by default")
+	}
+}
+
 func TestRunStoreCompletedRunDropsCollectorByDefault(t *testing.T) {
 	store := NewRunStore()
 	defer store.Stop()
@@ -181,7 +188,7 @@ func TestRunStoreTrimOptimizationCandidatesDropsNonTopChildren(t *testing.T) {
 	}
 }
 
-func TestRunStoreOptimizationChildDropsInputAndFinalConfigByDefault(t *testing.T) {
+func TestRunStoreOptimizationChildKeepsInputAndFinalConfigByDefault(t *testing.T) {
 	store := NewRunStore()
 	defer store.Stop()
 	_, err := store.Create("opt-default-drop", &simulationv1.RunInput{ScenarioYaml: "hosts: []"})
@@ -200,11 +207,11 @@ func TestRunStoreOptimizationChildDropsInputAndFinalConfigByDefault(t *testing.T
 	if !ok {
 		t.Fatalf("expected run to exist")
 	}
-	if rec.Input != nil {
-		t.Fatalf("expected optimization child input to be dropped by default")
+	if rec.Input == nil || rec.Input.GetScenarioYaml() == "" {
+		t.Fatalf("expected optimization child input to be retained by default")
 	}
-	if rec.FinalConfig != nil {
-		t.Fatalf("expected optimization child final config to be dropped by default")
+	if rec.FinalConfig == nil || len(rec.FinalConfig.Services) != 1 {
+		t.Fatalf("expected optimization child final config to be retained by default")
 	}
 }
 
@@ -237,6 +244,38 @@ func TestRunStoreOptimizationChildKeepsInputAndFinalConfigWhenEnabled(t *testing
 	}
 	if rec.FinalConfig == nil || len(rec.FinalConfig.Services) != 1 {
 		t.Fatalf("expected final config to be retained when enabled")
+	}
+}
+
+func TestRunStoreOptimizationChildDropsInputAndFinalConfigWhenDisabled(t *testing.T) {
+	store := NewRunStore()
+	defer store.Stop()
+	store.lifecycle.KeepCandidateInputAfterCleanup = false
+
+	_, err := store.Create("opt-drop-input", &simulationv1.RunInput{
+		ScenarioYaml: "hosts:\n  - id: h1\n    cores: 2\n",
+		DurationMs:   1000,
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if err := store.SetFinalConfiguration("opt-drop-input", &simulationv1.RunConfiguration{
+		Services: []*simulationv1.ServiceConfigEntry{{ServiceId: "svc1", Replicas: 2}},
+	}); err != nil {
+		t.Fatalf("SetFinalConfiguration error: %v", err)
+	}
+	if _, err := store.SetStatus("opt-drop-input", simulationv1.RunStatus_RUN_STATUS_COMPLETED, ""); err != nil {
+		t.Fatalf("SetStatus completed error: %v", err)
+	}
+	rec, ok := store.Get("opt-drop-input")
+	if !ok {
+		t.Fatalf("expected run to exist")
+	}
+	if rec.Input != nil {
+		t.Fatalf("expected optimization child input to be dropped when disabled")
+	}
+	if rec.FinalConfig != nil {
+		t.Fatalf("expected optimization child final config to be dropped when disabled")
 	}
 }
 

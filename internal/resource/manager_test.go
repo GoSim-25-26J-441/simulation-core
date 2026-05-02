@@ -1646,6 +1646,119 @@ func TestSelectInstanceForRequest_LeastQueue(t *testing.T) {
 	}
 }
 
+func TestSelectInstanceForRequest_LeastQueueUsesCPUBacklogWhenQueuesEmpty(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing:   &config.RoutingPolicy{Strategy: RoutingLeastQueue},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	insts := m.GetInstancesForService("svc")
+	if len(insts) != 2 {
+		t.Fatalf("instances: %d", len(insts))
+	}
+	heavy := insts[0]
+	var light *ServiceInstance
+	for _, inst := range insts {
+		if inst.ID() != heavy.ID() {
+			light = inst
+			break
+		}
+	}
+	if light == nil {
+		t.Fatal("expected two distinct instances")
+	}
+	simTime := time.Unix(100, 0)
+	heavy.ReserveCPUWork(simTime, 1e9)
+	req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+	chosen, strategy, err := m.SelectInstanceForRequest("svc", req, simTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy != RoutingLeastQueue {
+		t.Fatalf("strategy=%s", strategy)
+	}
+	if chosen.ID() != light.ID() {
+		t.Fatalf("expected replica without CPU tail %s, got %s", light.ID(), chosen.ID())
+	}
+}
+
+func TestSelectInstanceForRequest_LeastQueueTieBreakRoundRobin(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing:   &config.RoutingPolicy{Strategy: RoutingLeastQueue},
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	req := &models.Request{ServiceName: "svc", Endpoint: "/a", Metadata: map[string]interface{}{}}
+	simTime := time.Unix(0, 0)
+	seen := map[string]int{}
+	for i := 0; i < 12; i++ {
+		chosen, _, err := m.SelectInstanceForRequest("svc", req, simTime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen[chosen.ID()]++
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected both replicas under identical scores, counts=%v", seen)
+	}
+	for id, n := range seen {
+		if n == 0 || n == 12 {
+			t.Fatalf("expected rotation across ties, id=%s n=%d seen=%v", id, n, seen)
+		}
+	}
+}
+
+func TestSelectInstanceForRequest_LeastQueueTieBreakRoundRobinPerEndpoint(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8}},
+		Services: []config.Service{{
+			ID: "svc", Replicas: 2, Model: "cpu",
+			Routing: &config.RoutingPolicy{Strategy: RoutingLeastQueue},
+			Endpoints: []config.Endpoint{
+				{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0},
+				{Path: "/b", MeanCPUMs: 1, CPUSigmaMs: 0},
+			},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	simTime := time.Unix(0, 0)
+	firstA, _, err := m.SelectInstanceForRequest("svc", &models.Request{ServiceName: "svc", Endpoint: "/a"}, simTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstB, _, err := m.SelectInstanceForRequest("svc", &models.Request{ServiceName: "svc", Endpoint: "/b"}, simTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstA.ID() != firstB.ID() {
+		t.Fatalf("expected endpoint-scoped tie rotation to start each endpoint on same stable replica, /a=%s /b=%s", firstA.ID(), firstB.ID())
+	}
+	secondA, _, err := m.SelectInstanceForRequest("svc", &models.Request{ServiceName: "svc", Endpoint: "/a"}, simTime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondA.ID() == firstA.ID() {
+		t.Fatalf("expected second /a tie to rotate independently, first=%s second=%s", firstA.ID(), secondA.ID())
+	}
+}
+
 func TestSelectInstanceForRequest_LeastConnections(t *testing.T) {
 	m := NewManager()
 	sc := &config.Scenario{

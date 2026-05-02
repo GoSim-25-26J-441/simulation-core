@@ -37,17 +37,28 @@ func RunMetricsOptionsFromResourceManager(rm *resource.Manager) *metrics.RunMetr
 // RunScenarioForMetrics executes a discrete-event simulation for simDuration of simulation time and returns aggregated RunMetrics.
 // realTime should be false for deterministic calibration/validation (pre-generated arrivals). seed controls RNG/workload/stochastic paths.
 func RunScenarioForMetrics(scenario *config.Scenario, simDuration time.Duration, seed int64, realTime bool) (*models.RunMetrics, error) {
+	rm, _, err := runScenarioForMetricsWithCollector(scenario, simDuration, seed, realTime)
+	return rm, err
+}
+
+// RunScenarioForMetricsWithSeriesNames is like RunScenarioForMetrics but also returns distinct metric series names present in the collector
+// (same names available from HTTP /metrics/timeseries export). Intended for validation tests.
+func RunScenarioForMetricsWithSeriesNames(scenario *config.Scenario, simDuration time.Duration, seed int64, realTime bool) (*models.RunMetrics, []string, error) {
+	return runScenarioForMetricsWithCollector(scenario, simDuration, seed, realTime)
+}
+
+func runScenarioForMetricsWithCollector(scenario *config.Scenario, simDuration time.Duration, seed int64, realTime bool) (*models.RunMetrics, []string, error) {
 	if scenario == nil {
-		return nil, fmt.Errorf("scenario is nil")
+		return nil, nil, fmt.Errorf("scenario is nil")
 	}
 	if simDuration <= 0 {
-		return nil, fmt.Errorf("simDuration must be positive")
+		return nil, nil, fmt.Errorf("simDuration must be positive")
 	}
 	runID := "scenario-for-metrics"
 	eng := engine.NewEngine(runID)
 	rm := resource.NewManager()
 	if err := rm.InitializeFromScenario(scenario); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	collector := metrics.NewCollector()
 	collector.Start()
@@ -61,7 +72,7 @@ func RunScenarioForMetrics(scenario *config.Scenario, simDuration time.Duration,
 	state, err := newScenarioState(scenario, rm, collector, policies, seed)
 	if err != nil {
 		collector.Stop()
-		return nil, err
+		return nil, nil, err
 	}
 	RegisterHandlers(eng, state)
 	startTime := eng.GetSimTime()
@@ -72,13 +83,14 @@ func RunScenarioForMetrics(scenario *config.Scenario, simDuration time.Duration,
 	if err := ws.Start(scenario, startTime, realTime); err != nil {
 		collector.Stop()
 		ws.Stop()
-		return nil, err
+		return nil, nil, err
 	}
 	runErr := eng.Run(simDuration)
 	ws.Stop()
+	seriesNames := collector.GetMetricNames()
 	collector.Stop()
 	if runErr != nil {
-		return nil, runErr
+		return nil, seriesNames, runErr
 	}
 	simDur := eng.GetSimTime().Sub(startTime)
 	serviceLabels := make([]map[string]string, 0, len(scenario.Services))
@@ -96,5 +108,5 @@ func RunScenarioForMetrics(scenario *config.Scenario, simDuration time.Duration,
 			sm.ActiveReplicas = rm.ActiveReplicas(svc.ID)
 		}
 	}
-	return rmOut, nil
+	return rmOut, seriesNames, nil
 }

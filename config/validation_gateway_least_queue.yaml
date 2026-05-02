@@ -1,0 +1,108 @@
+# Stress replica routing under CPU admission backlog: ingress gateway (2 replicas, least_queue),
+# ~180 RPS constant load, two synchronous downstream hops (mirrors “gateway + two sync calls” pathology).
+metadata:
+  schema_version: "0.2.0"
+
+simulation_limits:
+  max_trace_depth: 24
+  max_async_hops: 8
+
+hosts:
+  - id: host-edge
+    cores: 16
+    memory_gb: 32
+  - id: host-app
+    cores: 16
+    memory_gb: 32
+
+services:
+  - id: gateway-1
+    kind: api_gateway
+    role: ingress
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.0
+    memory_mb: 768
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /ingress
+        mean_cpu_ms: 4
+        cpu_sigma_ms: 1
+        default_memory_mb: 8
+        net_latency_ms:
+          mean: 1
+          sigma: 0.3
+        downstream:
+          - to: backend-a:/call
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 3000
+            call_latency_ms:
+              mean: 2
+              sigma: 0.5
+          - to: backend-b:/call
+            mode: sync
+            kind: rest
+            probability: 1
+            call_count_mean: 1
+            timeout_ms: 3000
+            call_latency_ms:
+              mean: 2
+              sigma: 0.5
+
+  - id: backend-a
+    kind: service
+    role: internal
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.5
+    memory_mb: 512
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /call
+        mean_cpu_ms: 12
+        cpu_sigma_ms: 3
+        default_memory_mb: 16
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream: []
+
+  - id: backend-b
+    kind: service
+    role: internal
+    replicas: 2
+    model: cpu
+    cpu_cores: 1.5
+    memory_mb: 512
+    routing:
+      strategy: least_queue
+    endpoints:
+      - path: /call
+        mean_cpu_ms: 12
+        cpu_sigma_ms: 3
+        default_memory_mb: 16
+        net_latency_ms:
+          mean: 2
+          sigma: 0.5
+        downstream: []
+
+workload:
+  - from: ingress-clients
+    source_kind: client
+    traffic_class: ingress
+    to: gateway-1:/ingress
+    arrival:
+      type: constant
+      rate_rps: 180
+
+policies:
+  retries:
+    enabled: false
+    max_retries: 0
+    backoff: exponential
+    base_ms: 50

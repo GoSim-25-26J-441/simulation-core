@@ -136,6 +136,8 @@ func recordInstanceAndHostGauges(state *scenarioState, serviceID, instanceID str
 	metrics.RecordCPUUtilization(state.collector, instance.CPUUtilizationAt(simTime), simTime, instanceLabels)
 	metrics.RecordMemoryUtilization(state.collector, instance.MemoryUtilization(), simTime, instanceLabels)
 	metrics.RecordQueueLength(state.collector, float64(instance.QueueLength()), simTime, instanceLabels)
+	backlogMs := float64(instance.CPUBacklogDurationAt(simTime).Nanoseconds()) / 1e6
+	metrics.RecordCPUSchedulerBacklogMs(state.collector, backlogMs, simTime, instanceLabels)
 	metrics.RecordConcurrentRequests(state.collector, float64(instance.ActiveRequests()), simTime, instanceLabels)
 
 	hostID := instance.HostID()

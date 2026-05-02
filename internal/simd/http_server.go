@@ -2,6 +2,8 @@ package simd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
@@ -126,8 +129,8 @@ func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Reque
 	if mode == "" {
 		mode = "preflight"
 	}
-	if mode != "preflight" {
-		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: preflight)")
+	if mode != "preflight" && mode != "draft" {
+		s.writeError(w, http.StatusBadRequest, "unsupported validation mode: "+mode+" (supported: draft, preflight)")
 		return
 	}
 	if strings.TrimSpace(req.ScenarioYAML) == "" {
@@ -145,7 +148,13 @@ func (s *HTTPServer) handleValidateScenario(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result := ValidateScenarioPreflight(req.ScenarioYAML)
+	var result *ScenarioValidationResult
+	switch mode {
+	case "draft":
+		result = ValidateScenarioDraft(req.ScenarioYAML)
+	default:
+		result = ValidateScenarioPreflight(req.ScenarioYAML)
+	}
 	status := scenarioValidateHTTPStatus(result)
 	s.writeJSON(w, status, result)
 }
@@ -1035,9 +1044,11 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 
 	// Include input/scenario configuration
 	if rec.Input != nil {
-		export["input"] = map[string]any{
-			"scenario_yaml": rec.Input.ScenarioYaml,
-			"duration_ms":   rec.Input.DurationMs,
+		if inputJSON := normalizedRunInputJSON(rec.Input); inputJSON != nil {
+			export["input"] = inputJSON
+		}
+		if rec.Input.GetCallbackSecret() != "" {
+			export["input_callback_secret_omitted"] = true
 		}
 	}
 
@@ -1766,8 +1777,56 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 			"summary":          run.GetBatchRecommendationSummary(),
 		}
 	}
+	if replay := optimizationReplayMetadata(input); replay != nil {
+		result["optimization_replay"] = replay
+	}
 
 	return result
+}
+
+func optimizationReplayMetadata(input *simulationv1.RunInput) map[string]any {
+	if input == nil || input.GetOptimization() == nil {
+		return nil
+	}
+	out := map[string]any{}
+	if input.GetScenarioYaml() != "" {
+		sum := sha256.Sum256([]byte(input.GetScenarioYaml()))
+		out["scenario_yaml_sha256"] = hex.EncodeToString(sum[:])
+		if sc, err := config.ParseScenarioYAMLString(input.GetScenarioYaml()); err == nil {
+			out["scenario_config_hash"] = batchspec.ConfigHashHex(sc)
+		}
+	}
+	if input.GetConfigYaml() != "" {
+		sum := sha256.Sum256([]byte(input.GetConfigYaml()))
+		out["config_yaml_sha256"] = hex.EncodeToString(sum[:])
+	}
+
+	if inputJSON := normalizedRunInputJSON(input); inputJSON != nil {
+		out["normalized_create_run_request"] = map[string]any{"input": inputJSON}
+	}
+	if input.GetCallbackSecret() != "" {
+		out["callback_secret_omitted"] = true
+	}
+	return out
+}
+
+func normalizedRunInputJSON(input *simulationv1.RunInput) map[string]any {
+	if input == nil {
+		return nil
+	}
+	replayInput := cloneRunInput(input)
+	if replayInput != nil {
+		replayInput.CallbackSecret = ""
+	}
+	raw, err := json.Marshal(replayInput)
+	if err != nil {
+		return nil
+	}
+	var normalized map[string]any
+	if json.Unmarshal(raw, &normalized) != nil {
+		return nil
+	}
+	return normalized
 }
 
 func scalingPolicyToJSON(p *config.ScalingPolicy) map[string]any {
