@@ -147,11 +147,12 @@ func PrepareOnlineRunInput(input *simulationv1.RunInput, limits OnlineRunLimits)
 	if noop == 0 {
 		// Interactive realtime sessions keep running after the controller stabilizes;
 		// convergence-based completion is disabled unless the client sets a positive cap.
-		if input.GetRealTimeMode() {
+		switch {
+		case input.GetRealTimeMode():
 			opt.MaxNoopIntervals = -1
-		} else if allowUnbounded && maxDurMs == 0 {
+		case allowUnbounded && maxDurMs == 0:
 			opt.MaxNoopIntervals = -1
-		} else {
+		default:
 			const minWallSec int64 = 60
 			ticks := (minWallSec*1000 + intervalMs - 1) / intervalMs
 			if ticks < 20 {
