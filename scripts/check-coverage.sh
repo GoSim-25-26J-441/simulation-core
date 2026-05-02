@@ -18,7 +18,7 @@ echo ""
 echo "Coverage report:"
 go tool cover -func=coverage.out | tail -5
 
-COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | sed 's/%//')
+COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | sed 's/%//')
 echo ""
 echo "Total coverage: ${COVERAGE}%"
 echo "Threshold: ${THRESHOLD}%"
