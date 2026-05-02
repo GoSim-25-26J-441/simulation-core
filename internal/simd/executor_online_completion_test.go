@@ -204,3 +204,114 @@ func TestOnlineRunCompletionConverged(t *testing.T) {
 		t.Fatalf("online_completion_reason=%q want %q", got, OnlineCompletionConverged)
 	}
 }
+
+func TestRealtimeInteractiveOnlineRunStaysRunningAfterIdleWindow(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "rt-online-idle-running"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: testOnlineScenarioYAML,
+		DurationMs:   0,
+		RealTimeMode: true,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:               true,
+			TargetP95LatencyMs:   50,
+			ControlIntervalMs:    25,
+			AllowUnboundedOnline: true,
+			MaxOnlineDurationMs:  600000,
+			// max_noop_intervals omitted → realtime default -1 (no converge stop)
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := store.Get(runID)
+	if rec.Input.Optimization.MaxNoopIntervals != -1 {
+		t.Fatalf("expected prepared max_noop_intervals=-1, got %d", rec.Input.Optimization.MaxNoopIntervals)
+	}
+	if _, err := exec.Start(runID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(900 * time.Millisecond)
+	rec2, ok := store.Get(runID)
+	if !ok {
+		t.Fatal("run missing")
+	}
+	if rec2.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Fatalf("expected RUNNING after idle window, got %v reason=%q",
+			rec2.Run.Status, rec2.Run.OnlineCompletionReason)
+	}
+	if _, err := exec.Stop(runID); err != nil {
+		t.Fatal(err)
+	}
+	waitUntilOnlineTerminal(t, store, runID, 10*time.Second)
+}
+
+func TestRealtimeInteractiveOnlineWorkloadUpdateWhileRunning(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "rt-online-workload-patch"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: testOnlineScenarioYAML,
+		DurationMs:   0,
+		RealTimeMode: true,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:               true,
+			TargetP95LatencyMs:   50,
+			ControlIntervalMs:    30,
+			AllowUnboundedOnline: true,
+			MaxOnlineDurationMs:  600000,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Start(runID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(400 * time.Millisecond)
+	if err := exec.UpdateWorkloadRate(runID, "client:svc1:/test", 8); err != nil {
+		t.Fatalf("UpdateWorkloadRate: %v", err)
+	}
+	rec, ok := store.Get(runID)
+	if !ok {
+		t.Fatal("run missing after workload update")
+	}
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Fatalf("expected RUNNING after workload update, got %v", rec.Run.Status)
+	}
+	if _, err := exec.Stop(runID); err != nil {
+		t.Fatal(err)
+	}
+	waitUntilOnlineTerminal(t, store, runID, 10*time.Second)
+}
+
+func TestRealtimeInteractiveOnlineDurationLimitStillCompletes(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "rt-online-duration-limit"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: testOnlineScenarioYAML,
+		DurationMs:   0,
+		RealTimeMode: true,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:              true,
+			TargetP95LatencyMs:  50,
+			ControlIntervalMs:   200,
+			MaxOnlineDurationMs: 120,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.Start(runID); err != nil {
+		t.Fatal(err)
+	}
+	rec := waitUntilOnlineTerminal(t, store, runID, 8*time.Second)
+	if rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_COMPLETED {
+		t.Fatalf("status=%v err=%q", rec.Run.Status, rec.Run.Error)
+	}
+	if got := rec.Run.OnlineCompletionReason; got != OnlineCompletionDurationLimit {
+		t.Fatalf("online_completion_reason=%q want %q", got, OnlineCompletionDurationLimit)
+	}
+}

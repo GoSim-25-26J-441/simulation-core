@@ -713,6 +713,158 @@ func TestRunExecutorOnlineControllerScalesDown(t *testing.T) {
 	}
 }
 
+// TestRunExecutorOnlineControllerNoConvergeStopWhenNoopDisabled verifies max_noop_intervals < 0
+// never signals converged completion even when the controller applies no changes for many ticks.
+func TestRunExecutorOnlineControllerNoConvergeStopWhenNoopDisabled(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-no-converge-stop"
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 8}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		metrics.RecordLatency(collector, 5.0, now.Add(time.Duration(i)*time.Millisecond), metrics.CreateServiceLabels("svc1"))
+	}
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50.0,
+		ControlIntervalMs:  10,
+		StepSize:           1.0,
+		MaxNoopIntervals:   -1,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+
+	if r := exec.takeOnlineCompletionReason(runID); r != "" {
+		t.Fatalf("unexpected online completion reason %q (want none)", r)
+	}
+}
+
+// TestRunExecutorOnlineControllerRuntimeMutationResetsIdleStreak bumps the mutation epoch so
+// idle-noop tracking restarts without finishing the run.
+func TestRunExecutorOnlineControllerRuntimeMutationResetsIdleStreak(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	runID := "online-mutation-reset"
+
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 8}},
+		Services: []config.Service{
+			{
+				ID:       "svc1",
+				Replicas: 1,
+				Model:    "cpu",
+				Endpoints: []config.Endpoint{
+					{
+						Path:         "/test",
+						MeanCPUMs:    10,
+						CPUSigmaMs:   2,
+						NetLatencyMs: config.LatencySpec{Mean: 1, Sigma: 0.5},
+					},
+				},
+			},
+		},
+	}
+
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario error: %v", err)
+	}
+
+	collector := metrics.NewCollector()
+	collector.Start()
+
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		metrics.RecordLatency(collector, 5.0, now.Add(time.Duration(i)*time.Millisecond), metrics.CreateServiceLabels("svc1"))
+	}
+
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+
+	opt := &simulationv1.OptimizationConfig{
+		Online:             true,
+		TargetP95LatencyMs: 50.0,
+		ControlIntervalMs:  10,
+		StepSize:           1.0,
+		MaxNoopIntervals:   -1,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+
+	time.Sleep(150 * time.Millisecond)
+	exec.mu.Lock()
+	stBefore := exec.onlineCtrlIdle[runID]
+	exec.mu.Unlock()
+	if stBefore.NoopStreak < 2 {
+		t.Fatalf("expected idle noop streak >= 2 before mutation, got %+v", stBefore)
+	}
+
+	exec.mu.Lock()
+	epBefore := exec.onlineCtrlMutationEpoch[runID]
+	exec.mu.Unlock()
+	exec.NotifyOnlineRuntimeMutation(runID)
+	exec.mu.Lock()
+	epAfter := exec.onlineCtrlMutationEpoch[runID]
+	exec.mu.Unlock()
+	if epAfter != epBefore+1 {
+		t.Fatalf("expected mutation epoch bump, got %d -> %d", epBefore, epAfter)
+	}
+
+	// Controller resets idle tracking at the next tick; streak should drop well below the pre-mutation count.
+	time.Sleep(25 * time.Millisecond)
+	exec.mu.Lock()
+	stAfter := exec.onlineCtrlIdle[runID]
+	exec.mu.Unlock()
+	if stAfter.NoopStreak >= stBefore.NoopStreak {
+		t.Fatalf("expected noop streak reset below %d after mutation, got %+v", stBefore.NoopStreak, stAfter)
+	}
+	cancel()
+	time.Sleep(20 * time.Millisecond)
+}
+
 // Test allowScaleDownReplicas: utilization-gated scale-down (Phase 1).
 func TestAllowScaleDownReplicas(t *testing.T) {
 	tests := []struct {
