@@ -318,6 +318,8 @@ func (s *SimulationGRPCServer) UpdateWorkloadRate(ctx context.Context, req *simu
 		}
 	}
 
+	s.Executor.NotifyOnlineRuntimeMutation(req.RunId)
+
 	logger.Info("workload rate updated (gRPC)", "run_id", req.RunId, "pattern_key", req.PatternKey, "rate_rps", req.RateRps)
 
 	// Get updated run status
@@ -382,6 +384,8 @@ func (s *SimulationGRPCServer) UpdateRunConfiguration(ctx context.Context, req *
 			}
 		}
 	}
+
+	s.Executor.NotifyOnlineRuntimeMutation(req.RunId)
 
 	logger.Info("run configuration updated (gRPC)", "run_id", req.RunId)
 	updated, _ := s.store.Get(req.RunId)

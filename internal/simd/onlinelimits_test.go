@@ -131,6 +131,44 @@ func TestPrepareOnlineRunInputAppliesServerCapsAndNoopDefaults(t *testing.T) {
 	}
 }
 
+func TestPrepareOnlineRunInputRealtimeModeDefaultsNoopToNegativeOne(t *testing.T) {
+	limits := DefaultOnlineRunLimits()
+	input := &simulationv1.RunInput{
+		RealTimeMode: true,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+			ControlIntervalMs:  100,
+			MaxNoopIntervals:   0,
+		},
+	}
+	if err := PrepareOnlineRunInput(input, limits); err != nil {
+		t.Fatalf("PrepareOnlineRunInput error: %v", err)
+	}
+	if input.Optimization.MaxNoopIntervals != -1 {
+		t.Fatalf("expected max_noop_intervals=-1 for realtime online mode, got %d", input.Optimization.MaxNoopIntervals)
+	}
+}
+
+func TestPrepareOnlineRunInputRealtimeModeKeepsExplicitPositiveNoop(t *testing.T) {
+	limits := DefaultOnlineRunLimits()
+	input := &simulationv1.RunInput{
+		RealTimeMode: true,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+			ControlIntervalMs:  100,
+			MaxNoopIntervals:   9,
+		},
+	}
+	if err := PrepareOnlineRunInput(input, limits); err != nil {
+		t.Fatalf("PrepareOnlineRunInput error: %v", err)
+	}
+	if input.Optimization.MaxNoopIntervals != 9 {
+		t.Fatalf("expected client max_noop_intervals preserved, got %d", input.Optimization.MaxNoopIntervals)
+	}
+}
+
 func TestPrepareOnlineRunInputAllowUnboundedDefaultsNoopToNegativeOne(t *testing.T) {
 	limits := DefaultOnlineRunLimits()
 	input := &simulationv1.RunInput{

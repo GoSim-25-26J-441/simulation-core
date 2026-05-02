@@ -591,6 +591,8 @@ func (s *HTTPServer) handleUpdateWorkload(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	s.Executor.NotifyOnlineRuntimeMutation(runID)
+
 	logger.Info("workload updated (HTTP)", "run_id", runID, "pattern_key", req.PatternKey)
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"message":     "workload updated successfully",
@@ -824,6 +826,8 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 			return
 		}
 	}
+
+	s.Executor.NotifyOnlineRuntimeMutation(runID)
 
 	logger.Info("run configuration updated (HTTP)", "run_id", runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{

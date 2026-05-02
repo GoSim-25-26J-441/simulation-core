@@ -62,9 +62,19 @@ type RunExecutor struct {
 	policyManagers         map[string]*policy.Manager   // key: runID; for dynamic policy updates
 	onlineCompletionReason map[string]string            // pending COMPLETED reason for online lease limits
 	onlineLeaseDeadline    map[string]time.Time         // wall-clock heartbeat deadline per run
+	// onlineCtrlMutationEpoch increments on user-driven runtime mutations so the online
+	// controller resets convergence / idle-noop tracking without stopping the run.
+	onlineCtrlMutationEpoch map[string]uint64
+	onlineCtrlIdle          map[string]onlineCtrlIdleState
 	// runScenarios holds the parsed scenario per active run for configuration/metadata export.
 	runScenarios map[string]*config.Scenario
 	progress     map[string]*RunProgress
+}
+
+// onlineCtrlIdleState mirrors controller idle streak metadata into RunProgress JSON for online runs.
+type onlineCtrlIdleState struct {
+	Stable     bool
+	NoopStreak int32
 }
 
 type RunProgress struct {
@@ -88,6 +98,8 @@ type RunProgress struct {
 	MetricSeriesCount              int       `json:"metric_series_count"`
 	MetricSampleCount              int       `json:"metric_sample_count"`
 	GenerationHorizon              string    `json:"generation_horizon,omitempty"`
+	OnlineControllerStable         bool      `json:"online_controller_stable"`
+	OnlineControllerNoopIntervals  int32     `json:"online_controller_noop_intervals"`
 	CancellationReason             string    `json:"cancellation_reason,omitempty"`
 	LastError                      string    `json:"last_error,omitempty"`
 	MemoryAllocBytes               uint64    `json:"memory_alloc_bytes"`
@@ -253,6 +265,8 @@ func (e *RunExecutor) cleanup(runID string) {
 	delete(e.progress, runID)
 	delete(e.onlineCompletionReason, runID)
 	delete(e.onlineLeaseDeadline, runID)
+	delete(e.onlineCtrlMutationEpoch, runID)
+	delete(e.onlineCtrlIdle, runID)
 	e.mu.Unlock()
 }
 
@@ -304,6 +318,29 @@ func (e *RunExecutor) signalOnlineLeaseEnd(runID, reason string) {
 	if cancel != nil {
 		cancel()
 	}
+}
+
+// NotifyOnlineRuntimeMutation resets online-controller idle/convergence streaks after a
+// user-driven workload, replica/resource, or policy change so scaling logic can react again.
+func (e *RunExecutor) NotifyOnlineRuntimeMutation(runID string) {
+	if runID == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.onlineCtrlMutationEpoch == nil {
+		e.onlineCtrlMutationEpoch = make(map[string]uint64)
+	}
+	e.onlineCtrlMutationEpoch[runID]++
+}
+
+func (e *RunExecutor) setOnlineControllerIdle(runID string, stable bool, noopStreak int32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.onlineCtrlIdle == nil {
+		e.onlineCtrlIdle = make(map[string]onlineCtrlIdleState)
+	}
+	e.onlineCtrlIdle[runID] = onlineCtrlIdleState{Stable: stable, NoopStreak: noopStreak}
 }
 
 func (e *RunExecutor) takeOnlineCompletionReason(runID string) string {
@@ -1177,9 +1214,21 @@ func (e *RunExecutor) buildRunProgress(runID string, rec *RunRecord, startTime t
 	}
 	status := ""
 	isOpt := false
+	onlineOpt := false
 	if rec != nil && rec.Run != nil {
 		status = rec.Run.Status.String()
 		isOpt = rec.Input != nil && rec.Input.Optimization != nil
+		onlineOpt = rec.Input != nil && rec.Input.GetOptimization() != nil && rec.Input.GetOptimization().GetOnline()
+	}
+	var ctrlStable bool
+	var ctrlNoop int32
+	if onlineOpt {
+		e.mu.Lock()
+		if st, ok := e.onlineCtrlIdle[runID]; ok {
+			ctrlStable = st.Stable
+			ctrlNoop = st.NoopStreak
+		}
+		e.mu.Unlock()
 	}
 	return &RunProgress{
 		RunID:                          runID,
@@ -1202,6 +1251,8 @@ func (e *RunExecutor) buildRunProgress(runID string, rec *RunRecord, startTime t
 		MetricSeriesCount:              cs.SeriesCount,
 		MetricSampleCount:              cs.TotalPoints,
 		GenerationHorizon:              horizon,
+		OnlineControllerStable:         ctrlStable,
+		OnlineControllerNoopIntervals:  ctrlNoop,
 		CancellationReason:             reason,
 		LastError:                      snap.LastError,
 		MemoryAllocBytes:               mem.Alloc,
@@ -1500,12 +1551,27 @@ func (e *RunExecutor) runOnlineController(
 	}
 	var noopStreak int32
 	maxStepsNoticeLogged := false
+	var mutationEpochSeen uint64
+	idleStableLogged := false
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			e.mu.Lock()
+			epoch := uint64(0)
+			if e.onlineCtrlMutationEpoch != nil {
+				epoch = e.onlineCtrlMutationEpoch[runID]
+			}
+			e.mu.Unlock()
+			if epoch != mutationEpochSeen {
+				mutationEpochSeen = epoch
+				noopStreak = 0
+				idleStableLogged = false
+				e.setOnlineControllerIdle(runID, false, 0)
+			}
+
 			stepIndexBefore := stepIndex
 			if lt := rm.LastSimTime(); !lt.IsZero() {
 				dropped := rm.ProcessDrainingInstances(lt)
@@ -2027,16 +2093,34 @@ func (e *RunExecutor) runOnlineController(
 				prevErrFrac = float64(runMetrics.FailedRequests) / float64(runMetrics.TotalRequests)
 			}
 
-			if opt.GetMaxNoopIntervals() > 0 {
+			maxNoop := opt.GetMaxNoopIntervals()
+			if maxNoop > 0 {
 				if stepIndex == stepIndexBefore {
 					noopStreak++
-					if noopStreak >= opt.GetMaxNoopIntervals() {
+					if noopStreak >= maxNoop {
 						logger.Info("online controller converged (no configuration changes)",
 							"run_id", runID, "noop_intervals", noopStreak)
 						e.signalOnlineLeaseEnd(runID, OnlineCompletionConverged)
 					}
 				} else {
 					noopStreak = 0
+				}
+			} else if maxNoop < 0 {
+				// Interactive / no convergence stop: track idle streak for progress metadata only.
+				const minIntervalsStable = 2
+				if stepIndex == stepIndexBefore {
+					noopStreak++
+					stable := noopStreak >= minIntervalsStable
+					e.setOnlineControllerIdle(runID, stable, noopStreak)
+					if stable && !idleStableLogged {
+						logger.Info("online controller stable (no configuration changes; interactive session continues)",
+							"run_id", runID, "noop_intervals", noopStreak)
+						idleStableLogged = true
+					}
+				} else {
+					noopStreak = 0
+					idleStableLogged = false
+					e.setOnlineControllerIdle(runID, false, 0)
 				}
 			}
 		}
