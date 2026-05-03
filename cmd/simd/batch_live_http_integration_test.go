@@ -341,8 +341,7 @@ func TestLiveBatchOptimizationHTTPNonBaselinePlacementRejections(t *testing.T) {
 					"service_memory_utilization_band": map[string]any{"low": 0.05, "high": 0.98},
 					"min_hosts":                       float64(1),
 					"max_hosts":                       float64(8),
-					// Without explicit mins, baseline-derived MinHostCPU (=8) rejects HOST_SCALE_DOWN neighbors.
-					"min_host_cpu_cores":              float64(2),
+					"min_host_cpu_cores":              float64(2), // explicit min avoids baseline MinHostCPU rejecting HOST_SCALE_DOWN neighbors
 					"max_host_cpu_cores":              float64(64),
 					"min_host_memory_gb":              float64(8),
 					"max_host_memory_gb":              float64(256),

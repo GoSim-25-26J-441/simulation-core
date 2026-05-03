@@ -143,18 +143,20 @@ func capacityDelta(cur, nb *config.Scenario) float64 {
 	}
 	curHosts := hostsByID(cur.Hosts)
 	for _, nh := range nb.Hosts {
-		if ch, ok := curHosts[nh.ID]; ok {
-			d += float64(nh.Cores-ch.Cores) * hostCoreWeight
-			gbCur := ch.MemoryGB
-			if gbCur < 1 {
-				gbCur = 16
-			}
-			gbNb := nh.MemoryGB
-			if gbNb < 1 {
-				gbNb = 16
-			}
-			d += float64(gbNb-gbCur) * hostMemGBWeight
+		ch, ok := curHosts[nh.ID]
+		if !ok {
+			continue
 		}
+		d += float64(nh.Cores-ch.Cores) * hostCoreWeight
+		gbCur := ch.MemoryGB
+		if gbCur < 1 {
+			gbCur = 16
+		}
+		gbNb := nh.MemoryGB
+		if gbNb < 1 {
+			gbNb = 16
+		}
+		d += float64(gbNb-gbCur) * hostMemGBWeight
 	}
 	d += float64(len(nb.Hosts)-len(cur.Hosts)) * hostCountWeight
 	return d
