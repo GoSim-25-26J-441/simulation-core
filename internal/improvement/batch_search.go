@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -29,6 +30,14 @@ type BatchSearchResult struct {
 	EffectiveMaxEvaluations int
 	// BudgetExhausted is true if the search stopped early because maxEvaluations would be exceeded.
 	BudgetExhausted bool
+
+	// Diagnostics (additive across beam + refinement neighbor generation).
+	GeneratedNeighbors         int
+	RejectedStaticCapacity     int
+	RejectedBounds             int
+	RejectedPlacement          int
+	EvaluatedCandidates        int
+	FailedCandidateEvaluations int
 }
 
 type beamState struct {
@@ -54,9 +63,15 @@ func RunBatchBeamSearch(
 	if cand == nil {
 		cand = NewCandidateStore()
 	}
+	// visited deduplicates evaluations by scenario content hash only (see batchspec.ConfigHash).
+	// Neighbor feasibility is fully determined by the cloned Scenario; marking skipped infeasible
+	// hashes avoids repeating identical failed simulations and cannot suppress a distinct valid scenario.
 	visited := make(map[uint64]struct{})
 	evalCount := 0
 	budgetExhausted := false
+	var neighborGen BatchNeighborGenStats
+	var evaluatedCandidates int
+	var failedCandidateEvaluations int
 
 	var globalBest beamState
 
@@ -65,7 +80,7 @@ func RunBatchBeamSearch(
 		reev = 1
 	}
 
-	tryEval := func(sc *config.Scenario) (beamState, bool, error) {
+	tryEval := func(sc *config.Scenario, baselineEval bool) (beamState, bool, error) {
 		if sc == nil {
 			return beamState{}, false, fmt.Errorf("nil scenario")
 		}
@@ -81,9 +96,15 @@ func RunBatchBeamSearch(
 		}
 		m, cost, err := eval(sc)
 		if err != nil {
+			if !baselineEval && IsBatchCandidateInfeasibleError(err) {
+				visited[h] = struct{}{}
+				failedCandidateEvaluations++
+				return beamState{}, false, nil
+			}
 			return beamState{}, false, err
 		}
 		evalCount += cost
+		evaluatedCandidates++
 		visited[h] = struct{}{}
 		score := ComputeBatchScore(spec, baseline, sc, m)
 		cand.RecordBatchScore(h, score)
@@ -94,7 +115,7 @@ func RunBatchBeamSearch(
 		return st, true, nil
 	}
 
-	baseSt, ok, err := tryEval(cloneScenario(baseline))
+	baseSt, ok, err := tryEval(cloneScenario(baseline), true)
 	if err != nil {
 		return nil, err
 	}
@@ -114,9 +135,9 @@ func RunBatchBeamSearch(
 		var nextLayer []beamState
 		for i := range frontier {
 			st := &frontier[i]
-			neighbors := GenerateBatchNeighbors(spec, baseline, st.scenario, st.metrics)
+			neighbors := GenerateBatchNeighbors(spec, baseline, st.scenario, st.metrics, &neighborGen)
 			for _, nsc := range neighbors {
-				ns, evaluated, err := tryEval(nsc)
+				ns, evaluated, err := tryEval(nsc, false)
 				if err != nil {
 					if errors.Is(err, ErrBatchBudgetExhausted) {
 						budgetExhausted = true
@@ -177,9 +198,9 @@ finish:
 	if spec.EnableLocalRefinement && globalBest.scenario != nil {
 		refSpec := spec.RefinementSpec()
 		if refSpec != nil {
-			neighbors := GenerateBatchNeighbors(refSpec, baseline, globalBest.scenario, globalBest.metrics)
+			neighbors := GenerateBatchNeighbors(refSpec, baseline, globalBest.scenario, globalBest.metrics, &neighborGen)
 			for _, nsc := range neighbors {
-				_, _, err := tryEval(nsc)
+				_, _, err := tryEval(nsc, false)
 				if err != nil {
 					if errors.Is(err, ErrBatchBudgetExhausted) {
 						budgetExhausted = true
@@ -194,14 +215,20 @@ finish:
 
 	best := globalBest
 	out := &BatchSearchResult{
-		BestScenario:            cloneScenario(best.scenario),
-		BestScore:               best.score,
-		Feasible:                best.score.Feasible,
-		Evaluations:             evalCount,
-		RefinementEvaluations:   refineSimRuns,
-		CandidateRunIDs:         cand.SortedBatchCandidateRunIDs(),
-		EffectiveMaxEvaluations: maxEvaluations,
-		BudgetExhausted:         budgetExhausted,
+		BestScenario:               cloneScenario(best.scenario),
+		BestScore:                  best.score,
+		Feasible:                   best.score.Feasible,
+		Evaluations:                evalCount,
+		RefinementEvaluations:      refineSimRuns,
+		CandidateRunIDs:            cand.SortedBatchCandidateRunIDs(),
+		EffectiveMaxEvaluations:    maxEvaluations,
+		BudgetExhausted:            budgetExhausted,
+		GeneratedNeighbors:         neighborGen.Generated,
+		RejectedStaticCapacity:     neighborGen.RejectedStaticCapacity,
+		RejectedBounds:             neighborGen.RejectedBounds,
+		RejectedPlacement:          neighborGen.RejectedPlacement,
+		EvaluatedCandidates:        evaluatedCandidates,
+		FailedCandidateEvaluations: failedCandidateEvaluations,
 	}
 	if h := batchspec.ConfigHash(out.BestScenario); h != 0 {
 		out.BestRunID, _ = cand.Lookup(h)
@@ -215,4 +242,28 @@ finish:
 		out.AllFeasibleEmpty = true
 	}
 	return out, nil
+}
+
+// BatchSearchDiagnosticsProto maps BatchSearchResult diagnostics into protobuf for Run persistence/API export.
+func BatchSearchDiagnosticsProto(res *BatchSearchResult) *simulationv1.BatchSearchDiagnostics {
+	if res == nil {
+		return nil
+	}
+	clamp32 := func(n int) int32 {
+		if n > math.MaxInt32 {
+			return math.MaxInt32
+		}
+		if n < math.MinInt32 {
+			return math.MinInt32
+		}
+		return int32(n)
+	}
+	return &simulationv1.BatchSearchDiagnostics{
+		GeneratedNeighbors:         clamp32(res.GeneratedNeighbors),
+		RejectedStaticCapacity:     clamp32(res.RejectedStaticCapacity),
+		RejectedBounds:             clamp32(res.RejectedBounds),
+		RejectedPlacement:          clamp32(res.RejectedPlacement),
+		EvaluatedCandidates:        clamp32(res.EvaluatedCandidates),
+		FailedCandidateEvaluations: clamp32(res.FailedCandidateEvaluations),
+	}
 }

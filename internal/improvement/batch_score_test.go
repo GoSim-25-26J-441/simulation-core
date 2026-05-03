@@ -206,3 +206,18 @@ func TestCompareBatchScoresPrefersLowerTopologyPenaltyWhenFeasible(t *testing.T)
 		t.Fatal("expected lower efficiency score candidate to win when both feasible")
 	}
 }
+
+func TestComputeChurn_HostVerticalChange(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 32}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, CPUCores: 1, MemoryMB: 512, Model: "cpu"},
+		},
+	}
+	cur := cloneScenario(base)
+	cur.Hosts[0].Cores = 12
+	cur.Hosts[0].MemoryGB = 48
+	if ch := ComputeChurn(base, cur); ch <= 1e-9 {
+		t.Fatalf("expected nonzero churn for host CPU/memory change, got %v", ch)
+	}
+}

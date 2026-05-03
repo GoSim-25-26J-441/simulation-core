@@ -103,6 +103,32 @@ Emitted when the run has optimization config and iteration or best score changes
 
 Use `objective` and `unit` in the UI (e.g. "Best P95: 18 ms" or "Best CPU util: 7%").
 
+### Batch optimization: beam diagnostics are not on SSE
+
+**`optimization_progress`** does **not** include **`batch_search_diagnostics`**. After the **parent** batch run completes, read diagnostics from **`GET /v1/runs/{run_id}`** or **`GET /v1/runs/{run_id}/export`** (`export.run.batch_search_diagnostics`). See [Backend Integration Guide — Batch beam search diagnostics](./BACKEND_INTEGRATION.md#batch-beam-search-diagnostics-batch_search_diagnostics) for field meanings.
+
+**Example** (HTTP GET parent run after completion):
+
+```json
+{
+  "run": {
+    "id": "run-example-parent",
+    "status": "RUN_STATUS_COMPLETED",
+    "iterations": 96,
+    "batch_search_diagnostics": {
+      "generated_neighbors": 54,
+      "rejected_static_capacity": 0,
+      "rejected_bounds": 0,
+      "rejected_placement": 5,
+      "evaluated_candidates": 32,
+      "failed_candidate_evaluations": 0
+    }
+  }
+}
+```
+
+Note: **`evaluated_candidates`** counts **distinct successful configs**, not total simulations; **`iterations`** reflects **budget / evaluation accounting** (may include re-evaluations). **`rejected_placement` > 0** is **normal** during host-scale exploration—not a failed parent run by itself.
+
 ### `optimization_step` payload shape (online optimization)
 
 When the online controller applies a configuration change, the stream emits:

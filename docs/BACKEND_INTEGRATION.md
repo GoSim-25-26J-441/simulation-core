@@ -10,6 +10,7 @@ This document provides comprehensive guidance for integrating `simulation-core` 
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [HTTP API Reference](#http-api-reference)
+- [Batch beam search diagnostics](#batch-beam-search-diagnostics-batch_search_diagnostics)
 - [Real-Time Metrics Streaming](#real-time-metrics-streaming)
 - [Docker Deployment](#docker-deployment)
 - [Integration Patterns](#integration-patterns)
@@ -419,6 +420,78 @@ Retrieve information about a simulation run.
 
 ---
 
+### Batch beam search diagnostics (`batch_search_diagnostics`)
+
+For **batch optimization** parent runs (beam search over discrete scaling neighbors), the simulator persists optional counters on the parent **`Run`** after search completes. They appear in JSON on **`GET /v1/runs/{run_id}`** and inside **`GET /v1/runs/{run_id}/export`** under **`run`** (same shape as `convertRunToJSON`). The field is **additive**: older clients can ignore it.
+
+**Important distinctions**
+
+| Concept | Meaning |
+|--------|---------|
+| **`run.iterations`** (parent batch run) | Simulation **budget / accounting** for the batch search (includes effects such as **re-evaluations per candidate** when configured). Treat this as “how much work the optimizer spent,” not “how many unique configs succeeded.” |
+| **`batch_recommendation_summary`** text (`evals=…`) | Mirrors internal evaluation totals for the beam search (budget usage); still **not** the same counter as **`evaluated_candidates`**. |
+| **`batch_search_diagnostics.evaluated_candidates`** | Number of **distinct** candidate configurations that **completed simulation successfully** (deduplicated by scenario hash). |
+| **Total simulation runs** | Can be **higher** than `evaluated_candidates` because of retries, re-evaluations, and baseline vs neighbor schedules. |
+
+**Field reference** (all are non‑negative integers; emitted together when diagnostics exist):
+
+| JSON field | Plain language |
+|------------|----------------|
+| **`generated_neighbors`** | Neighbor scenarios **considered** by the generator (including those filtered out later). Increments once per proposed neighbor before downstream checks. |
+| **`rejected_static_capacity`** | Neighbors skipped: total CPU/memory **demand** exceeds summed host capacity (aggregate feasibility only). |
+| **`rejected_bounds`** | Neighbors skipped: violate batch **structural** limits (host count min/max, replica bounds per service, per‑instance CPU/memory, host CPU/memory bounds). |
+| **`rejected_placement`** | Neighbors skipped: fail **placement preflight** (same packing path as simulation startup — workloads cannot be scheduled onto the proposed hosts). **Common and expected** when exploring **host scale‑in or risky host reductions**. This does **not** mean the parent run failed and is **not** an error status by itself. |
+| **`evaluated_candidates`** | Distinct configs that **successfully ran** simulation at least once (see table above — **not** equal to `run.iterations` or raw simulation count). |
+| **`failed_candidate_evaluations`** | Neighbors that were attempted but treated as **non‑fatal** failures (e.g. placement/resource initialization errors surfaced during simulation for that candidate). The parent search continues; **best result excludes these failing configs.** |
+
+**Example** (`GET /v1/runs/{parent_run_id}` excerpt):
+
+```json
+{
+  "run": {
+    "id": "run-20260503-164807-4dc9c928",
+    "status": "RUN_STATUS_COMPLETED",
+    "best_run_id": "opt-1777807095674517800-fb8335066e086b0c",
+    "iterations": 96,
+    "batch_recommendation_feasible": true,
+    "batch_search_diagnostics": {
+      "generated_neighbors": 54,
+      "rejected_static_capacity": 0,
+      "rejected_bounds": 0,
+      "rejected_placement": 5,
+      "evaluated_candidates": 32,
+      "failed_candidate_evaluations": 0
+    }
+  }
+}
+```
+
+#### Frontend / UI copy guidance
+
+If the UI surfaces these counters, prefer readable labels mapped from API keys:
+
+| API field | Suggested UI label |
+|-----------|-------------------|
+| `generated_neighbors` | Generated candidates |
+| `rejected_static_capacity` | Rejected by capacity |
+| `rejected_bounds` | Rejected by bounds |
+| `rejected_placement` | Rejected by placement |
+| `evaluated_candidates` | Evaluated configurations |
+| `failed_candidate_evaluations` | Failed candidate evaluations |
+
+**Tooltip / help text (recommended)**
+
+- **Evaluated configurations:** “Counts **distinct** candidate configs that **finished** simulation successfully. This is **not** the same as total simulation runs or **`run.iterations`** (which includes budget usage such as re-evaluations).”
+- **Rejected by placement:** “The optimizer **safely skipped** a candidate that **could not be packed** onto the available hosts (same check as run startup). **Nonzero values are normal** during host-level optimization.”
+- **General:** “**Nonzero rejected counts are expected** during host-level batch search; they indicate filtering, not parent-run failure.”
+
+#### Completion callbacks and SSE
+
+- **Completion callback** payloads (`NotificationPayload`) currently expose **`best_run_id`**, **`iterations`**, **`top_candidates`**, etc., but **do not include `batch_search_diagnostics`**. Backends that need diagnostics should **`GET /v1/runs/{parent_id}`** (or export) after receiving the callback.
+- **SSE** (`optimization_progress` events) carries iteration/score progress only; diagnostics are **not** streamed live—fetch them from **`GET /v1/runs/{id}`** when the parent completes.
+
+---
+
 ### List Simulation Runs
 
 **GET** `/v1/runs?limit=50&offset=0&status=COMPLETED`
@@ -586,6 +659,8 @@ Export complete run data including run information, input, aggregated metrics, a
 
 **Note:** `time_series` array may be empty if metrics collector was not stored.
 
+For batch optimization **parent** runs, the top-level **`run`** object may include **`batch_search_diagnostics`** (same as `GET /v1/runs/{id}`). See [Batch beam search diagnostics](#batch-beam-search-diagnostics-batch_search_diagnostics).
+
 ---
 
 ### Real-Time Metrics Streaming (SSE)
@@ -694,7 +769,7 @@ When `callback_url` is set in the run input, the simulator sends an HTTP POST to
 | `top_candidates` | string[] | Candidate run IDs, best first. Count is controlled by `SIMD_CALLBACK_TOP_CANDIDATES` (default 5; `0` includes all retained candidate IDs). Ordinary runs may contain only the run ID. |
 | `final_config` | object | (Online optimization only) Final/settled run configuration (services, workload, hosts) after controller updates. Omitted if no optimization steps. |
 
-For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (count controlled by `SIMD_CALLBACK_TOP_CANDIDATES`; default 5). Batch runs support `optimization.objective` values: `p95_latency_ms`, `p99_latency_ms`, `mean_latency_ms`, `throughput_rps`, `error_rate`, `cost`, `cpu_utilization`, `memory_utilization`. For `cost`, candidate ranking is based on allocated infrastructure (`replicas * cpu_cores`, `replicas * memory_mb`, and replicas), so selected candidates align with provisioned resource changes. For `cpu_utilization` and `memory_utilization`, setting `optimization.target_util_low` and `optimization.target_util_high` (e.g. 0.4 and 0.7) makes the optimizer favor configs whose max utilization lies in that band; if omitted, the optimizer minimizes utilization (current behavior). `max_iterations` limits the number of improvement steps (each step may evaluate many neighbor configs). To cap total simulation runs, set `optimization.max_evaluations` to a positive value (e.g. 20); when reached, optimization stops. The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
+For **batch optimization** runs, the callback includes `best_run_id`, `best_score`, `iterations`, and `top_candidates` (count controlled by `SIMD_CALLBACK_TOP_CANDIDATES`; default 5). **`batch_search_diagnostics` is not included in the callback body**; use **`GET /v1/runs/{parent_run_id}`** or export to read neighbor/evaluation counters (see [Batch beam search diagnostics](#batch-beam-search-diagnostics-batch_search_diagnostics)). Batch runs support `optimization.objective` values: `p95_latency_ms`, `p99_latency_ms`, `mean_latency_ms`, `throughput_rps`, `error_rate`, `cost`, `cpu_utilization`, `memory_utilization`. For `cost`, candidate ranking is based on allocated infrastructure (`replicas * cpu_cores`, `replicas * memory_mb`, and replicas), so selected candidates align with provisioned resource changes. For `cpu_utilization` and `memory_utilization`, setting `optimization.target_util_low` and `optimization.target_util_high` (e.g. 0.4 and 0.7) makes the optimizer favor configs whose max utilization lies in that band; if omitted, the optimizer minimizes utilization (current behavior). `max_iterations` limits the number of improvement steps (each step may evaluate many neighbor configs). To cap total simulation runs, set `optimization.max_evaluations` to a positive value (e.g. 20); when reached, optimization stops. The backend can fetch configs and metrics for each candidate via `GET /v1/runs/{candidate_id}/metrics` and the best scenario via the run export.
 
 For replay/audit, `GET /v1/runs/{run_id}` includes `optimization_replay` for optimization parent runs. It contains hashes such as `scenario_yaml_sha256` and `scenario_config_hash`, plus a sanitized `normalized_create_run_request` with callback secrets omitted. The backend should persist that object together with `best_run_id`, ordered candidate IDs, parent metrics, and top-candidate exports.
 
@@ -879,6 +954,24 @@ docker run -d \
 - `SIMD_CALLBACK_TOP_CANDIDATES`: For completion callbacks, limit `top_candidates` to the first N retained candidate IDs (best-first order). Default `5`; set `0` to include all retained candidate IDs. Invalid/negative values fall back to `5`.
 - `SIMD_RUNSTORE_KEEP_COLLECTOR_AFTER_COMPLETION`: Retain per-run in-memory collectors after terminal completion (default `false`).
 - `SIMD_RUNSTORE_KEEP_CANDIDATE_INPUT_AFTER_CLEANUP`: Retain optimization child `input`/`final_config` after terminal cleanup so `GET /v1/runs/{candidate_id}/export` still includes replayable input and final config (default `true`; set `false` only for lower memory use when backend replay capture is not required).
+
+### Manual live batch HTTP tests (optional; not default CI)
+
+End-to-end batch tests in **`cmd/simd`** exercise the **same HTTP handlers and `optimizationRunnerAdapter` wiring as `cmd/simd/main.go`**. They are **skipped unless** **`SIMD_BATCH_HTTP_LIVE=1`** because they run full orchestration and simulations (**slower** than package unit tests).
+
+**PowerShell:**
+
+```powershell
+$env:SIMD_BATCH_HTTP_LIVE='1'; go test ./cmd/simd -run TestLiveBatchOptimizationHTTP -count=1 -timeout 15m -v
+```
+
+**Bash:**
+
+```bash
+SIMD_BATCH_HTTP_LIVE=1 go test ./cmd/simd -run TestLiveBatchOptimizationHTTP -count=1 -timeout 15m -v
+```
+
+Normal **`go test ./...`** does **not** require this flag and keeps CI fast.
 
 ### Docker Compose
 

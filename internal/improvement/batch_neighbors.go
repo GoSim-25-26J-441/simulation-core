@@ -7,6 +7,7 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
 
@@ -52,6 +53,24 @@ func StaticCapacityOK(s *config.Scenario) bool {
 		capMemMB = needMemMB
 	}
 	return needCPU <= capCPU*1.001 && needMemMB <= capMemMB*1.001
+}
+
+// PlacementCapacityOK runs the same placement and per-host packing check as simulation startup
+// using a fresh resource.Manager (side-effect free for the running engine).
+func PlacementCapacityOK(s *config.Scenario) bool {
+	if s == nil {
+		return false
+	}
+	rm := resource.NewManager()
+	return rm.InitializeFromScenario(s) == nil
+}
+
+// BatchNeighborGenStats counts neighbor generation outcomes for diagnostics.
+type BatchNeighborGenStats struct {
+	Generated              int
+	RejectedStaticCapacity int
+	RejectedBounds         int
+	RejectedPlacement      int
 }
 
 // neighborStress is true when the current state looks overloaded vs SLOs or utilization bands.
@@ -107,6 +126,11 @@ func capacityDelta(cur, nb *config.Scenario) float64 {
 	if cur == nil || nb == nil {
 		return 0
 	}
+	const (
+		hostCountWeight = 80
+		hostCoreWeight  = 3
+		hostMemGBWeight = 2
+	)
 	var d float64
 	for i := range nb.Services {
 		if i >= len(cur.Services) {
@@ -117,8 +141,91 @@ func capacityDelta(cur, nb *config.Scenario) float64 {
 		dm := nb.Services[i].MemoryMB - cur.Services[i].MemoryMB
 		d += dr*50 + dc*2 + dm/256
 	}
-	d += float64(len(nb.Hosts)-len(cur.Hosts)) * 80
+	curHosts := hostsByID(cur.Hosts)
+	for _, nh := range nb.Hosts {
+		ch, ok := curHosts[nh.ID]
+		if !ok {
+			continue
+		}
+		d += float64(nh.Cores-ch.Cores) * hostCoreWeight
+		gbCur := ch.MemoryGB
+		if gbCur < 1 {
+			gbCur = 16
+		}
+		gbNb := nh.MemoryGB
+		if gbNb < 1 {
+			gbNb = 16
+		}
+		d += float64(gbNb-gbCur) * hostMemGBWeight
+	}
+	d += float64(len(nb.Hosts)-len(cur.Hosts)) * hostCountWeight
 	return d
+}
+
+func hostsByID(hosts []config.Host) map[string]config.Host {
+	out := make(map[string]config.Host, len(hosts))
+	for i := range hosts {
+		h := hosts[i]
+		out[h.ID] = h
+	}
+	return out
+}
+
+// missingHostMetricPenalty ranks hosts without HostMetrics behind measurable hosts so removals stay conservative.
+const missingHostMetricPenalty = 10.0
+
+// hostRemovalPreferenceOrder lists host IDs eligible for HOST_SCALE_IN (len(hosts) > minHosts),
+// sorted by ascending observed utilization (cpu+memory), then host ID.
+func hostRemovalPreferenceOrder(cur *config.Scenario, lastMetrics *simulationv1.RunMetrics, minHosts int) []string {
+	if cur == nil || len(cur.Hosts) <= minHosts {
+		return nil
+	}
+	utilByHost := make(map[string]float64)
+	if lastMetrics != nil {
+		for _, hm := range lastMetrics.GetHostMetrics() {
+			if hm == nil {
+				continue
+			}
+			id := strings.TrimSpace(hm.GetHostId())
+			if id == "" {
+				continue
+			}
+			utilByHost[id] = hm.GetCpuUtilization() + hm.GetMemoryUtilization()
+		}
+	}
+	type ranked struct {
+		id   string
+		util float64
+	}
+	rankedHosts := make([]ranked, len(cur.Hosts))
+	for i, h := range cur.Hosts {
+		u, ok := utilByHost[h.ID]
+		if !ok {
+			u = missingHostMetricPenalty
+		}
+		rankedHosts[i] = ranked{id: h.ID, util: u}
+	}
+	sort.SliceStable(rankedHosts, func(i, j int) bool {
+		if rankedHosts[i].util != rankedHosts[j].util {
+			return rankedHosts[i].util < rankedHosts[j].util
+		}
+		return rankedHosts[i].id < rankedHosts[j].id
+	})
+	out := make([]string, len(rankedHosts))
+	for i := range rankedHosts {
+		out[i] = rankedHosts[i].id
+	}
+	return out
+}
+
+func hostsWithoutID(hosts []config.Host, removeID string) []config.Host {
+	out := make([]config.Host, 0, len(hosts)-1)
+	for _, h := range hosts {
+		if h.ID != removeID {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 func serviceIndexByID(s *config.Scenario) map[string]int {
@@ -212,16 +319,35 @@ func orderNeighborsForExpansion(spec *batchspec.BatchSpec, cur *config.Scenario,
 
 // GenerateBatchNeighbors expands one step from cur according to spec and baseline bounds.
 // lastMetrics, when non-nil, influences neighbor ordering (scale-out/up first under stress).
-func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Scenario, lastMetrics *simulationv1.RunMetrics) []*config.Scenario {
+// stats, when non-nil, receives additive counts for diagnostics.
+func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Scenario, lastMetrics *simulationv1.RunMetrics, stats *BatchNeighborGenStats) []*config.Scenario {
 	if spec == nil || cur == nil {
 		return nil
 	}
 	var out []*config.Scenario
 	add := func(ns *config.Scenario) {
-		if ns == nil || !StaticCapacityOK(ns) {
+		if ns == nil {
+			return
+		}
+		if stats != nil {
+			stats.Generated++
+		}
+		if !StaticCapacityOK(ns) {
+			if stats != nil {
+				stats.RejectedStaticCapacity++
+			}
 			return
 		}
 		if !withinBatchBounds(spec, baseline, ns) {
+			if stats != nil {
+				stats.RejectedBounds++
+			}
+			return
+		}
+		if !PlacementCapacityOK(ns) {
+			if stats != nil {
+				stats.RejectedPlacement++
+			}
 			return
 		}
 		out = append(out, ns)
@@ -377,9 +503,11 @@ func GenerateBatchNeighbors(spec *batchspec.BatchSpec, baseline, cur *config.Sce
 			if len(cur.Hosts) <= int(spec.MinHosts) {
 				break
 			}
-			ns := cloneScenario(cur)
-			ns.Hosts = ns.Hosts[:len(ns.Hosts)-1]
-			add(ns)
+			for _, hid := range hostRemovalPreferenceOrder(cur, lastMetrics, int(spec.MinHosts)) {
+				ns := cloneScenario(cur)
+				ns.Hosts = hostsWithoutID(ns.Hosts, hid)
+				add(ns)
+			}
 		case simulationv1.BatchScalingAction_HOST_SCALE_UP_CPU:
 			for i := range cur.Hosts {
 				ns := cloneScenario(cur)

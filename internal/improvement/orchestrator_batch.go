@@ -81,6 +81,12 @@ func (o *Orchestrator) RunBatchExperiment(ctx context.Context, initial *config.S
 		"feasible", batchRes.Feasible,
 		"violation_score", batchRes.BestScore.ViolationScore,
 		"efficiency_score", batchRes.BestScore.EfficiencyScore,
+		"generated_neighbors", batchRes.GeneratedNeighbors,
+		"rejected_static_capacity", batchRes.RejectedStaticCapacity,
+		"rejected_bounds", batchRes.RejectedBounds,
+		"rejected_placement", batchRes.RejectedPlacement,
+		"evaluated_candidates", batchRes.EvaluatedCandidates,
+		"failed_candidate_evaluations", batchRes.FailedCandidateEvaluations,
 	)
 
 	result := &ExperimentResult{

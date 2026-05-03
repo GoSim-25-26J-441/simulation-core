@@ -203,6 +203,9 @@ func (a *optimizationRunnerAdapter) RunExperiment(ctx context.Context, runID str
 				if err := a.store.SetBatchRecommendation(runID, r.Batch.Feasible, r.Batch.BestScore.ViolationScore, r.Batch.BestScore.EfficiencyScore, r.Batch.Summary); err != nil {
 					logger.Warn("failed to store batch recommendation", "run_id", runID, "error", err)
 				}
+				if err := a.store.SetBatchSearchDiagnostics(runID, improvement.BatchSearchDiagnosticsProto(r.Batch)); err != nil {
+					logger.Warn("failed to store batch search diagnostics", "run_id", runID, "error", err)
+				}
 			}
 			iterClamped := int32(math.Max(0, math.Min(float64(r.Iterations), float64(math.MaxInt32))))
 			candidates := buildTopCandidateRunIDs(r, getTopCandidatesN())

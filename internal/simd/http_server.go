@@ -1781,6 +1781,16 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 			"summary":          run.GetBatchRecommendationSummary(),
 		}
 	}
+	if diag := run.GetBatchSearchDiagnostics(); diag != nil {
+		result["batch_search_diagnostics"] = map[string]any{
+			"generated_neighbors":          diag.GetGeneratedNeighbors(),
+			"rejected_static_capacity":     diag.GetRejectedStaticCapacity(),
+			"rejected_bounds":              diag.GetRejectedBounds(),
+			"rejected_placement":           diag.GetRejectedPlacement(),
+			"evaluated_candidates":         diag.GetEvaluatedCandidates(),
+			"failed_candidate_evaluations": diag.GetFailedCandidateEvaluations(),
+		}
+	}
 	if replay := optimizationReplayMetadata(input); replay != nil {
 		result["optimization_replay"] = replay
 	}
