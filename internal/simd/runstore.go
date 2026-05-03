@@ -498,6 +498,22 @@ func (s *RunStore) SetBatchRecommendation(runID string, feasible bool, violation
 	return nil
 }
 
+// SetBatchSearchDiagnostics persists beam-search diagnostics on the parent optimization run (optional).
+func (s *RunStore) SetBatchSearchDiagnostics(runID string, diag *simulationv1.BatchSearchDiagnostics) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.runs[runID]
+	if !ok {
+		return fmt.Errorf("run not found: %s", runID)
+	}
+	if diag == nil {
+		rec.Run.BatchSearchDiagnostics = nil
+		return nil
+	}
+	rec.Run.BatchSearchDiagnostics = proto.Clone(diag).(*simulationv1.BatchSearchDiagnostics)
+	return nil
+}
+
 // SetOptimizationResult stores optimization result fields for a run (best_run_id, best_score, iterations, candidate_run_ids).
 func (s *RunStore) SetOptimizationResult(runID string, bestRunID string, bestScore float64, iterations int32, candidateRunIDs []string) error {
 	s.mu.Lock()

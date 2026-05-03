@@ -1,12 +1,147 @@
 package improvement
 
 import (
+	"strings"
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 )
+
+func TestGenerateBatchNeighbors_RejectsPlacementInfeasibleHostScaleIn(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "h-a1", Cores: 8, MemoryGB: 32, Zone: "a"},
+			{ID: "h-a2", Cores: 8, MemoryGB: 32, Zone: "a"},
+			{ID: "h-b1", Cores: 16, MemoryGB: 64, Zone: "b"},
+		},
+		Services: []config.Service{
+			{
+				ID: "service-1", Replicas: 4, CPUCores: 2, MemoryMB: 512, Model: "cpu",
+				Endpoints: []config.Endpoint{{Path: "/x", MeanCPUMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1}}},
+				Placement: &config.PlacementPolicy{RequiredZones: []string{"b"}},
+			},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{
+		MinHosts:             2,
+		MaxNeighborsPerState: 32,
+		MaxSearchDepth:       1,
+		BeamWidth:            8,
+		AllowedActions:       []simulationv1.BatchScalingAction{simulationv1.BatchScalingAction_HOST_SCALE_IN},
+	}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stats BatchNeighborGenStats
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil, &stats)
+	for _, n := range neighbors {
+		if len(n.Hosts) >= len(base.Hosts) {
+			continue
+		}
+		hasZoneB := false
+		for _, h := range n.Hosts {
+			if strings.EqualFold(strings.TrimSpace(h.Zone), "b") {
+				hasZoneB = true
+				break
+			}
+		}
+		if !hasZoneB {
+			t.Fatalf("placement filter should reject configs with no zone-b host for required-zone service; neighbor hosts=%v", n.Hosts)
+		}
+	}
+	if stats.RejectedPlacement < 1 {
+		t.Fatalf("expected placement rejection when removing sole eligible-zone host; stats=%+v len(neighbors)=%d", stats, len(neighbors))
+	}
+}
+
+func TestCapacityDelta_HostVerticalScaling(t *testing.T) {
+	cur := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 32}},
+	}
+	memDown := cloneScenario(cur)
+	memDown.Hosts[0].MemoryGB = 28
+	if d := capacityDelta(cur, memDown); d >= 0 {
+		t.Fatalf("host memory decrease want negative delta, got %v", d)
+	}
+	memUp := cloneScenario(cur)
+	memUp.Hosts[0].MemoryGB = 36
+	if d := capacityDelta(cur, memUp); d <= 0 {
+		t.Fatalf("host memory increase want positive delta, got %v", d)
+	}
+	cpuDown := cloneScenario(cur)
+	cpuDown.Hosts[0].Cores = 6
+	if d := capacityDelta(cur, cpuDown); d >= 0 {
+		t.Fatalf("host cpu decrease want negative delta, got %v", d)
+	}
+	cpuUp := cloneScenario(cur)
+	cpuUp.Hosts[0].Cores = 10
+	if d := capacityDelta(cur, cpuUp); d <= 0 {
+		t.Fatalf("host cpu increase want positive delta, got %v", d)
+	}
+}
+
+func TestHostRemovalPreferenceOrder_PrefersLowerUtilizationHost(t *testing.T) {
+	cur := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "h-busy", Cores: 8, MemoryGB: 32},
+			{ID: "h-idle", Cores: 8, MemoryGB: 32},
+		},
+		Services: []config.Service{
+			{ID: "svc", Replicas: 1, CPUCores: 1, MemoryMB: 256, Model: "cpu", Endpoints: []config.Endpoint{{Path: "/p", MeanCPUMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1}}}},
+		},
+	}
+	m := &simulationv1.RunMetrics{
+		HostMetrics: []*simulationv1.HostMetrics{
+			{HostId: "h-busy", CpuUtilization: 0.9, MemoryUtilization: 0.85},
+			{HostId: "h-idle", CpuUtilization: 0.01, MemoryUtilization: 0.02},
+		},
+	}
+	order := hostRemovalPreferenceOrder(cur, m, 1)
+	if len(order) != 2 || order[0] != "h-idle" {
+		t.Fatalf("want idle host first for removal preference, got %v", order)
+	}
+}
+
+func TestGenerateBatchNeighbors_HostScaleInOneCandidatePerHost(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "ha", Cores: 16, MemoryGB: 32},
+			{ID: "hb", Cores: 16, MemoryGB: 32},
+			{ID: "hc", Cores: 16, MemoryGB: 32},
+		},
+		Services: []config.Service{
+			{ID: "svc", Replicas: 1, CPUCores: 1, MemoryMB: 256, Model: "cpu", Endpoints: []config.Endpoint{{Path: "/p", MeanCPUMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1}}}},
+		},
+	}
+	pb := &simulationv1.BatchOptimizationConfig{
+		MinHosts:             2,
+		MaxNeighborsPerState: 32,
+		AllowedActions:       []simulationv1.BatchScalingAction{simulationv1.BatchScalingAction_HOST_SCALE_IN},
+	}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil, nil)
+	seen := map[string]struct{}{}
+	for _, n := range neighbors {
+		if len(n.Hosts) != 2 {
+			continue
+		}
+		var ids []string
+		for _, h := range n.Hosts {
+			ids = append(ids, h.ID)
+		}
+		key := strings.Join(ids, ",")
+		seen[key] = struct{}{}
+	}
+	if len(seen) < 3 {
+		t.Fatalf("expected three distinct host removals, got distinct=%d neighbors=%d", len(seen), len(neighbors))
+	}
+}
 
 func TestOrderNeighborsForExpansion_StressPrefersHigherCapacity(t *testing.T) {
 	base := &config.Scenario{
@@ -159,7 +294,7 @@ func TestGenerateBatchNeighbors_BrokerStressTargetsConsumerServicesFirst(t *test
 			{ServiceName: "other", CpuUtilization: 0.99, MemoryUtilization: 0.95},
 		},
 	}
-	neighbors := GenerateBatchNeighbors(spec, base, base, stressed)
+	neighbors := GenerateBatchNeighbors(spec, base, base, stressed, nil)
 	if len(neighbors) == 0 {
 		t.Fatal("expected neighbors")
 	}

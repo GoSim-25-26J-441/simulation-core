@@ -427,6 +427,16 @@ message BatchCostWeights {
   double churn = 7;
 }
 
+// BatchSearchDiagnostics summarizes neighbor generation and evaluation outcomes for batch beam search (additive counters).
+message BatchSearchDiagnostics {
+  int32 generated_neighbors = 1;
+  int32 rejected_static_capacity = 2;
+  int32 rejected_bounds = 3;
+  int32 rejected_placement = 4;
+  int32 evaluated_candidates = 5;
+  int32 failed_candidate_evaluations = 6;
+}
+
 message BatchPenaltyWeights {
   double p95 = 1;
   double p99 = 2;
@@ -513,7 +523,7 @@ message Run {
 
   // For optimization runs: the best run ID and score found.
   string best_run_id = 7;
-  // For batch optimization, best_score remains a legacy compatibility scalar containing efficiency only; clients should use batch_recommendation_feasible, batch_violation_score, batch_efficiency_score, and batch_recommendation_summary for the full result.
+  // For batch optimization, best_score remains a legacy compatibility scalar containing efficiency only; clients should use batch_recommendation_feasible, batch_violation_score, batch_efficiency_score, batch_recommendation_summary, and optional batch_search_diagnostics for the full result.
   // For non-batch (hill-climbing) optimization, best_score is the objective value for the best configuration.
   double best_score = 8;
   int32 iterations = 9;
@@ -532,6 +542,9 @@ message Run {
   double batch_efficiency_score = 14;
   // Human-readable summary (e.g. infeasible set empty, least-violating chosen).
   string batch_recommendation_summary = 15;
+
+  // Beam-search diagnostics (neighbor filtering + skipped infeasible evals); unset when not a batch parent run or legacy stores.
+  BatchSearchDiagnostics batch_search_diagnostics = 16;
 }
 
 enum RunStatus {

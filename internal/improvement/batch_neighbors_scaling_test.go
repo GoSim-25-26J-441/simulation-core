@@ -20,7 +20,7 @@ func TestGenerateBatchNeighborsDatabaseNoHorizontalWhenNilScaling(t *testing.T) 
 		},
 	}
 	spec := batchspec.DefaultBatchSpec(base)
-	neighbors := GenerateBatchNeighbors(spec, base, base, nil)
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil, nil)
 	for _, n := range neighbors {
 		for _, svc := range n.Services {
 			if svc.ID == "db" && svc.Replicas != 1 {
@@ -48,7 +48,7 @@ func TestGenerateBatchNeighborsDatabaseHorizontalWhenExplicit(t *testing.T) {
 	spec.AllowedActionsOrdered = []simulationv1.BatchScalingAction{
 		simulationv1.BatchScalingAction_SERVICE_SCALE_OUT,
 	}
-	neighbors := GenerateBatchNeighbors(spec, base, base, nil)
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil, nil)
 	found := false
 	for _, n := range neighbors {
 		if n.Services[0].Replicas > 1 {
@@ -84,7 +84,7 @@ func TestGenerateBatchNeighborsQueueConcurrencyActions(t *testing.T) {
 		simulationv1.BatchScalingAction_QUEUE_SCALE_UP_CONCURRENCY,
 		simulationv1.BatchScalingAction_QUEUE_SCALE_DOWN_CONCURRENCY,
 	}
-	neighbors := GenerateBatchNeighbors(spec, base, base, nil)
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil, nil)
 	var up, down bool
 	for _, n := range neighbors {
 		cc := n.Services[0].Behavior.Queue.ConsumerConcurrency
@@ -125,7 +125,7 @@ func TestGenerateBatchNeighborsTopicSubscriberConcurrencyActions(t *testing.T) {
 		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_UP_CONCURRENCY,
 		simulationv1.BatchScalingAction_TOPIC_SUBSCRIBER_SCALE_DOWN_CONCURRENCY,
 	}
-	neighbors := GenerateBatchNeighbors(spec, base, base, nil)
+	neighbors := GenerateBatchNeighbors(spec, base, base, nil, nil)
 	var up, down bool
 	for _, n := range neighbors {
 		cc := n.Services[1].Behavior.Topic.Subscribers[0].ConsumerConcurrency

@@ -897,3 +897,39 @@ func TestRunStoreSetBatchRecommendation(t *testing.T) {
 		t.Fatal("expected error for unknown run")
 	}
 }
+
+func TestRunStoreSetBatchSearchDiagnostics(t *testing.T) {
+	store := NewRunStore()
+	if _, err := store.Create("run-batch-diag", &simulationv1.RunInput{ScenarioYaml: "hosts: []"}); err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	diag := &simulationv1.BatchSearchDiagnostics{
+		GeneratedNeighbors:         40,
+		RejectedStaticCapacity:     3,
+		RejectedBounds:             2,
+		RejectedPlacement:          7,
+		EvaluatedCandidates:        25,
+		FailedCandidateEvaluations: 4,
+	}
+	if err := store.SetBatchSearchDiagnostics("run-batch-diag", diag); err != nil {
+		t.Fatalf("SetBatchSearchDiagnostics: %v", err)
+	}
+	rec, ok := store.Get("run-batch-diag")
+	if !ok || rec.Run.GetBatchSearchDiagnostics() == nil {
+		t.Fatal("expected diagnostics on run")
+	}
+	got := rec.Run.GetBatchSearchDiagnostics()
+	if got.GetRejectedPlacement() != 7 || got.GetEvaluatedCandidates() != 25 {
+		t.Fatalf("unexpected diagnostics: %+v", got)
+	}
+	if err := store.SetBatchSearchDiagnostics("missing-run", diag); err == nil {
+		t.Fatal("expected error for unknown run")
+	}
+	if err := store.SetBatchSearchDiagnostics("run-batch-diag", nil); err != nil {
+		t.Fatal(err)
+	}
+	rec2, _ := store.Get("run-batch-diag")
+	if rec2.Run.GetBatchSearchDiagnostics() != nil {
+		t.Fatal("expected diagnostics cleared")
+	}
+}

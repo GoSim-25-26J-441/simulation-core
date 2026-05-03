@@ -138,7 +138,7 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 	}
 	sort.Strings(hostIDs)
 	if len(hostIDs) == 0 {
-		return fmt.Errorf("no hosts defined")
+		return fmt.Errorf("%w: no hosts defined", ErrPlacementInfeasible)
 	}
 	hostLoad := make(map[string]struct {
 		cpu float64
@@ -231,8 +231,8 @@ func (m *Manager) InitializeFromScenario(scenario *config.Scenario) error {
 				}
 			}
 			if !placed {
-				return fmt.Errorf("cannot place service %s: insufficient host capacity (each instance needs %.2f CPU cores, %.2f MB memory)",
-					serviceConfig.ID, cpuCores, memoryMB)
+				return fmt.Errorf("%w: cannot place service %s: insufficient host capacity (each instance needs %.2f CPU cores, %.2f MB memory)",
+					ErrPlacementInfeasible, serviceConfig.ID, cpuCores, memoryMB)
 			}
 		}
 	}

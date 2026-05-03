@@ -13,6 +13,7 @@ import (
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/simd"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
@@ -382,7 +383,11 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 				simulationv1.RunStatus_RUN_STATUS_STOPPED:
 				o.mu.Lock()
 				runCtx.Status = RunStatusFailed
-				runCtx.Error = fmt.Errorf("run failed: %s", rec.Run.Error)
+				failErr := fmt.Errorf("run failed: %s", rec.Run.Error)
+				if resource.RunFailureMessageIndicatesPlacementInfeasible(rec.Run.Error) {
+					failErr = fmt.Errorf("%w: %v", resource.ErrPlacementInfeasible, failErr)
+				}
+				runCtx.Error = failErr
 				runCtx.Duration = time.Since(started)
 				runCtx.Reason = rec.Run.Error
 				if strings.Contains(strings.ToLower(rec.Run.Error), "limit") {
@@ -393,7 +398,7 @@ func (o *Orchestrator) evaluateConfigurationMetrics(ctx context.Context, scenari
 				runCtx.CompletedAt = time.Now()
 				o.mu.Unlock()
 				atomic.AddInt32(&o.failedCandidates, 1)
-				return nil, runCtx.Error
+				return nil, failErr
 
 			case simulationv1.RunStatus_RUN_STATUS_RUNNING,
 				simulationv1.RunStatus_RUN_STATUS_PENDING:

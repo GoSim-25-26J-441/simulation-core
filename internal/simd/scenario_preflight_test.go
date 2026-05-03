@@ -75,6 +75,13 @@ func TestValidateScenarioDraft_ValidMinimal(t *testing.T) {
 	}
 }
 
+func TestExtractServiceIDFromPlacementError_WrappedMessage(t *testing.T) {
+	msg := "placement infeasible: cannot place service api-1: insufficient host capacity"
+	if got := extractServiceIDFromPlacementError(msg); got != "api-1" {
+		t.Fatalf("got %q want api-1", got)
+	}
+}
+
 func TestValidateScenarioDraft_PlacementInfeasibleSkipped(t *testing.T) {
 	yaml := strings.TrimSpace(infeasiblePlacementScenarioYAML)
 	draft := ValidateScenarioDraft(yaml)

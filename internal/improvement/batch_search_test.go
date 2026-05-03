@@ -3,6 +3,7 @@ package improvement
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
@@ -143,5 +144,115 @@ func TestRunBatchBeamSearch_BudgetNotExhaustedWhenUnlimited(t *testing.T) {
 	}
 	if res.EffectiveMaxEvaluations != 0 {
 		t.Fatalf("EffectiveMaxEvaluations=%d want 0", res.EffectiveMaxEvaluations)
+	}
+}
+
+func TestRunBatchBeamSearch_SkipsNeighborPlacementErrors(t *testing.T) {
+	base := testBatchScenario()
+	base.Services[0].Replicas = 4
+	refineOff := false
+	pb := &simulationv1.BatchOptimizationConfig{
+		BeamWidth:                 4,
+		MaxSearchDepth:            1,
+		MaxNeighborsPerState:      24,
+		ReevaluationsPerCandidate: 1,
+		EnableLocalRefinement:     &refineOff,
+	}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatalf("ParseBatchSpec: %v", err)
+	}
+	eval := func(sc *config.Scenario) (*simulationv1.RunMetrics, int, error) {
+		if sc.Services[0].Replicas > base.Services[0].Replicas {
+			return nil, 0, fmt.Errorf("resource initialization failed: cannot place service svc1: insufficient host capacity (each instance needs 1.00 CPU cores, 512.00 MB memory)")
+		}
+		return feasibleBatchMetrics(), 1, nil
+	}
+	res, err := RunBatchBeamSearch(context.Background(), spec, base, 0, NewCandidateStore(), eval)
+	if err != nil {
+		t.Fatalf("RunBatchBeamSearch: %v", err)
+	}
+	if res.FailedCandidateEvaluations < 1 {
+		t.Fatalf("FailedCandidateEvaluations=%d want >= 1", res.FailedCandidateEvaluations)
+	}
+	if res.BestScenario != nil && res.BestScenario.Services[0].Replicas > base.Services[0].Replicas {
+		t.Fatalf("best scenario should not be a failing scale-out neighbor")
+	}
+}
+
+func TestBatchSearchDiagnosticsProtoMapsCounts(t *testing.T) {
+	p := BatchSearchDiagnosticsProto(&BatchSearchResult{
+		GeneratedNeighbors:         100,
+		RejectedStaticCapacity:     5,
+		RejectedBounds:             4,
+		RejectedPlacement:          9,
+		EvaluatedCandidates:        42,
+		FailedCandidateEvaluations: 3,
+	})
+	if p == nil || p.GetGeneratedNeighbors() != 100 || p.GetRejectedPlacement() != 9 || p.GetEvaluatedCandidates() != 42 {
+		t.Fatalf("unexpected proto: %+v", p)
+	}
+	if BatchSearchDiagnosticsProto(nil) != nil {
+		t.Fatal("nil input should yield nil proto")
+	}
+}
+
+func TestRunBatchBeamSearch_RealWorldBatchPayloadShapeCompletes(t *testing.T) {
+	base := &config.Scenario{
+		Hosts: []config.Host{
+			{ID: "h1", Cores: 32, MemoryGB: 64},
+			{ID: "h2", Cores: 32, MemoryGB: 64},
+		},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 2, CPUCores: 1, MemoryMB: 512, Model: "cpu", Endpoints: []config.Endpoint{{Path: "/x", MeanCPUMs: 1, NetLatencyMs: config.LatencySpec{Mean: 1}}}},
+		},
+	}
+	actions := make([]simulationv1.BatchScalingAction, 0, 12)
+	for a := simulationv1.BatchScalingAction_SERVICE_SCALE_OUT; a <= simulationv1.BatchScalingAction_HOST_SCALE_DOWN_MEMORY; a++ {
+		actions = append(actions, a)
+	}
+	refineOff := false
+	pb := &simulationv1.BatchOptimizationConfig{
+		AllowedActions:            actions,
+		MaxNeighborsPerState:      24,
+		MaxSearchDepth:            5,
+		BeamWidth:                 8,
+		ReevaluationsPerCandidate: 3,
+		EnableLocalRefinement:     &refineOff,
+	}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatalf("ParseBatchSpec: %v", err)
+	}
+	eval := func(*config.Scenario) (*simulationv1.RunMetrics, int, error) {
+		return feasibleBatchMetrics(), 3, nil
+	}
+	res, err := RunBatchBeamSearch(context.Background(), spec, base, 128, NewCandidateStore(), eval)
+	if err != nil {
+		t.Fatalf("RunBatchBeamSearch: %v", err)
+	}
+	if res.GeneratedNeighbors == 0 && res.EvaluatedCandidates == 0 {
+		t.Fatalf("expected diagnostics populated, got %+v", res)
+	}
+}
+
+func TestRunBatchBeamSearch_BaselinePlacementErrorIsFatal(t *testing.T) {
+	base := testBatchScenario()
+	refineOff := false
+	pb := &simulationv1.BatchOptimizationConfig{
+		EnableLocalRefinement: &refineOff,
+		MaxSearchDepth:        1,
+		MaxNeighborsPerState:  4,
+	}
+	spec, err := batchspec.ParseBatchSpec(pb, base)
+	if err != nil {
+		t.Fatalf("ParseBatchSpec: %v", err)
+	}
+	eval := func(*config.Scenario) (*simulationv1.RunMetrics, int, error) {
+		return nil, 0, fmt.Errorf("resource initialization failed: cannot place service svc1")
+	}
+	_, err = RunBatchBeamSearch(context.Background(), spec, base, 0, NewCandidateStore(), eval)
+	if err == nil {
+		t.Fatal("expected fatal baseline eval error")
 	}
 }

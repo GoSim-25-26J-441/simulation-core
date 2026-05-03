@@ -131,11 +131,12 @@ func ValidateScenarioPreflight(scenarioYAML string) *ScenarioValidationResult {
 }
 
 func extractServiceIDFromPlacementError(msg string) string {
-	const prefix = "cannot place service "
-	if !strings.HasPrefix(msg, prefix) {
+	const needle = "cannot place service "
+	idx := strings.Index(msg, needle)
+	if idx < 0 {
 		return ""
 	}
-	rest := strings.TrimPrefix(msg, prefix)
+	rest := msg[idx+len(needle):]
 	if rest == "" {
 		return ""
 	}

@@ -28,3 +28,5 @@ After editing `proto/simulation/v1/simulation.proto` (or `buf.yaml` / `buf.gen.y
 - **Go import path:** `github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1`
 
 The `go_package` option in `.proto` matches that import path.
+
+Batch optimization exposes optional **`Run.batch_search_diagnostics`** counters in protobuf and HTTP JSON; semantics (especially **`evaluated_candidates`** vs **`iterations`**) are documented in [**Backend Integration — Batch beam search diagnostics**](./BACKEND_INTEGRATION.md#batch-beam-search-diagnostics-batch_search_diagnostics).

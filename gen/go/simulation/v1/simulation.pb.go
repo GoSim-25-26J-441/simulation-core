@@ -2396,6 +2396,91 @@ func (x *BatchCostWeights) GetChurn() float64 {
 	return 0
 }
 
+// BatchSearchDiagnostics summarizes neighbor generation and evaluation outcomes for batch beam search (additive counters).
+type BatchSearchDiagnostics struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	GeneratedNeighbors         int32                  `protobuf:"varint,1,opt,name=generated_neighbors,json=generatedNeighbors,proto3" json:"generated_neighbors,omitempty"`
+	RejectedStaticCapacity     int32                  `protobuf:"varint,2,opt,name=rejected_static_capacity,json=rejectedStaticCapacity,proto3" json:"rejected_static_capacity,omitempty"`
+	RejectedBounds             int32                  `protobuf:"varint,3,opt,name=rejected_bounds,json=rejectedBounds,proto3" json:"rejected_bounds,omitempty"`
+	RejectedPlacement          int32                  `protobuf:"varint,4,opt,name=rejected_placement,json=rejectedPlacement,proto3" json:"rejected_placement,omitempty"`
+	EvaluatedCandidates        int32                  `protobuf:"varint,5,opt,name=evaluated_candidates,json=evaluatedCandidates,proto3" json:"evaluated_candidates,omitempty"`
+	FailedCandidateEvaluations int32                  `protobuf:"varint,6,opt,name=failed_candidate_evaluations,json=failedCandidateEvaluations,proto3" json:"failed_candidate_evaluations,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *BatchSearchDiagnostics) Reset() {
+	*x = BatchSearchDiagnostics{}
+	mi := &file_simulation_v1_simulation_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BatchSearchDiagnostics) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BatchSearchDiagnostics) ProtoMessage() {}
+
+func (x *BatchSearchDiagnostics) ProtoReflect() protoreflect.Message {
+	mi := &file_simulation_v1_simulation_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BatchSearchDiagnostics.ProtoReflect.Descriptor instead.
+func (*BatchSearchDiagnostics) Descriptor() ([]byte, []int) {
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *BatchSearchDiagnostics) GetGeneratedNeighbors() int32 {
+	if x != nil {
+		return x.GeneratedNeighbors
+	}
+	return 0
+}
+
+func (x *BatchSearchDiagnostics) GetRejectedStaticCapacity() int32 {
+	if x != nil {
+		return x.RejectedStaticCapacity
+	}
+	return 0
+}
+
+func (x *BatchSearchDiagnostics) GetRejectedBounds() int32 {
+	if x != nil {
+		return x.RejectedBounds
+	}
+	return 0
+}
+
+func (x *BatchSearchDiagnostics) GetRejectedPlacement() int32 {
+	if x != nil {
+		return x.RejectedPlacement
+	}
+	return 0
+}
+
+func (x *BatchSearchDiagnostics) GetEvaluatedCandidates() int32 {
+	if x != nil {
+		return x.EvaluatedCandidates
+	}
+	return 0
+}
+
+func (x *BatchSearchDiagnostics) GetFailedCandidateEvaluations() int32 {
+	if x != nil {
+		return x.FailedCandidateEvaluations
+	}
+	return 0
+}
+
 type BatchPenaltyWeights struct {
 	state                protoimpl.MessageState `protogen:"open.v1"`
 	P95                  float64                `protobuf:"fixed64,1,opt,name=p95,proto3" json:"p95,omitempty"`
@@ -2424,7 +2509,7 @@ type BatchPenaltyWeights struct {
 
 func (x *BatchPenaltyWeights) Reset() {
 	*x = BatchPenaltyWeights{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[33]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2436,7 +2521,7 @@ func (x *BatchPenaltyWeights) String() string {
 func (*BatchPenaltyWeights) ProtoMessage() {}
 
 func (x *BatchPenaltyWeights) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[33]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2449,7 +2534,7 @@ func (x *BatchPenaltyWeights) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchPenaltyWeights.ProtoReflect.Descriptor instead.
 func (*BatchPenaltyWeights) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{33}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *BatchPenaltyWeights) GetP95() float64 {
@@ -2647,7 +2732,7 @@ type BatchOptimizationConfig struct {
 
 func (x *BatchOptimizationConfig) Reset() {
 	*x = BatchOptimizationConfig{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[34]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2659,7 +2744,7 @@ func (x *BatchOptimizationConfig) String() string {
 func (*BatchOptimizationConfig) ProtoMessage() {}
 
 func (x *BatchOptimizationConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[34]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2672,7 +2757,7 @@ func (x *BatchOptimizationConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchOptimizationConfig.ProtoReflect.Descriptor instead.
 func (*BatchOptimizationConfig) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{34}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *BatchOptimizationConfig) GetSearchStrategy() BatchSearchStrategy {
@@ -3024,13 +3109,15 @@ type Run struct {
 	BatchEfficiencyScore        float64 `protobuf:"fixed64,14,opt,name=batch_efficiency_score,json=batchEfficiencyScore,proto3" json:"batch_efficiency_score,omitempty"`
 	// Human-readable summary (e.g. infeasible set empty, least-violating chosen).
 	BatchRecommendationSummary string `protobuf:"bytes,15,opt,name=batch_recommendation_summary,json=batchRecommendationSummary,proto3" json:"batch_recommendation_summary,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// Beam-search diagnostics (neighbor filtering + skipped infeasible evals); unset when not a batch parent run or legacy stores.
+	BatchSearchDiagnostics *BatchSearchDiagnostics `protobuf:"bytes,16,opt,name=batch_search_diagnostics,json=batchSearchDiagnostics,proto3" json:"batch_search_diagnostics,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *Run) Reset() {
 	*x = Run{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[35]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3042,7 +3129,7 @@ func (x *Run) String() string {
 func (*Run) ProtoMessage() {}
 
 func (x *Run) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[35]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3055,7 +3142,7 @@ func (x *Run) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Run.ProtoReflect.Descriptor instead.
 func (*Run) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{35}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *Run) GetId() string {
@@ -3163,6 +3250,13 @@ func (x *Run) GetBatchRecommendationSummary() string {
 	return ""
 }
 
+func (x *Run) GetBatchSearchDiagnostics() *BatchSearchDiagnostics {
+	if x != nil {
+		return x.BatchSearchDiagnostics
+	}
+	return nil
+}
+
 type RunMetrics struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	TotalRequests      int64                  `protobuf:"varint,1,opt,name=total_requests,json=totalRequests,proto3" json:"total_requests,omitempty"`
@@ -3235,7 +3329,7 @@ type RunMetrics struct {
 
 func (x *RunMetrics) Reset() {
 	*x = RunMetrics{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[36]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3247,7 +3341,7 @@ func (x *RunMetrics) String() string {
 func (*RunMetrics) ProtoMessage() {}
 
 func (x *RunMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[36]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3260,7 +3354,7 @@ func (x *RunMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunMetrics.ProtoReflect.Descriptor instead.
 func (*RunMetrics) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{36}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RunMetrics) GetTotalRequests() int64 {
@@ -3663,7 +3757,7 @@ type EndpointRequestStats struct {
 
 func (x *EndpointRequestStats) Reset() {
 	*x = EndpointRequestStats{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[37]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3675,7 +3769,7 @@ func (x *EndpointRequestStats) String() string {
 func (*EndpointRequestStats) ProtoMessage() {}
 
 func (x *EndpointRequestStats) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[37]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3688,7 +3782,7 @@ func (x *EndpointRequestStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointRequestStats.ProtoReflect.Descriptor instead.
 func (*EndpointRequestStats) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{37}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *EndpointRequestStats) GetServiceName() string {
@@ -3844,7 +3938,7 @@ type InstanceRouteStats struct {
 
 func (x *InstanceRouteStats) Reset() {
 	*x = InstanceRouteStats{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[38]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3856,7 +3950,7 @@ func (x *InstanceRouteStats) String() string {
 func (*InstanceRouteStats) ProtoMessage() {}
 
 func (x *InstanceRouteStats) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[38]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3869,7 +3963,7 @@ func (x *InstanceRouteStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstanceRouteStats.ProtoReflect.Descriptor instead.
 func (*InstanceRouteStats) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{38}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *InstanceRouteStats) GetServiceName() string {
@@ -3918,7 +4012,7 @@ type HostMetrics struct {
 
 func (x *HostMetrics) Reset() {
 	*x = HostMetrics{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[39]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3930,7 +4024,7 @@ func (x *HostMetrics) String() string {
 func (*HostMetrics) ProtoMessage() {}
 
 func (x *HostMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[39]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3943,7 +4037,7 @@ func (x *HostMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostMetrics.ProtoReflect.Descriptor instead.
 func (*HostMetrics) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{39}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *HostMetrics) GetHostId() string {
@@ -3998,7 +4092,7 @@ type ServiceMetrics struct {
 
 func (x *ServiceMetrics) Reset() {
 	*x = ServiceMetrics{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[40]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4010,7 +4104,7 @@ func (x *ServiceMetrics) String() string {
 func (*ServiceMetrics) ProtoMessage() {}
 
 func (x *ServiceMetrics) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[40]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4023,7 +4117,7 @@ func (x *ServiceMetrics) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ServiceMetrics.ProtoReflect.Descriptor instead.
 func (*ServiceMetrics) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{40}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ServiceMetrics) GetServiceName() string {
@@ -4184,7 +4278,7 @@ type RunEvent struct {
 
 func (x *RunEvent) Reset() {
 	*x = RunEvent{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[41]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4196,7 +4290,7 @@ func (x *RunEvent) String() string {
 func (*RunEvent) ProtoMessage() {}
 
 func (x *RunEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[41]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4209,7 +4303,7 @@ func (x *RunEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunEvent.ProtoReflect.Descriptor instead.
 func (*RunEvent) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{41}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *RunEvent) GetAtUnixMs() int64 {
@@ -4307,7 +4401,7 @@ type RunStatusChanged struct {
 
 func (x *RunStatusChanged) Reset() {
 	*x = RunStatusChanged{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[42]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4319,7 +4413,7 @@ func (x *RunStatusChanged) String() string {
 func (*RunStatusChanged) ProtoMessage() {}
 
 func (x *RunStatusChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[42]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4332,7 +4426,7 @@ func (x *RunStatusChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunStatusChanged.ProtoReflect.Descriptor instead.
 func (*RunStatusChanged) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{42}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *RunStatusChanged) GetPrevious() RunStatus {
@@ -4358,7 +4452,7 @@ type MetricsSnapshot struct {
 
 func (x *MetricsSnapshot) Reset() {
 	*x = MetricsSnapshot{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[43]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4370,7 +4464,7 @@ func (x *MetricsSnapshot) String() string {
 func (*MetricsSnapshot) ProtoMessage() {}
 
 func (x *MetricsSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[43]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4383,7 +4477,7 @@ func (x *MetricsSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricsSnapshot.ProtoReflect.Descriptor instead.
 func (*MetricsSnapshot) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{43}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *MetricsSnapshot) GetMetrics() *RunMetrics {
@@ -4409,7 +4503,7 @@ type OptimizationProgress struct {
 
 func (x *OptimizationProgress) Reset() {
 	*x = OptimizationProgress{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[44]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4421,7 +4515,7 @@ func (x *OptimizationProgress) String() string {
 func (*OptimizationProgress) ProtoMessage() {}
 
 func (x *OptimizationProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[44]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4434,7 +4528,7 @@ func (x *OptimizationProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptimizationProgress.ProtoReflect.Descriptor instead.
 func (*OptimizationProgress) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{44}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *OptimizationProgress) GetIteration() int32 {
@@ -4488,7 +4582,7 @@ type OptimizationStep struct {
 
 func (x *OptimizationStep) Reset() {
 	*x = OptimizationStep{}
-	mi := &file_simulation_v1_simulation_proto_msgTypes[45]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4500,7 +4594,7 @@ func (x *OptimizationStep) String() string {
 func (*OptimizationStep) ProtoMessage() {}
 
 func (x *OptimizationStep) ProtoReflect() protoreflect.Message {
-	mi := &file_simulation_v1_simulation_proto_msgTypes[45]
+	mi := &file_simulation_v1_simulation_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4513,7 +4607,7 @@ func (x *OptimizationStep) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OptimizationStep.ProtoReflect.Descriptor instead.
 func (*OptimizationStep) Descriptor() ([]byte, []int) {
-	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{45}
+	return file_simulation_v1_simulation_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *OptimizationStep) GetIterationIndex() int32 {
@@ -4719,7 +4813,14 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"\x05hosts\x18\x04 \x01(\x01R\x05hosts\x12\x19\n" +
 	"\bhost_cpu\x18\x05 \x01(\x01R\ahostCpu\x12$\n" +
 	"\x0ehost_memory_gb\x18\x06 \x01(\x01R\fhostMemoryGb\x12\x14\n" +
-	"\x05churn\x18\a \x01(\x01R\x05churn\"\xcd\x05\n" +
+	"\x05churn\x18\a \x01(\x01R\x05churn\"\xd0\x02\n" +
+	"\x16BatchSearchDiagnostics\x12/\n" +
+	"\x13generated_neighbors\x18\x01 \x01(\x05R\x12generatedNeighbors\x128\n" +
+	"\x18rejected_static_capacity\x18\x02 \x01(\x05R\x16rejectedStaticCapacity\x12'\n" +
+	"\x0frejected_bounds\x18\x03 \x01(\x05R\x0erejectedBounds\x12-\n" +
+	"\x12rejected_placement\x18\x04 \x01(\x05R\x11rejectedPlacement\x121\n" +
+	"\x14evaluated_candidates\x18\x05 \x01(\x05R\x13evaluatedCandidates\x12@\n" +
+	"\x1cfailed_candidate_evaluations\x18\x06 \x01(\x05R\x1afailedCandidateEvaluations\"\xcd\x05\n" +
 	"\x13BatchPenaltyWeights\x12\x10\n" +
 	"\x03p95\x18\x01 \x01(\x01R\x03p95\x12\x10\n" +
 	"\x03p99\x18\x02 \x01(\x01R\x03p99\x12\x1d\n" +
@@ -4802,7 +4903,7 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"\x10_freeze_workloadB\x12\n" +
 	"\x10_freeze_policiesB\x1a\n" +
 	"\x18_enable_local_refinementB \n" +
-	"\x1e_deterministic_candidate_seeds\"\x95\x05\n" +
+	"\x1e_deterministic_candidate_seeds\"\xf6\x05\n" +
 	"\x03Run\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x120\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x18.simulation.v1.RunStatusR\x06status\x12+\n" +
@@ -4822,7 +4923,8 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"\x1dbatch_recommendation_feasible\x18\f \x01(\bR\x1bbatchRecommendationFeasible\x122\n" +
 	"\x15batch_violation_score\x18\r \x01(\x01R\x13batchViolationScore\x124\n" +
 	"\x16batch_efficiency_score\x18\x0e \x01(\x01R\x14batchEfficiencyScore\x12@\n" +
-	"\x1cbatch_recommendation_summary\x18\x0f \x01(\tR\x1abatchRecommendationSummary\"\x82\x17\n" +
+	"\x1cbatch_recommendation_summary\x18\x0f \x01(\tR\x1abatchRecommendationSummary\x12_\n" +
+	"\x18batch_search_diagnostics\x18\x10 \x01(\v2%.simulation.v1.BatchSearchDiagnosticsR\x16batchSearchDiagnostics\"\x82\x17\n" +
 	"\n" +
 	"RunMetrics\x12%\n" +
 	"\x0etotal_requests\x18\x01 \x01(\x03R\rtotalRequests\x12/\n" +
@@ -5039,7 +5141,7 @@ func file_simulation_v1_simulation_proto_rawDescGZIP() []byte {
 }
 
 var file_simulation_v1_simulation_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_simulation_v1_simulation_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
+var file_simulation_v1_simulation_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_simulation_v1_simulation_proto_goTypes = []any{
 	(BatchSearchStrategy)(0),               // 0: simulation.v1.BatchSearchStrategy
 	(BatchScalingAction)(0),                // 1: simulation.v1.BatchScalingAction
@@ -5077,40 +5179,41 @@ var file_simulation_v1_simulation_proto_goTypes = []any{
 	(*UtilizationBand)(nil),                // 33: simulation.v1.UtilizationBand
 	(*BatchStepSizes)(nil),                 // 34: simulation.v1.BatchStepSizes
 	(*BatchCostWeights)(nil),               // 35: simulation.v1.BatchCostWeights
-	(*BatchPenaltyWeights)(nil),            // 36: simulation.v1.BatchPenaltyWeights
-	(*BatchOptimizationConfig)(nil),        // 37: simulation.v1.BatchOptimizationConfig
-	(*Run)(nil),                            // 38: simulation.v1.Run
-	(*RunMetrics)(nil),                     // 39: simulation.v1.RunMetrics
-	(*EndpointRequestStats)(nil),           // 40: simulation.v1.EndpointRequestStats
-	(*InstanceRouteStats)(nil),             // 41: simulation.v1.InstanceRouteStats
-	(*HostMetrics)(nil),                    // 42: simulation.v1.HostMetrics
-	(*ServiceMetrics)(nil),                 // 43: simulation.v1.ServiceMetrics
-	(*RunEvent)(nil),                       // 44: simulation.v1.RunEvent
-	(*RunStatusChanged)(nil),               // 45: simulation.v1.RunStatusChanged
-	(*MetricsSnapshot)(nil),                // 46: simulation.v1.MetricsSnapshot
-	(*OptimizationProgress)(nil),           // 47: simulation.v1.OptimizationProgress
-	(*OptimizationStep)(nil),               // 48: simulation.v1.OptimizationStep
+	(*BatchSearchDiagnostics)(nil),         // 36: simulation.v1.BatchSearchDiagnostics
+	(*BatchPenaltyWeights)(nil),            // 37: simulation.v1.BatchPenaltyWeights
+	(*BatchOptimizationConfig)(nil),        // 38: simulation.v1.BatchOptimizationConfig
+	(*Run)(nil),                            // 39: simulation.v1.Run
+	(*RunMetrics)(nil),                     // 40: simulation.v1.RunMetrics
+	(*EndpointRequestStats)(nil),           // 41: simulation.v1.EndpointRequestStats
+	(*InstanceRouteStats)(nil),             // 42: simulation.v1.InstanceRouteStats
+	(*HostMetrics)(nil),                    // 43: simulation.v1.HostMetrics
+	(*ServiceMetrics)(nil),                 // 44: simulation.v1.ServiceMetrics
+	(*RunEvent)(nil),                       // 45: simulation.v1.RunEvent
+	(*RunStatusChanged)(nil),               // 46: simulation.v1.RunStatusChanged
+	(*MetricsSnapshot)(nil),                // 47: simulation.v1.MetricsSnapshot
+	(*OptimizationProgress)(nil),           // 48: simulation.v1.OptimizationProgress
+	(*OptimizationStep)(nil),               // 49: simulation.v1.OptimizationStep
 }
 var file_simulation_v1_simulation_proto_depIdxs = []int32{
 	31, // 0: simulation.v1.CreateRunRequest.input:type_name -> simulation.v1.RunInput
-	38, // 1: simulation.v1.CreateRunResponse.run:type_name -> simulation.v1.Run
-	38, // 2: simulation.v1.StartRunResponse.run:type_name -> simulation.v1.Run
-	38, // 3: simulation.v1.StopRunResponse.run:type_name -> simulation.v1.Run
-	38, // 4: simulation.v1.GetRunResponse.run:type_name -> simulation.v1.Run
-	38, // 5: simulation.v1.ListRunsResponse.runs:type_name -> simulation.v1.Run
-	39, // 6: simulation.v1.GetRunMetricsResponse.metrics:type_name -> simulation.v1.RunMetrics
-	44, // 7: simulation.v1.StreamRunEventsResponse.event:type_name -> simulation.v1.RunEvent
-	38, // 8: simulation.v1.UpdateWorkloadRateResponse.run:type_name -> simulation.v1.Run
+	39, // 1: simulation.v1.CreateRunResponse.run:type_name -> simulation.v1.Run
+	39, // 2: simulation.v1.StartRunResponse.run:type_name -> simulation.v1.Run
+	39, // 3: simulation.v1.StopRunResponse.run:type_name -> simulation.v1.Run
+	39, // 4: simulation.v1.GetRunResponse.run:type_name -> simulation.v1.Run
+	39, // 5: simulation.v1.ListRunsResponse.runs:type_name -> simulation.v1.Run
+	40, // 6: simulation.v1.GetRunMetricsResponse.metrics:type_name -> simulation.v1.RunMetrics
+	45, // 7: simulation.v1.StreamRunEventsResponse.event:type_name -> simulation.v1.RunEvent
+	39, // 8: simulation.v1.UpdateWorkloadRateResponse.run:type_name -> simulation.v1.Run
 	20, // 9: simulation.v1.UpdateRunConfigurationRequest.services:type_name -> simulation.v1.ServiceReplicasUpdate
-	38, // 10: simulation.v1.UpdateRunConfigurationResponse.run:type_name -> simulation.v1.Run
+	39, // 10: simulation.v1.UpdateRunConfigurationResponse.run:type_name -> simulation.v1.Run
 	26, // 11: simulation.v1.GetRunConfigurationResponse.configuration:type_name -> simulation.v1.RunConfiguration
-	38, // 12: simulation.v1.RenewOnlineLeaseResponse.run:type_name -> simulation.v1.Run
+	39, // 12: simulation.v1.RenewOnlineLeaseResponse.run:type_name -> simulation.v1.Run
 	28, // 13: simulation.v1.RunConfiguration.services:type_name -> simulation.v1.ServiceConfigEntry
 	29, // 14: simulation.v1.RunConfiguration.workload:type_name -> simulation.v1.WorkloadPatternEntry
 	30, // 15: simulation.v1.RunConfiguration.hosts:type_name -> simulation.v1.HostConfigEntry
 	27, // 16: simulation.v1.RunConfiguration.placements:type_name -> simulation.v1.InstancePlacementEntry
 	32, // 17: simulation.v1.RunInput.optimization:type_name -> simulation.v1.OptimizationConfig
-	37, // 18: simulation.v1.OptimizationConfig.batch:type_name -> simulation.v1.BatchOptimizationConfig
+	38, // 18: simulation.v1.OptimizationConfig.batch:type_name -> simulation.v1.BatchOptimizationConfig
 	0,  // 19: simulation.v1.BatchOptimizationConfig.search_strategy:type_name -> simulation.v1.BatchSearchStrategy
 	1,  // 20: simulation.v1.BatchOptimizationConfig.allowed_actions:type_name -> simulation.v1.BatchScalingAction
 	33, // 21: simulation.v1.BatchOptimizationConfig.service_cpu_utilization_band:type_name -> simulation.v1.UtilizationBand
@@ -5119,48 +5222,49 @@ var file_simulation_v1_simulation_proto_depIdxs = []int32{
 	33, // 24: simulation.v1.BatchOptimizationConfig.host_memory_utilization_band:type_name -> simulation.v1.UtilizationBand
 	34, // 25: simulation.v1.BatchOptimizationConfig.step_sizes:type_name -> simulation.v1.BatchStepSizes
 	35, // 26: simulation.v1.BatchOptimizationConfig.cost_weights:type_name -> simulation.v1.BatchCostWeights
-	36, // 27: simulation.v1.BatchOptimizationConfig.penalty_weights:type_name -> simulation.v1.BatchPenaltyWeights
+	37, // 27: simulation.v1.BatchOptimizationConfig.penalty_weights:type_name -> simulation.v1.BatchPenaltyWeights
 	2,  // 28: simulation.v1.Run.status:type_name -> simulation.v1.RunStatus
-	43, // 29: simulation.v1.RunMetrics.service_metrics:type_name -> simulation.v1.ServiceMetrics
-	42, // 30: simulation.v1.RunMetrics.host_metrics:type_name -> simulation.v1.HostMetrics
-	40, // 31: simulation.v1.RunMetrics.endpoint_request_stats:type_name -> simulation.v1.EndpointRequestStats
-	41, // 32: simulation.v1.RunMetrics.instance_route_stats:type_name -> simulation.v1.InstanceRouteStats
-	45, // 33: simulation.v1.RunEvent.status_changed:type_name -> simulation.v1.RunStatusChanged
-	46, // 34: simulation.v1.RunEvent.metrics_snapshot:type_name -> simulation.v1.MetricsSnapshot
-	47, // 35: simulation.v1.RunEvent.optimization_progress:type_name -> simulation.v1.OptimizationProgress
-	48, // 36: simulation.v1.RunEvent.optimization_step:type_name -> simulation.v1.OptimizationStep
-	2,  // 37: simulation.v1.RunStatusChanged.previous:type_name -> simulation.v1.RunStatus
-	2,  // 38: simulation.v1.RunStatusChanged.current:type_name -> simulation.v1.RunStatus
-	39, // 39: simulation.v1.MetricsSnapshot.metrics:type_name -> simulation.v1.RunMetrics
-	26, // 40: simulation.v1.OptimizationStep.previous_config:type_name -> simulation.v1.RunConfiguration
-	26, // 41: simulation.v1.OptimizationStep.current_config:type_name -> simulation.v1.RunConfiguration
-	3,  // 42: simulation.v1.SimulationService.CreateRun:input_type -> simulation.v1.CreateRunRequest
-	5,  // 43: simulation.v1.SimulationService.StartRun:input_type -> simulation.v1.StartRunRequest
-	7,  // 44: simulation.v1.SimulationService.StopRun:input_type -> simulation.v1.StopRunRequest
-	9,  // 45: simulation.v1.SimulationService.GetRun:input_type -> simulation.v1.GetRunRequest
-	11, // 46: simulation.v1.SimulationService.ListRuns:input_type -> simulation.v1.ListRunsRequest
-	13, // 47: simulation.v1.SimulationService.GetRunMetrics:input_type -> simulation.v1.GetRunMetricsRequest
-	15, // 48: simulation.v1.SimulationService.StreamRunEvents:input_type -> simulation.v1.StreamRunEventsRequest
-	17, // 49: simulation.v1.SimulationService.UpdateWorkloadRate:input_type -> simulation.v1.UpdateWorkloadRateRequest
-	19, // 50: simulation.v1.SimulationService.UpdateRunConfiguration:input_type -> simulation.v1.UpdateRunConfigurationRequest
-	22, // 51: simulation.v1.SimulationService.GetRunConfiguration:input_type -> simulation.v1.GetRunConfigurationRequest
-	24, // 52: simulation.v1.SimulationService.RenewOnlineLease:input_type -> simulation.v1.RenewOnlineLeaseRequest
-	4,  // 53: simulation.v1.SimulationService.CreateRun:output_type -> simulation.v1.CreateRunResponse
-	6,  // 54: simulation.v1.SimulationService.StartRun:output_type -> simulation.v1.StartRunResponse
-	8,  // 55: simulation.v1.SimulationService.StopRun:output_type -> simulation.v1.StopRunResponse
-	10, // 56: simulation.v1.SimulationService.GetRun:output_type -> simulation.v1.GetRunResponse
-	12, // 57: simulation.v1.SimulationService.ListRuns:output_type -> simulation.v1.ListRunsResponse
-	14, // 58: simulation.v1.SimulationService.GetRunMetrics:output_type -> simulation.v1.GetRunMetricsResponse
-	16, // 59: simulation.v1.SimulationService.StreamRunEvents:output_type -> simulation.v1.StreamRunEventsResponse
-	18, // 60: simulation.v1.SimulationService.UpdateWorkloadRate:output_type -> simulation.v1.UpdateWorkloadRateResponse
-	21, // 61: simulation.v1.SimulationService.UpdateRunConfiguration:output_type -> simulation.v1.UpdateRunConfigurationResponse
-	23, // 62: simulation.v1.SimulationService.GetRunConfiguration:output_type -> simulation.v1.GetRunConfigurationResponse
-	25, // 63: simulation.v1.SimulationService.RenewOnlineLease:output_type -> simulation.v1.RenewOnlineLeaseResponse
-	53, // [53:64] is the sub-list for method output_type
-	42, // [42:53] is the sub-list for method input_type
-	42, // [42:42] is the sub-list for extension type_name
-	42, // [42:42] is the sub-list for extension extendee
-	0,  // [0:42] is the sub-list for field type_name
+	36, // 29: simulation.v1.Run.batch_search_diagnostics:type_name -> simulation.v1.BatchSearchDiagnostics
+	44, // 30: simulation.v1.RunMetrics.service_metrics:type_name -> simulation.v1.ServiceMetrics
+	43, // 31: simulation.v1.RunMetrics.host_metrics:type_name -> simulation.v1.HostMetrics
+	41, // 32: simulation.v1.RunMetrics.endpoint_request_stats:type_name -> simulation.v1.EndpointRequestStats
+	42, // 33: simulation.v1.RunMetrics.instance_route_stats:type_name -> simulation.v1.InstanceRouteStats
+	46, // 34: simulation.v1.RunEvent.status_changed:type_name -> simulation.v1.RunStatusChanged
+	47, // 35: simulation.v1.RunEvent.metrics_snapshot:type_name -> simulation.v1.MetricsSnapshot
+	48, // 36: simulation.v1.RunEvent.optimization_progress:type_name -> simulation.v1.OptimizationProgress
+	49, // 37: simulation.v1.RunEvent.optimization_step:type_name -> simulation.v1.OptimizationStep
+	2,  // 38: simulation.v1.RunStatusChanged.previous:type_name -> simulation.v1.RunStatus
+	2,  // 39: simulation.v1.RunStatusChanged.current:type_name -> simulation.v1.RunStatus
+	40, // 40: simulation.v1.MetricsSnapshot.metrics:type_name -> simulation.v1.RunMetrics
+	26, // 41: simulation.v1.OptimizationStep.previous_config:type_name -> simulation.v1.RunConfiguration
+	26, // 42: simulation.v1.OptimizationStep.current_config:type_name -> simulation.v1.RunConfiguration
+	3,  // 43: simulation.v1.SimulationService.CreateRun:input_type -> simulation.v1.CreateRunRequest
+	5,  // 44: simulation.v1.SimulationService.StartRun:input_type -> simulation.v1.StartRunRequest
+	7,  // 45: simulation.v1.SimulationService.StopRun:input_type -> simulation.v1.StopRunRequest
+	9,  // 46: simulation.v1.SimulationService.GetRun:input_type -> simulation.v1.GetRunRequest
+	11, // 47: simulation.v1.SimulationService.ListRuns:input_type -> simulation.v1.ListRunsRequest
+	13, // 48: simulation.v1.SimulationService.GetRunMetrics:input_type -> simulation.v1.GetRunMetricsRequest
+	15, // 49: simulation.v1.SimulationService.StreamRunEvents:input_type -> simulation.v1.StreamRunEventsRequest
+	17, // 50: simulation.v1.SimulationService.UpdateWorkloadRate:input_type -> simulation.v1.UpdateWorkloadRateRequest
+	19, // 51: simulation.v1.SimulationService.UpdateRunConfiguration:input_type -> simulation.v1.UpdateRunConfigurationRequest
+	22, // 52: simulation.v1.SimulationService.GetRunConfiguration:input_type -> simulation.v1.GetRunConfigurationRequest
+	24, // 53: simulation.v1.SimulationService.RenewOnlineLease:input_type -> simulation.v1.RenewOnlineLeaseRequest
+	4,  // 54: simulation.v1.SimulationService.CreateRun:output_type -> simulation.v1.CreateRunResponse
+	6,  // 55: simulation.v1.SimulationService.StartRun:output_type -> simulation.v1.StartRunResponse
+	8,  // 56: simulation.v1.SimulationService.StopRun:output_type -> simulation.v1.StopRunResponse
+	10, // 57: simulation.v1.SimulationService.GetRun:output_type -> simulation.v1.GetRunResponse
+	12, // 58: simulation.v1.SimulationService.ListRuns:output_type -> simulation.v1.ListRunsResponse
+	14, // 59: simulation.v1.SimulationService.GetRunMetrics:output_type -> simulation.v1.GetRunMetricsResponse
+	16, // 60: simulation.v1.SimulationService.StreamRunEvents:output_type -> simulation.v1.StreamRunEventsResponse
+	18, // 61: simulation.v1.SimulationService.UpdateWorkloadRate:output_type -> simulation.v1.UpdateWorkloadRateResponse
+	21, // 62: simulation.v1.SimulationService.UpdateRunConfiguration:output_type -> simulation.v1.UpdateRunConfigurationResponse
+	23, // 63: simulation.v1.SimulationService.GetRunConfiguration:output_type -> simulation.v1.GetRunConfigurationResponse
+	25, // 64: simulation.v1.SimulationService.RenewOnlineLease:output_type -> simulation.v1.RenewOnlineLeaseResponse
+	54, // [54:65] is the sub-list for method output_type
+	43, // [43:54] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_simulation_v1_simulation_proto_init() }
@@ -5168,9 +5272,9 @@ func file_simulation_v1_simulation_proto_init() {
 	if File_simulation_v1_simulation_proto != nil {
 		return
 	}
-	file_simulation_v1_simulation_proto_msgTypes[34].OneofWrappers = []any{}
-	file_simulation_v1_simulation_proto_msgTypes[37].OneofWrappers = []any{}
-	file_simulation_v1_simulation_proto_msgTypes[41].OneofWrappers = []any{
+	file_simulation_v1_simulation_proto_msgTypes[35].OneofWrappers = []any{}
+	file_simulation_v1_simulation_proto_msgTypes[38].OneofWrappers = []any{}
+	file_simulation_v1_simulation_proto_msgTypes[42].OneofWrappers = []any{
 		(*RunEvent_StatusChanged)(nil),
 		(*RunEvent_MetricsSnapshot)(nil),
 		(*RunEvent_OptimizationProgress)(nil),
@@ -5182,7 +5286,7 @@ func file_simulation_v1_simulation_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_simulation_v1_simulation_proto_rawDesc), len(file_simulation_v1_simulation_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   46,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

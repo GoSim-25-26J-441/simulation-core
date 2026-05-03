@@ -157,7 +157,8 @@ func ComputeInfraCostWeighted(s *config.Scenario, w *simulationv1.BatchCostWeigh
 		w.HostMemoryGb*float64(hostMem)
 }
 
-// ComputeChurn L1 normalized distance from baseline (replicas, CPU, mem per service; host count).
+// ComputeChurn L1 normalized distance from baseline (replicas, CPU, mem per service; host count;
+// per-host CPU and memory on matching host IDs).
 func ComputeChurn(base, cur *config.Scenario) float64 {
 	if base == nil || cur == nil {
 		return 0
@@ -176,6 +177,24 @@ func ComputeChurn(base, cur *config.Scenario) float64 {
 		sum += math.Abs(c.MemoryMB-b.MemoryMB) / math.Max(128, b.MemoryMB)
 	}
 	sum += math.Abs(float64(len(cur.Hosts)-len(base.Hosts))) / math.Max(1, float64(len(base.Hosts)))
+
+	baseHosts := hostsByID(base.Hosts)
+	for _, ch := range cur.Hosts {
+		bh, ok := baseHosts[ch.ID]
+		if !ok {
+			continue
+		}
+		sum += math.Abs(float64(ch.Cores-bh.Cores)) / math.Max(1, float64(bh.Cores))
+		gbB := bh.MemoryGB
+		if gbB < 1 {
+			gbB = 16
+		}
+		gbC := ch.MemoryGB
+		if gbC < 1 {
+			gbC = 16
+		}
+		sum += math.Abs(float64(gbC-gbB)) / math.Max(1, float64(gbB))
+	}
 	return sum
 }
 
