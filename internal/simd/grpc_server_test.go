@@ -712,7 +712,8 @@ workload:
 	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
 		Input: &simulationv1.RunInput{
 			ScenarioYaml: validScenario,
-			DurationMs:   1000,
+			DurationMs:   2000,
+			RealTimeMode: true, // discrete-event mode finishes ~1s sim in milliseconds wall-clock; keep RUNNING for update
 		},
 	})
 	if err != nil {
@@ -722,6 +723,7 @@ workload:
 	if _, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: createResp.Run.Id}); err != nil {
 		t.Fatalf("StartRun error: %v", err)
 	}
+	defer func() { _, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id}) }()
 
 	// Wait until executor live config is available (or bail if run already terminal).
 	deadline := time.Now().Add(2 * time.Second)

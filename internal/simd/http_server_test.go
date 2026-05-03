@@ -2293,7 +2293,8 @@ func TestHTTPServerUpdateRunConfigurationRejectsMissingServiceID(t *testing.T) {
 
 	input := &simulationv1.RunInput{
 		ScenarioYaml: strings.Replace(testScenarioYAML, "cores: 2", "cores: 8", 1),
-		DurationMs:   5000,
+		DurationMs:   2000,
+		RealTimeMode: true, // discrete-time sim finishes in ~milliseconds wall-clock; keep run RUNNING for PATCH
 	}
 	rec, err := store.Create("run-missing-svc-id", input)
 	if err != nil {
@@ -2439,7 +2440,8 @@ func TestHTTPServerUpdateRunConfigurationUnknownServiceReturnsError(t *testing.T
 
 	input := &simulationv1.RunInput{
 		ScenarioYaml: strings.Replace(testScenarioYAML, "cores: 2", "cores: 8", 1),
-		DurationMs:   5000,
+		DurationMs:   2000,
+		RealTimeMode: true,
 	}
 	rec, err := store.Create("run-unknown-service", input)
 	if err != nil {
@@ -2485,7 +2487,8 @@ func TestHTTPServerUpdateRunConfigurationUnknownWorkloadPatternReturnsError(t *t
 
 	input := &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   5000,
+		DurationMs:   2000,
+		RealTimeMode: true,
 	}
 	rec, err := store.Create("run-unknown-pattern", input)
 	if err != nil {
@@ -2531,7 +2534,8 @@ func TestHTTPServerUpdateRunConfigurationPoliciesOnlySuccess(t *testing.T) {
 
 	input := &simulationv1.RunInput{
 		ScenarioYaml: testScenarioYAML,
-		DurationMs:   5000,
+		DurationMs:   2000,
+		RealTimeMode: true,
 	}
 	rec, err := store.Create("run-policies-only", input)
 	if err != nil {
