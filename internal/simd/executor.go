@@ -608,6 +608,30 @@ func (e *RunExecutor) runOptimization(ctx context.Context, runID string) {
 	}
 }
 
+// applyOnlineOptimizationFinalResult sets best_run_id, best_score, iterations, and candidate_run_ids for a
+// single-run online optimization: preserves live progress score/iteration from SetOptimizationProgress, uses
+// the larger of progress iterations vs optimization history length, and keeps candidates pointing at this run.
+func (e *RunExecutor) applyOnlineOptimizationFinalResult(runID string) error {
+	rec, ok := e.store.Get(runID)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+	bestScore := rec.Run.BestScore
+	histLen := len(rec.OptimizationHistory)
+	var histSteps int32
+	switch {
+	case histLen > math.MaxInt32:
+		histSteps = math.MaxInt32
+	default:
+		histSteps = int32(histLen)
+	}
+	iterations := rec.Run.Iterations
+	if histSteps > iterations {
+		iterations = histSteps
+	}
+	return e.store.SetOptimizationResult(runID, runID, bestScore, iterations, []string{runID})
+}
+
 // finalizeOnlineOptimizationRun aggregates metrics and marks the run COMPLETED with an optional online_completion_reason.
 // simDuration, when positive, overrides aggregate and ingress throughput to use simulated time (not wall-clock collector duration).
 func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *config.Scenario, rm *resource.Manager, metricsCollector *metrics.Collector, onlineReason string, simDuration time.Duration) {
@@ -639,12 +663,7 @@ func (e *RunExecutor) finalizeOnlineOptimizationRun(runID string, scenario *conf
 	if !ok || rec.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
 		return
 	}
-	n := len(rec.OptimizationHistory)
-	steps := int32(n)
-	if n > math.MaxInt32 {
-		steps = math.MaxInt32
-	}
-	if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
+	if err := e.applyOnlineOptimizationFinalResult(runID); err != nil {
 		logger.Error("failed to set optimization result for online run", "run_id", runID, "error", err)
 	}
 	e.snapshotFinalConfiguration(runID)
@@ -881,12 +900,7 @@ func (e *RunExecutor) runOnlineOptimization(ctx context.Context, runID string) {
 				}
 
 				// Set optimization result so callback includes best_run_id and top_candidates (self).
-				n := len(rec.OptimizationHistory)
-				steps := int32(n)
-				if n > math.MaxInt32 {
-					steps = math.MaxInt32
-				}
-				if err := e.store.SetOptimizationResult(runID, runID, 0, steps, []string{runID}); err != nil {
+				if err := e.applyOnlineOptimizationFinalResult(runID); err != nil {
 					logger.Error("failed to set optimization result for stopped online run", "run_id", runID, "error", err)
 				}
 

@@ -2151,3 +2151,203 @@ workload:
 		t.Fatalf("expected failed run state, got %+v", rec)
 	}
 }
+
+func TestApplyOnlineOptimizationFinalResultPreservesBestScoreAndCandidates(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "online-apply-result"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: `hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu`,
+		DurationMs: 0,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	store.SetOptimizationProgress(runID, 2, 0.72)
+	if err := exec.applyOnlineOptimizationFinalResult(runID); err != nil {
+		t.Fatalf("applyOnlineOptimizationFinalResult: %v", err)
+	}
+	rec, ok := store.Get(runID)
+	if !ok {
+		t.Fatal("run missing")
+	}
+	if rec.Run.BestScore != 0.72 {
+		t.Fatalf("BestScore=%v want 0.72", rec.Run.BestScore)
+	}
+	if rec.Run.Iterations != 2 {
+		t.Fatalf("Iterations=%d want 2", rec.Run.Iterations)
+	}
+	if rec.Run.BestRunId != runID {
+		t.Fatalf("BestRunId=%q want %q", rec.Run.BestRunId, runID)
+	}
+	if len(rec.Run.CandidateRunIds) != 1 || rec.Run.CandidateRunIds[0] != runID {
+		t.Fatalf("CandidateRunIds=%v want [%s]", rec.Run.CandidateRunIds, runID)
+	}
+}
+
+func TestApplyOnlineOptimizationFinalResultUsesMaxOfHistoryAndProgressIterations(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "online-apply-iter"
+	_, err := store.Create(runID, &simulationv1.RunInput{
+		ScenarioYaml: `hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu`,
+		DurationMs: 0,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	store.SetOptimizationProgress(runID, 2, 0.5)
+	for i := int32(1); i <= 4; i++ {
+		if err := store.AppendOptimizationStep(runID, &simulationv1.OptimizationStep{IterationIndex: i, Reason: "scale"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := exec.applyOnlineOptimizationFinalResult(runID); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := store.Get(runID)
+	if rec.Run.Iterations != 4 {
+		t.Fatalf("Iterations=%d want 4 (history beats progress)", rec.Run.Iterations)
+	}
+
+	store2 := NewRunStore()
+	exec2 := NewRunExecutor(store2, nil)
+	runID2 := "online-apply-iter2"
+	_, err = store2.Create(runID2, &simulationv1.RunInput{
+		ScenarioYaml: `hosts:
+  - id: host-1
+    cores: 2
+services:
+  - id: svc1
+    replicas: 1
+    model: cpu`,
+		DurationMs: 0,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:             true,
+			TargetP95LatencyMs: 50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	store2.SetOptimizationProgress(runID2, 7, 0.1)
+	if err := store2.AppendOptimizationStep(runID2, &simulationv1.OptimizationStep{IterationIndex: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec2.applyOnlineOptimizationFinalResult(runID2); err != nil {
+		t.Fatal(err)
+	}
+	rec2, _ := store2.Get(runID2)
+	if rec2.Run.Iterations != 7 {
+		t.Fatalf("Iterations=%d want 7 (progress beats history)", rec2.Run.Iterations)
+	}
+}
+
+func TestApplyOnlineOptimizationFinalResultRunNotFound(t *testing.T) {
+	exec := NewRunExecutor(NewRunStore(), nil)
+	err := exec.applyOnlineOptimizationFinalResult("does-not-exist")
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("want ErrRunNotFound, got %v", err)
+	}
+}
+
+func TestOnlineCpuUtilizationPreservedBestScoreAfterFinalResultApply(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	runID := "online-cpu-final-score"
+	input := &simulationv1.RunInput{
+		ScenarioYaml: "hosts:\n  - id: host-1\n    cores: 4\nservices:\n  - id: svc1\n    replicas: 1\n    model: cpu\n",
+		DurationMs:   0,
+		Optimization: &simulationv1.OptimizationConfig{
+			Online:                    true,
+			TargetP95LatencyMs:        50.0,
+			ControlIntervalMs:         15,
+			OptimizationTargetPrimary: "cpu_utilization",
+		},
+	}
+	recCreate, err := store.Create(runID, input)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	scenario := &config.Scenario{
+		Hosts: []config.Host{{ID: "host-1", Cores: 4}},
+		Services: []config.Service{
+			{ID: "svc1", Replicas: 1, Model: "cpu", Endpoints: []config.Endpoint{{Path: "/test", MeanCPUMs: 10, CPUSigmaMs: 2}}},
+		},
+	}
+	rm := resource.NewManager()
+	if err := rm.InitializeFromScenario(scenario); err != nil {
+		t.Fatal(err)
+	}
+	collector := metrics.NewCollector()
+	collector.Start()
+	svcLabels := metrics.CreateServiceLabels("svc1")
+	now := time.Now()
+	for i := 0; i < 20; i++ {
+		ts := now.Add(time.Duration(i) * time.Millisecond)
+		recordCPUUtilizationAllSvc1Instances(t, rm, collector, 0.35, ts)
+		metrics.RecordLatency(collector, 10.0, ts, svcLabels)
+	}
+	exec.mu.Lock()
+	exec.resourceManagers[runID] = rm
+	exec.mu.Unlock()
+	opt := &simulationv1.OptimizationConfig{
+		Online:                    true,
+		TargetP95LatencyMs:        50.0,
+		ControlIntervalMs:         15,
+		OptimizationTargetPrimary: "cpu_utilization",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	state := mustScenarioState(t, scenario, rm, collector)
+	go exec.runOnlineController(ctx, runID, scenario, collector, opt, rm, state)
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	time.Sleep(30 * time.Millisecond)
+	rec, ok := store.Get(runID)
+	if !ok {
+		t.Fatal("run not found")
+	}
+	liveScore := rec.Run.BestScore
+	if liveScore <= 0 {
+		t.Fatalf("expected live non-zero best_score for cpu_utilization, got %v", liveScore)
+	}
+	beforeIter := rec.Run.Iterations
+	if err := exec.applyOnlineOptimizationFinalResult(runID); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := store.Get(runID)
+	if out.Run.BestScore != liveScore {
+		t.Fatalf("final BestScore=%v want preserved live %v", out.Run.BestScore, liveScore)
+	}
+	if out.Run.Iterations < beforeIter {
+		t.Fatalf("iterations regressed: before=%d after=%d", beforeIter, out.Run.Iterations)
+	}
+	optOut := recCreate.Input.GetOptimization()
+	if optOut == nil {
+		t.Fatal("optimization config missing on record")
+	}
+	if obj, unit := ObjectiveAndUnitForProgress(optOut); obj != "cpu_utilization" || unit != "ratio" {
+		t.Fatalf("objective/unit: got %q %q want cpu_utilization ratio", obj, unit)
+	}
+}
