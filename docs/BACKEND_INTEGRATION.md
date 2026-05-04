@@ -751,6 +751,21 @@ Emitted when the online controller applies a configuration change (replicas, CPU
 
 **Optimization history:** For online runs, `GET /v1/runs/{id}` and `GET /v1/runs/{id}/export` include `optimization_history` in the run object when the controller has applied changes.
 
+### CPU-primary online optimization (configuration and diagnostics)
+
+When `optimization.online` is true and `optimization_target_primary` is **`cpu_utilization`**:
+
+- **Objective:** The controller drives on CPU utilization against **`target_util_low` / `target_util_high`**. When those fields are omitted (0), the server uses **0.4** and **0.7** respectively.
+- **P95 guardrail:** If **`target_p95_latency_ms` > 0**, latency is a guardrail (scale-down paths respect P95); it is not the primary objective. Use Phase 5 replay fields (`primary_target`, `objective_score`, …) to display the objective correctly.
+- **Host scaling bounds:** If **`max_hosts`** is unset, it defaults to the scenario’s **initial host count**, so **host scale-out is impossible** until `max_hosts` is set **greater** than that count. Similarly, unset **`min_hosts`** defaults to the initial count, so **host scale-in** requires **`min_hosts` less than** the initial (or current) bound as configured. In those situations the API adds a non-fatal **`warnings`** string array on the **`run`** object at create, list, get, export, and start responses (same strings are also logged at controller start for CPU-primary runs).
+- **Validation:** If either utilization bound is set, values must satisfy **0 ≤ low < high ≤ 1** after applying defaults; invalid combinations are rejected at **run create** (and again at **start**).
+- **Throughput:** **`throughput_rps`** on run metrics is aggregate work over all hops; for user-visible load use **`ingress_throughput_rps`** or ingress request deltas when interpreting live charts.
+- **Memory utilization:** Memory-primary runs may show **near-zero memory utilization** unless the model exposes memory demand (e.g. endpoint `default_memory_mb` / allocation pressure).
+
+**Manual experiment outline:** Start an online CPU-primary run with a low workload RPS and confirm no scale-up. **PATCH** workload rates much higher; expect **service** scale-out first. **Host** scale-out appears when placement/capacity pressure triggers CPU-primary host rules and **`max_hosts` > initial host count**. Reduce RPS; expect service scale-in, then host scale-in only when **`min_hosts`** is below the current host count.
+
+See `config/examples/online_cpu_primary_host_scaling.json` for a reference JSON fragment.
+
 ---
 
 ## Completion Callback

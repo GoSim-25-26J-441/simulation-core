@@ -362,7 +362,7 @@ func (s *HTTPServer) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("run created (HTTP)", "run_id", rec.Run.Id)
 	s.writeJSON(w, http.StatusCreated, map[string]any{
-		"run": convertRunToJSON(rec.Run, rec.Input),
+		"run": convertRunRecordToJSON(rec),
 	})
 }
 
@@ -399,7 +399,7 @@ func (s *HTTPServer) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	// Convert to JSON format
 	runsJSON := make([]map[string]any, 0, len(runs))
 	for _, rec := range runs {
-		runsJSON = append(runsJSON, convertRunToJSON(rec.Run, rec.Input))
+		runsJSON = append(runsJSON, convertRunRecordToJSON(rec))
 	}
 
 	// Return response with pagination metadata
@@ -443,7 +443,7 @@ func (s *HTTPServer) handleGetRun(w http.ResponseWriter, _ *http.Request, runID 
 		return
 	}
 
-	runJSON := convertRunToJSON(rec.Run, rec.Input)
+	runJSON := convertRunRecordToJSON(rec)
 	if len(rec.OptimizationHistory) > 0 {
 		runJSON["optimization_history"] = convertOptimizationHistoryToJSON(rec.OptimizationHistory)
 	}
@@ -472,9 +472,8 @@ func (s *HTTPServer) handleStartRun(w http.ResponseWriter, _ *http.Request, runI
 	}
 
 	logger.Info("run started (HTTP)", "run_id", runID)
-	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(updated.Run, rec.Input),
+		"run": convertRunRecordToJSON(updated),
 	})
 }
 
@@ -493,7 +492,7 @@ func (s *HTTPServer) handleRenewOnlineLease(w http.ResponseWriter, _ *http.Reque
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(rec.Run, rec.Input),
+		"run": convertRunRecordToJSON(rec),
 	})
 }
 
@@ -513,9 +512,8 @@ func (s *HTTPServer) handleStopRun(w http.ResponseWriter, _ *http.Request, runID
 	}
 
 	logger.Info("run cancelled (HTTP)", "run_id", runID)
-	rec, _ := s.store.Get(runID)
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"run": convertRunToJSON(updated.Run, rec.Input),
+		"run": convertRunRecordToJSON(updated),
 	})
 }
 
@@ -1023,7 +1021,7 @@ func (s *HTTPServer) handleExportRun(w http.ResponseWriter, _ *http.Request, run
 		return
 	}
 
-	runJSON := convertRunToJSON(rec.Run, rec.Input)
+	runJSON := convertRunRecordToJSON(rec)
 	if len(rec.OptimizationHistory) > 0 {
 		runJSON["optimization_history"] = convertOptimizationHistoryToJSON(rec.OptimizationHistory)
 	}
@@ -1733,7 +1731,14 @@ func (s *HTTPServer) writeError(w http.ResponseWriter, status int, message strin
 	})
 }
 
-func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[string]any {
+func convertRunRecordToJSON(rec *RunRecord) map[string]any {
+	if rec == nil {
+		return nil
+	}
+	return convertRunToJSON(rec.Run, rec.Input, rec.ServerWarnings)
+}
+
+func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput, serverWarnings []string) map[string]any {
 	result := map[string]any{
 		"id":                 run.Id,
 		"status":             run.Status.String(),
@@ -1741,6 +1746,9 @@ func convertRunToJSON(run *simulationv1.Run, input *simulationv1.RunInput) map[s
 		"started_at_unix_ms": run.StartedAtUnixMs,
 		"ended_at_unix_ms":   run.EndedAtUnixMs,
 		"error":              run.Error,
+	}
+	if len(serverWarnings) > 0 {
+		result["warnings"] = append([]string(nil), serverWarnings...)
 	}
 
 	// Calculate real-world duration (wall-clock time)
@@ -1961,6 +1969,36 @@ func convertOptimizationStepToJSON(step *simulationv1.OptimizationStep) map[stri
 	}
 	if details := parseOptimizationReasonDetails(step.Reason); len(details) > 0 {
 		result["reason_details"] = details
+	}
+	// Phase 5+ online replay: present when the controller populated primary_target.
+	if pt := strings.TrimSpace(step.GetPrimaryTarget()); pt != "" {
+		result["primary_target"] = pt
+		result["objective_score"] = step.GetObjectiveScore()
+		result["objective_unit"] = step.GetObjectiveUnit()
+		if step.GetTargetUtilLow() != 0 || step.GetTargetUtilHigh() != 0 {
+			result["target_util_low"] = step.GetTargetUtilLow()
+			result["target_util_high"] = step.GetTargetUtilHigh()
+		}
+		if step.GetGuardrailP95Ms() != 0 {
+			result["guardrail_p95_ms"] = step.GetGuardrailP95Ms()
+		}
+		result["current_p95_ms"] = step.GetCurrentP95Ms()
+		if step.GuardrailErrorRate != nil {
+			result["guardrail_error_rate"] = *step.GuardrailErrorRate
+		}
+		if step.CurrentErrorRate != nil {
+			result["current_error_rate"] = *step.CurrentErrorRate
+		}
+		if dm := strings.TrimSpace(step.GetDecisionMetric()); dm != "" {
+			result["decision_metric"] = dm
+			result["decision_metric_value"] = step.GetDecisionMetricValue()
+		}
+		if sid := strings.TrimSpace(step.GetDecisionServiceId()); sid != "" {
+			result["decision_service_id"] = sid
+		}
+		if act := strings.TrimSpace(step.GetAction()); act != "" {
+			result["action"] = act
+		}
 	}
 	return result
 }
