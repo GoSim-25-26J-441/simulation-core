@@ -2,7 +2,6 @@ package simd
 
 import (
 	"errors"
-	"math"
 	"strings"
 	"time"
 
@@ -20,6 +19,10 @@ const (
 	reasonCPUHostScaleHot       = "host CPU above target, scaled out hosts"
 	reasonCPUReplicaScaleDown   = "service CPU below target and guardrails safe, scaled replicas down"
 	reasonCPUHostScaleIn        = "host CPU below target and guardrails safe, scaled in hosts"
+	reasonCPUPrimaryHostCPUVertUp   = "cpu-primary: max host CPU above target, increased host CPU capacity"
+	reasonCPUPrimaryHostCPUVertDown = "cpu-primary: max host CPU below threshold, decreased host CPU capacity"
+	reasonMemPrimaryHostMemVertUp   = "memory-primary: max host memory above target, increased host memory capacity"
+	reasonMemPrimaryHostMemVertDown = "memory-primary: max host memory below threshold, decreased host memory capacity"
 )
 
 func onlineOptReplay(opt *simulationv1.OptimizationConfig, tick *onlineCtrlTickInput, primary string, meta *onlineOptimizationStepMeta) *onlineOptimizationHistoryBundle {
@@ -75,6 +78,8 @@ type onlineCtrlLoopState struct {
 	stableVertMemDown           map[string]int
 	prevErrFrac                 float64
 	stableCPUPrimaryHostScaleIn int
+	stableCPUPrimaryHostVertCPUUp int
+	stableMemoryPrimaryHostVertMemUp int
 }
 
 // onlineCtrlTickInput is a per-tick snapshot of metrics and tuning inputs for policy steps.
@@ -102,6 +107,12 @@ type onlineCtrlTickInput struct {
 	maxHosts             int
 	cpuHighThreshold     float64
 	hostCPUHighThreshold float64
+	minHostCPUCores      int
+	maxHostCPUCores      int
+	minHostMemGB         int
+	maxHostMemGB         int
+	hostCPUStepCores     int
+	hostMemoryStepGB     int
 }
 
 // runP95PrimaryOnlineStep applies the latency-primary online scaling policy for one tick.
@@ -188,8 +199,6 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 	scaleDownMemMax := tick.scaleDownMemMax
 	scaleDownHostCPUMax := tick.scaleDownHostCPUMax
 	scaleDownHostMemMax := tick.scaleDownHostMemMax
-	initialHostCores := tick.initialHostCores
-	initialHostMemGB := tick.initialHostMemGB
 	minHosts := tick.minHosts
 	maxHosts := tick.maxHosts
 	cpuHighThreshold := tick.cpuHighThreshold
@@ -232,28 +241,34 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 				}
 			}
 		} else if hostCount >= maxHosts && maxHostCPU >= hostCPUHighThreshold {
-			hostCPUStep := int(math.Ceil(opt.StepSize))
-			if hostCPUStep < 1 {
-				hostCPUStep = 1
-			}
 			prevConfig, _ := e.GetRunConfiguration(runID)
-			rm.IncreaseHostCapacity(hostCPUStep, 0)
-			logger.Info("online controller increased host capacity",
-				"run_id", runID,
-				"cpu_step", hostCPUStep,
-				"host_count", rm.HostCount(),
-				"max_hosts", maxHosts,
-				"max_host_cpu_utilization", maxHostCPU)
-			if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-				loop.stepIndex++
-				e.recordOptimizationStep(runID, loop.stepIndex, targetP95, currentP95,
-					scaleReasonP95HostCap,
-					prevConfig, currConfig,
-					onlineOptReplay(opt, tick, primaryTargetCtl, &onlineOptimizationStepMeta{
+			changes, errInc := rm.IncreaseOnlineHostCPUCapacity(tick.hostCPUStepCores, tick.maxHostCPUCores)
+			if errInc != nil {
+				logger.Debug("online controller host CPU vertical scale-up skipped",
+					"run_id", runID, "error", errInc)
+			} else if len(changes) > 0 {
+				logger.Info("online controller increased host capacity",
+					"run_id", runID,
+					"cpu_step", tick.hostCPUStepCores,
+					"host_count", rm.HostCount(),
+					"max_hosts", maxHosts,
+					"max_host_cpu_utilization", maxHostCPU)
+				if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+					loop.stepIndex++
+					meta := &onlineOptimizationStepMeta{
 						Action:              "host_cpu_scale_up",
 						DecisionMetric:      "max_host_cpu_utilization",
 						DecisionMetricValue: maxHostCPU,
-					}))
+					}
+					if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
+						mhv := maxHostCPU
+						meta.ObjectiveScoreOverride = &mhv
+					}
+					e.recordOptimizationStep(runID, loop.stepIndex, targetP95, currentP95,
+						scaleReasonP95HostCap,
+						prevConfig, currConfig,
+						onlineOptReplay(opt, tick, primaryTargetCtl, meta))
+				}
 			}
 		}
 	}
@@ -294,89 +309,100 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 		}
 	}
 
-	var currentHostCores int
-	for _, hid := range rm.HostIDs() {
-		if h, ok := rm.GetHost(hid); ok {
-			currentHostCores = h.CPUCores()
-			break
-		}
+	minFleetCPU := minFleetHostCPUCores(rm)
+	hostVertDownGuard := primaryTargetCtl != "cpu_utilization" && primaryTargetCtl != "memory_utilization"
+	if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
+		hostVertDownGuard = cpuPrimaryHostScaleInSafe(runMetrics, currentP95, targetP95, p95Guard, loop.prevErrFrac, brokerPressure)
 	}
-	hostCPUDownCond := scaleDownHostCPUMax > 0 && hostCount >= minHosts && maxHostCPU < scaleDownHostCPUMax && currentHostCores > initialHostCores
+	topologyBlocked, _ := onlineTopologyGuard(runMetrics, scenario, runID, rm, opt, hostCount)
+	hostCPUDownCond := scaleDownHostCPUMax > 0 && hostCount >= minHosts && maxHostCPU < scaleDownHostCPUMax &&
+		minFleetCPU > tick.minHostCPUCores && hostVertDownGuard && !topologyBlocked
 	if hostCPUDownCond {
 		loop.stableHostCPUDown++
 	} else {
 		loop.stableHostCPUDown = 0
 	}
 	if hostCPUDownCond && loop.stableHostCPUDown >= stabTicks {
-		hostCPUStep := int(math.Ceil(opt.StepSize))
-		if hostCPUStep < 1 {
-			hostCPUStep = 1
-		}
 		prevConfig, _ := e.GetRunConfiguration(runID)
-		if err := rm.DecreaseHostCapacity(-hostCPUStep, 0); err != nil {
+		changes, errDec := rm.DecreaseOnlineHostCPUCapacity(tick.hostCPUStepCores, tick.minHostCPUCores)
+		if errDec != nil {
 			logger.Debug("online controller decrease host capacity skipped",
 				"run_id", runID,
-				"error", err)
-		} else {
+				"error", errDec)
+		} else if len(changes) > 0 {
 			loop.stableHostCPUDown = 0
+			reason := scaleReasonHostCPU
+			if primaryTargetCtl == "cpu_utilization" {
+				reason = reasonCPUPrimaryHostCPUVertDown
+			}
 			logger.Info("online controller decreased host capacity",
 				"run_id", runID,
-				"cpu_step", hostCPUStep,
+				"cpu_step", tick.hostCPUStepCores,
 				"host_count", rm.HostCount())
 			if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
 				loop.stepIndex++
+				meta := &onlineOptimizationStepMeta{
+					Action:              "host_cpu_scale_down",
+					DecisionMetric:      "max_host_cpu_utilization",
+					DecisionMetricValue: maxHostCPU,
+				}
+				if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
+					mhv := maxHostCPU
+					meta.ObjectiveScoreOverride = &mhv
+				}
 				e.recordOptimizationStep(runID, loop.stepIndex, targetP95, currentP95,
-					scaleReasonHostCPU,
+					reason,
 					prevConfig, currConfig,
-					onlineOptReplay(opt, tick, primaryTargetCtl, &onlineOptimizationStepMeta{
-						Action:              "host_cpu_scale_down",
-						DecisionMetric:      "max_host_cpu_utilization",
-						DecisionMetricValue: maxHostCPU,
-					}))
+					onlineOptReplay(opt, tick, primaryTargetCtl, meta))
 			}
+		} else {
+			loop.stableHostCPUDown = 0
 		}
 	}
 
-	var currentHostMemGB int
-	for _, hid := range rm.HostIDs() {
-		if h, ok := rm.GetHost(hid); ok {
-			currentHostMemGB = h.MemoryGB()
-			break
-		}
-	}
-	hostMemDownCond := scaleDownHostMemMax > 0 && hostCount >= minHosts && maxHostMem < scaleDownHostMemMax && currentHostMemGB > initialHostMemGB
+	minFleetMem := minFleetHostMemoryGB(rm)
+	hostMemDownCond := scaleDownHostMemMax > 0 && hostCount >= minHosts && maxHostMem < scaleDownHostMemMax &&
+		minFleetMem > tick.minHostMemGB && hostVertDownGuard && !topologyBlocked
 	if hostMemDownCond {
 		loop.stableHostMemDown++
 	} else {
 		loop.stableHostMemDown = 0
 	}
 	if hostMemDownCond && loop.stableHostMemDown >= stabTicks {
-		hostMemStep := int(math.Ceil(opt.StepSize))
-		if hostMemStep < 1 {
-			hostMemStep = 1
-		}
 		prevConfig, _ := e.GetRunConfiguration(runID)
-		if err := rm.DecreaseHostCapacity(0, -hostMemStep); err != nil {
+		changes, errDec := rm.DecreaseOnlineHostMemoryCapacity(tick.hostMemoryStepGB, tick.minHostMemGB)
+		if errDec != nil {
 			logger.Debug("online controller decrease host memory skipped",
 				"run_id", runID,
-				"error", err)
-		} else {
+				"error", errDec)
+		} else if len(changes) > 0 {
 			loop.stableHostMemDown = 0
+			reason := scaleReasonHostMem
+			if primaryTargetCtl == "memory_utilization" {
+				reason = reasonMemPrimaryHostMemVertDown
+			}
 			logger.Info("online controller decreased host memory capacity",
 				"run_id", runID,
-				"memory_gb_step", hostMemStep,
+				"memory_gb_step", tick.hostMemoryStepGB,
 				"host_count", rm.HostCount())
 			if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
 				loop.stepIndex++
+				meta := &onlineOptimizationStepMeta{
+					Action:              "host_memory_scale_down",
+					DecisionMetric:      "max_host_memory_utilization",
+					DecisionMetricValue: maxHostMem,
+				}
+				if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
+					mhm := maxHostMem
+					meta.ObjectiveScoreOverride = &mhm
+				}
 				e.recordOptimizationStep(runID, loop.stepIndex, targetP95, currentP95,
-					scaleReasonHostMem,
+					reason,
 					prevConfig, currConfig,
-					onlineOptReplay(opt, tick, primaryTargetCtl, &onlineOptimizationStepMeta{
-						Action:              "host_memory_scale_down",
-						DecisionMetric:      "max_host_memory_utilization",
-						DecisionMetricValue: maxHostMem,
-					}))
+					onlineOptReplay(opt, tick, primaryTargetCtl, meta))
 			}
+		} else {
+			loop.stableHostMemDown = 0
 		}
 	}
 
@@ -719,6 +745,228 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 	}
 	if cpuPrimary && cpuScratch != nil {
 		e.cpuPrimaryPostServiceHostScaleOutAndRetry(runID, scenario, opt, rm, loop, tick, cpuScratch)
+	}
+	if cpuPrimary && cpuScratch != nil {
+		e.cpuPrimaryTryHostCPUVerticalScaleUp(runID, scenario, opt, rm, loop, tick, cpuScratch)
+	}
+	if strings.EqualFold(strings.TrimSpace(primaryTargetCtl), "memory_utilization") {
+		e.memoryPrimaryTryHostMemoryVerticalScaleUp(runID, scenario, opt, rm, loop, tick)
+	}
+}
+
+func minFleetHostCPUCores(rm *resource.Manager) int {
+	if rm == nil {
+		return 0
+	}
+	first := true
+	m := 0
+	for _, id := range rm.HostIDs() {
+		if h, ok := rm.GetHost(id); ok {
+			c := h.CPUCores()
+			if first || c < m {
+				m = c
+				first = false
+			}
+		}
+	}
+	if first {
+		return 0
+	}
+	return m
+}
+
+func minFleetHostMemoryGB(rm *resource.Manager) int {
+	if rm == nil {
+		return 0
+	}
+	first := true
+	m := 0
+	for _, id := range rm.HostIDs() {
+		if h, ok := rm.GetHost(id); ok {
+			g := h.MemoryGB()
+			if first || g < m {
+				m = g
+				first = false
+			}
+		}
+	}
+	if first {
+		return 0
+	}
+	return m
+}
+
+func memoryPrimaryAnyHotServiceMem(scenario *config.Scenario, runMetrics *models.RunMetrics, targetUtilHigh float64) bool {
+	if scenario == nil || runMetrics == nil || runMetrics.ServiceMetrics == nil {
+		return false
+	}
+	for i := range scenario.Services {
+		svc := &scenario.Services[i]
+		if strings.HasPrefix(strings.ToLower(svc.ID), "client") {
+			continue
+		}
+		sm := runMetrics.ServiceMetrics[svc.ID]
+		if sm != nil && sm.MemoryUtilization > targetUtilHigh {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *RunExecutor) cpuPrimaryTryHostCPUVerticalScaleUp(
+	runID string,
+	scenario *config.Scenario,
+	opt *simulationv1.OptimizationConfig,
+	rm *resource.Manager,
+	loop *onlineCtrlLoopState,
+	tick *onlineCtrlTickInput,
+	cpuScratch *cpuPrimaryScaleUpScratch,
+) {
+	if rm == nil || tick == nil || loop == nil || opt == nil || cpuScratch == nil || scenario == nil {
+		return
+	}
+	th := EffectiveOnlineTargetUtilHigh(opt)
+	hostCount := rm.HostCount()
+	if hostCount < tick.maxHosts {
+		loop.stableCPUPrimaryHostVertCPUUp = 0
+		return
+	}
+	maxHostCPU := rm.MaxHostCPUUtilization()
+	if maxHostCPU <= th {
+		loop.stableCPUPrimaryHostVertCPUUp = 0
+		return
+	}
+	pressure := cpuPrimaryAnyHotServiceCPU(scenario, tick.runMetrics, th) ||
+		onlineAnyBrokerPressure(tick.brokerPressure) ||
+		cpuScratch.capacityBlockedReplicaUp
+	if !pressure {
+		loop.stableCPUPrimaryHostVertCPUUp = 0
+		return
+	}
+	headroom := false
+	for _, hid := range rm.HostIDs() {
+		if h, ok := rm.GetHost(hid); ok && h.CPUCores() < tick.maxHostCPUCores {
+			headroom = true
+			break
+		}
+	}
+	if !headroom {
+		loop.stableCPUPrimaryHostVertCPUUp = 0
+		return
+	}
+	stab := tick.stabTicks
+	if stab < 1 {
+		stab = 1
+	}
+	loop.stableCPUPrimaryHostVertCPUUp++
+	if loop.stableCPUPrimaryHostVertCPUUp < stab {
+		return
+	}
+	prevConfig, _ := e.GetRunConfiguration(runID)
+	changes, err := rm.IncreaseOnlineHostCPUCapacity(tick.hostCPUStepCores, tick.maxHostCPUCores)
+	if err != nil {
+		logger.Debug("online controller cpu-primary host CPU vertical scale-up skipped",
+			"run_id", runID, "error", err)
+		loop.stableCPUPrimaryHostVertCPUUp = 0
+		return
+	}
+	if len(changes) == 0 {
+		loop.stableCPUPrimaryHostVertCPUUp = 0
+		return
+	}
+	loop.stableCPUPrimaryHostVertCPUUp = 0
+	logger.Info("online controller cpu-primary increased host CPU capacity",
+		"run_id", runID,
+		"cpu_step", tick.hostCPUStepCores,
+		"max_host_cpu_utilization", maxHostCPU)
+	if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+		loop.stepIndex++
+		mhv := maxHostCPU
+		e.recordOptimizationStep(runID, loop.stepIndex, tick.targetP95, tick.currentP95,
+			reasonCPUPrimaryHostCPUVertUp, prevConfig, currConfig,
+			onlineOptReplay(opt, tick, "cpu_utilization", &onlineOptimizationStepMeta{
+				Action:                 "host_cpu_scale_up",
+				DecisionMetric:         "max_host_cpu_utilization",
+				DecisionMetricValue:    maxHostCPU,
+				ObjectiveScoreOverride: &mhv,
+			}))
+	}
+}
+
+func (e *RunExecutor) memoryPrimaryTryHostMemoryVerticalScaleUp(
+	runID string,
+	scenario *config.Scenario,
+	opt *simulationv1.OptimizationConfig,
+	rm *resource.Manager,
+	loop *onlineCtrlLoopState,
+	tick *onlineCtrlTickInput,
+) {
+	if rm == nil || tick == nil || loop == nil || opt == nil || scenario == nil {
+		return
+	}
+	th := EffectiveOnlineTargetUtilHigh(opt)
+	hostCount := rm.HostCount()
+	if hostCount < tick.maxHosts {
+		loop.stableMemoryPrimaryHostVertMemUp = 0
+		return
+	}
+	maxHostMem := rm.MaxHostMemoryUtilization()
+	if maxHostMem <= th {
+		loop.stableMemoryPrimaryHostVertMemUp = 0
+		return
+	}
+	pressure := memoryPrimaryAnyHotServiceMem(scenario, tick.runMetrics, th) || onlineAnyBrokerPressure(tick.brokerPressure)
+	if !pressure {
+		loop.stableMemoryPrimaryHostVertMemUp = 0
+		return
+	}
+	headroom := false
+	for _, hid := range rm.HostIDs() {
+		if h, ok := rm.GetHost(hid); ok && h.MemoryGB() < tick.maxHostMemGB {
+			headroom = true
+			break
+		}
+	}
+	if !headroom {
+		loop.stableMemoryPrimaryHostVertMemUp = 0
+		return
+	}
+	stab := tick.stabTicks
+	if stab < 1 {
+		stab = 1
+	}
+	loop.stableMemoryPrimaryHostVertMemUp++
+	if loop.stableMemoryPrimaryHostVertMemUp < stab {
+		return
+	}
+	prevConfig, _ := e.GetRunConfiguration(runID)
+	changes, err := rm.IncreaseOnlineHostMemoryCapacity(tick.hostMemoryStepGB, tick.maxHostMemGB)
+	if err != nil {
+		logger.Debug("online controller memory-primary host memory vertical scale-up skipped",
+			"run_id", runID, "error", err)
+		loop.stableMemoryPrimaryHostVertMemUp = 0
+		return
+	}
+	if len(changes) == 0 {
+		loop.stableMemoryPrimaryHostVertMemUp = 0
+		return
+	}
+	loop.stableMemoryPrimaryHostVertMemUp = 0
+	logger.Info("online controller memory-primary increased host memory capacity",
+		"run_id", runID,
+		"memory_gb_step", tick.hostMemoryStepGB,
+		"max_host_memory_utilization", maxHostMem)
+	if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
+		loop.stepIndex++
+		mhm := maxHostMem
+		e.recordOptimizationStep(runID, loop.stepIndex, tick.targetP95, tick.currentP95,
+			reasonMemPrimaryHostMemVertUp, prevConfig, currConfig,
+			onlineOptReplay(opt, tick, "memory_utilization", &onlineOptimizationStepMeta{
+				Action:                 "host_memory_scale_up",
+				DecisionMetric:         "max_host_memory_utilization",
+				DecisionMetricValue:    maxHostMem,
+				ObjectiveScoreOverride: &mhm,
+			}))
 	}
 }
 

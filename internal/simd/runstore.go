@@ -271,7 +271,8 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 	var serverWarnings []string
 	if clonedInput.GetScenarioYaml() != "" {
 		if sc, err := config.ParseScenarioYAMLString(clonedInput.GetScenarioYaml()); err == nil {
-			serverWarnings = onlineCPUPrimaryHostScalingWarnings(clonedInput.GetOptimization(), len(sc.Hosts))
+			serverWarnings = append(serverWarnings, onlineCPUPrimaryHostScalingWarnings(clonedInput.GetOptimization(), len(sc.Hosts))...)
+			serverWarnings = append(serverWarnings, onlineHostVerticalCapacityWarnings(clonedInput.GetOptimization(), sc)...)
 		}
 	}
 	rec := &RunRecord{

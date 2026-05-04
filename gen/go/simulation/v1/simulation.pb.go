@@ -1818,6 +1818,10 @@ type OptimizationConfig struct {
 	// the initial host count, the controller may scale out by adding hosts up to
 	// this limit before switching to vertical host scaling. When min_hosts is
 	// greater than 0, the controller will avoid scaling below this bound.
+	// When unset (0), both default to the scenario's initial host count: host scale-out
+	// requires max_hosts > initial hosts; host scale-in requires min_hosts < initial hosts.
+	// CPU-primary online runs surface non-fatal `warnings` on create/get/export when bounds
+	// make host scaling impossible (see BACKEND_INTEGRATION.md).
 	MinHosts int32 `protobuf:"varint,8,opt,name=min_hosts,json=minHosts,proto3" json:"min_hosts,omitempty"`
 	MaxHosts int32 `protobuf:"varint,9,opt,name=max_hosts,json=maxHosts,proto3" json:"max_hosts,omitempty"`
 	// Optional. When > 0, online controller will scale down replicas only when
@@ -1834,13 +1838,14 @@ type OptimizationConfig struct {
 	// would exceed target_p95_latency_ms).
 	OptimizationTargetPrimary string `protobuf:"bytes,12,opt,name=optimization_target_primary,json=optimizationTargetPrimary,proto3" json:"optimization_target_primary,omitempty"`
 	// When optimization_target_primary is cpu_utilization or memory_utilization:
-	// high threshold (0–1) for scale-up. Default 0.7.
+	// high threshold (0–1) for scale-up. Omitted/zero defaults to 0.7 (online controller).
 	// For batch optimization with objective cpu_utilization or memory_utilization,
 	// target_util_low and target_util_high define the desired utilization band (0–1);
 	// the optimizer minimizes distance from this band (score 0 inside band).
+	// Online: if either bound is set, both must satisfy 0 <= low < high <= 1 after defaults.
 	TargetUtilHigh float64 `protobuf:"fixed64,13,opt,name=target_util_high,json=targetUtilHigh,proto3" json:"target_util_high,omitempty"`
 	// When optimization_target_primary is cpu_utilization or memory_utilization:
-	// low threshold (0–1) for scale-down. Default 0.4.
+	// low threshold (0–1) for scale-down. Omitted/zero defaults to 0.4 (online controller).
 	// For batch optimization with objective cpu_utilization or memory_utilization,
 	// see target_util_high: together they define the target utilization band.
 	TargetUtilLow float64 `protobuf:"fixed64,14,opt,name=target_util_low,json=targetUtilLow,proto3" json:"target_util_low,omitempty"`
@@ -1905,8 +1910,21 @@ type OptimizationConfig struct {
 	MinLocalityHitRate              float64 `protobuf:"fixed64,31,opt,name=min_locality_hit_rate,json=minLocalityHitRate,proto3" json:"min_locality_hit_rate,omitempty"`
 	MaxCrossZoneRequestFraction     float64 `protobuf:"fixed64,32,opt,name=max_cross_zone_request_fraction,json=maxCrossZoneRequestFraction,proto3" json:"max_cross_zone_request_fraction,omitempty"`
 	MaxTopologyLatencyPenaltyMeanMs float64 `protobuf:"fixed64,33,opt,name=max_topology_latency_penalty_mean_ms,json=maxTopologyLatencyPenaltyMeanMs,proto3" json:"max_topology_latency_penalty_mean_ms,omitempty"`
-	unknownFields                   protoimpl.UnknownFields
-	sizeCache                       protoimpl.SizeCache
+	// --- Online host vertical capacity (per-host bounds, controller-driven) ---
+	// When 0, min_host_cpu_cores defaults to the first scenario host's core count (floor for scale-down).
+	MinHostCpuCores int32 `protobuf:"varint,34,opt,name=min_host_cpu_cores,json=minHostCpuCores,proto3" json:"min_host_cpu_cores,omitempty"`
+	// When 0, max_host_cpu_cores defaults to the same initial value (disables host CPU scale-up unless raised).
+	MaxHostCpuCores int32 `protobuf:"varint,35,opt,name=max_host_cpu_cores,json=maxHostCpuCores,proto3" json:"max_host_cpu_cores,omitempty"`
+	// When 0, min_host_memory_gb defaults to the first scenario host's memory_gb (or server default when omitted).
+	MinHostMemoryGb int32 `protobuf:"varint,36,opt,name=min_host_memory_gb,json=minHostMemoryGb,proto3" json:"min_host_memory_gb,omitempty"`
+	// When 0, max_host_memory_gb defaults to the initial host memory (disables host memory scale-up unless raised).
+	MaxHostMemoryGb int32 `protobuf:"varint,37,opt,name=max_host_memory_gb,json=maxHostMemoryGb,proto3" json:"max_host_memory_gb,omitempty"`
+	// Per control tick step for host CPU vertical scaling. When 0, defaults to max(1, ceil(step_size)).
+	HostCpuStepCores int32 `protobuf:"varint,38,opt,name=host_cpu_step_cores,json=hostCpuStepCores,proto3" json:"host_cpu_step_cores,omitempty"`
+	// Per tick step for host memory vertical scaling (GB). When 0, defaults to 1.
+	HostMemoryStepGb int32 `protobuf:"varint,39,opt,name=host_memory_step_gb,json=hostMemoryStepGb,proto3" json:"host_memory_step_gb,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *OptimizationConfig) Reset() {
@@ -2166,6 +2184,48 @@ func (x *OptimizationConfig) GetMaxCrossZoneRequestFraction() float64 {
 func (x *OptimizationConfig) GetMaxTopologyLatencyPenaltyMeanMs() float64 {
 	if x != nil {
 		return x.MaxTopologyLatencyPenaltyMeanMs
+	}
+	return 0
+}
+
+func (x *OptimizationConfig) GetMinHostCpuCores() int32 {
+	if x != nil {
+		return x.MinHostCpuCores
+	}
+	return 0
+}
+
+func (x *OptimizationConfig) GetMaxHostCpuCores() int32 {
+	if x != nil {
+		return x.MaxHostCpuCores
+	}
+	return 0
+}
+
+func (x *OptimizationConfig) GetMinHostMemoryGb() int32 {
+	if x != nil {
+		return x.MinHostMemoryGb
+	}
+	return 0
+}
+
+func (x *OptimizationConfig) GetMaxHostMemoryGb() int32 {
+	if x != nil {
+		return x.MaxHostMemoryGb
+	}
+	return 0
+}
+
+func (x *OptimizationConfig) GetHostCpuStepCores() int32 {
+	if x != nil {
+		return x.HostCpuStepCores
+	}
+	return 0
+}
+
+func (x *OptimizationConfig) GetHostMemoryStepGb() int32 {
+	if x != nil {
+		return x.HostMemoryStepGb
 	}
 	return 0
 }
@@ -4870,7 +4930,7 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"\x0ereal_time_mode\x18\x05 \x01(\bR\frealTimeMode\x12E\n" +
 	"\foptimization\x18\x06 \x01(\v2!.simulation.v1.OptimizationConfigR\foptimization\x12!\n" +
 	"\fcallback_url\x18\a \x01(\tR\vcallbackUrl\x12'\n" +
-	"\x0fcallback_secret\x18\b \x01(\tR\x0ecallbackSecret\"\x94\r\n" +
+	"\x0fcallback_secret\x18\b \x01(\tR\x0ecallbackSecret\"\xa6\x0f\n" +
 	"\x12OptimizationConfig\x12\x1c\n" +
 	"\tobjective\x18\x01 \x01(\tR\tobjective\x12%\n" +
 	"\x0emax_iterations\x18\x02 \x01(\x05R\rmaxIterations\x12\x1b\n" +
@@ -4906,7 +4966,13 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"\x05batch\x18\x1e \x01(\v2&.simulation.v1.BatchOptimizationConfigR\x05batch\x121\n" +
 	"\x15min_locality_hit_rate\x18\x1f \x01(\x01R\x12minLocalityHitRate\x12D\n" +
 	"\x1fmax_cross_zone_request_fraction\x18  \x01(\x01R\x1bmaxCrossZoneRequestFraction\x12M\n" +
-	"$max_topology_latency_penalty_mean_ms\x18! \x01(\x01R\x1fmaxTopologyLatencyPenaltyMeanMs\"7\n" +
+	"$max_topology_latency_penalty_mean_ms\x18! \x01(\x01R\x1fmaxTopologyLatencyPenaltyMeanMs\x12+\n" +
+	"\x12min_host_cpu_cores\x18\" \x01(\x05R\x0fminHostCpuCores\x12+\n" +
+	"\x12max_host_cpu_cores\x18# \x01(\x05R\x0fmaxHostCpuCores\x12+\n" +
+	"\x12min_host_memory_gb\x18$ \x01(\x05R\x0fminHostMemoryGb\x12+\n" +
+	"\x12max_host_memory_gb\x18% \x01(\x05R\x0fmaxHostMemoryGb\x12-\n" +
+	"\x13host_cpu_step_cores\x18& \x01(\x05R\x10hostCpuStepCores\x12-\n" +
+	"\x13host_memory_step_gb\x18' \x01(\x05R\x10hostMemoryStepGb\"7\n" +
 	"\x0fUtilizationBand\x12\x10\n" +
 	"\x03low\x18\x01 \x01(\x01R\x03low\x12\x12\n" +
 	"\x04high\x18\x02 \x01(\x01R\x04high\"\x97\x02\n" +

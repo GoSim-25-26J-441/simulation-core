@@ -11,6 +11,44 @@ import (
 	simulationv1 "github.com/GoSim-25-26J-441/simulation-core/gen/go/simulation/v1"
 )
 
+func TestHTTPServerPatchConfigurationWithoutPlacementStrategyDoesNotExpandHosts(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rec, err := store.Create("run-no-expand", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 2000})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	recLatest, ok := store.Get(rec.Run.Id)
+	if !ok || recLatest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run not RUNNING")
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	body := map[string]any{
+		"services": []map[string]any{{
+			"id": "svc1", "replicas": 1, "cpu_cores": 3.0,
+		}},
+	}
+	b, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-no-expand/configuration", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 without placement_strategy expand, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "host CPU capacity exceeded") {
+		t.Fatalf("expected capacity rejection, got %s", rr.Body.String())
+	}
+}
+
 func TestHTTPServerPatchConfigurationStrictRejectsServiceCPUOverHostCapacity(t *testing.T) {
 	store := NewRunStore()
 	exec := NewRunExecutor(store, nil)

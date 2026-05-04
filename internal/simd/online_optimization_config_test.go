@@ -129,14 +129,17 @@ func TestRunStoreCreateCPUPrimaryEmitsHostBoundWarnings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if len(rec.ServerWarnings) != 2 {
-		t.Fatalf("expected 2 warnings, got %#v", rec.ServerWarnings)
+	if len(rec.ServerWarnings) != 3 {
+		t.Fatalf("expected 3 warnings, got %#v", rec.ServerWarnings)
 	}
 	if rec.ServerWarnings[0] != warnCPUPrimaryHostScaleOutDisabled {
 		t.Fatalf("warning0: %q", rec.ServerWarnings[0])
 	}
 	if rec.ServerWarnings[1] != warnCPUPrimaryHostScaleInDisabled {
 		t.Fatalf("warning1: %q", rec.ServerWarnings[1])
+	}
+	if rec.ServerWarnings[2] != warnCPUPrimaryHostCPUVertUpDisabled {
+		t.Fatalf("warning2: %q", rec.ServerWarnings[2])
 	}
 
 	twoHostYAML := `hosts:
@@ -174,8 +177,8 @@ workload:
 	if err != nil {
 		t.Fatalf("Create2: %v", err)
 	}
-	if len(rec2.ServerWarnings) != 0 {
-		t.Fatalf("expected no warnings with room to scale, got %#v", rec2.ServerWarnings)
+	if len(rec2.ServerWarnings) != 1 || rec2.ServerWarnings[0] != warnCPUPrimaryHostCPUVertUpDisabled {
+		t.Fatalf("expected only vertical CPU cap warning when host count bounds allow scale, got %#v", rec2.ServerWarnings)
 	}
 
 	rec3, err := store.Create("cpu-warn-3", &simulationv1.RunInput{
@@ -192,8 +195,14 @@ workload:
 	if err != nil {
 		t.Fatalf("Create3: %v", err)
 	}
-	if len(rec3.ServerWarnings) != 1 || rec3.ServerWarnings[0] != warnCPUPrimaryHostScaleInDisabled {
-		t.Fatalf("expected single scale-in warning, got %#v", rec3.ServerWarnings)
+	if len(rec3.ServerWarnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %#v", rec3.ServerWarnings)
+	}
+	if rec3.ServerWarnings[0] != warnCPUPrimaryHostScaleInDisabled && rec3.ServerWarnings[1] != warnCPUPrimaryHostScaleInDisabled {
+		t.Fatalf("expected scale-in disabled warning, got %#v", rec3.ServerWarnings)
+	}
+	if rec3.ServerWarnings[0] != warnCPUPrimaryHostCPUVertUpDisabled && rec3.ServerWarnings[1] != warnCPUPrimaryHostCPUVertUpDisabled {
+		t.Fatalf("expected vertical CPU cap warning, got %#v", rec3.ServerWarnings)
 	}
 }
 
@@ -224,8 +233,8 @@ func TestHTTPServerGetRunIncludesCPUPrimaryWarnings(t *testing.T) {
 	}
 	run := body["run"].(map[string]any)
 	warns, ok := run["warnings"].([]any)
-	if !ok || len(warns) != 2 {
-		t.Fatalf("expected run.warnings with 2 entries, got %#v", run["warnings"])
+	if !ok || len(warns) != 3 {
+		t.Fatalf("expected run.warnings with 3 entries, got %#v", run["warnings"])
 	}
 }
 

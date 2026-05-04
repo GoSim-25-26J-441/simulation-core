@@ -381,6 +381,20 @@ message OptimizationConfig {
   double min_locality_hit_rate = 31;
   double max_cross_zone_request_fraction = 32;
   double max_topology_latency_penalty_mean_ms = 33;
+
+  // --- Online host vertical capacity (per-host bounds, controller-driven) ---
+  // When 0, min_host_cpu_cores defaults to the first scenario host's core count (floor for scale-down).
+  int32 min_host_cpu_cores = 34;
+  // When 0, max_host_cpu_cores defaults to the same initial value (disables host CPU scale-up unless raised).
+  int32 max_host_cpu_cores = 35;
+  // When 0, min_host_memory_gb defaults to the first scenario host's memory_gb (or server default when omitted).
+  int32 min_host_memory_gb = 36;
+  // When 0, max_host_memory_gb defaults to the initial host memory (disables host memory scale-up unless raised).
+  int32 max_host_memory_gb = 37;
+  // Per control tick step for host CPU vertical scaling. When 0, defaults to max(1, ceil(step_size)).
+  int32 host_cpu_step_cores = 38;
+  // Per tick step for host memory vertical scaling (GB). When 0, defaults to 1.
+  int32 host_memory_step_gb = 39;
 }
 
 // ---- Batch optimization (offline multi-eval recommendation engine)
