@@ -1614,6 +1614,19 @@ func validateOnlineOptimizationConfig(opt *simulationv1.OptimizationConfig) erro
 	if err := validateOnlinePrimaryUtilizationBand(opt, primary); err != nil {
 		return err
 	}
+	minHC := opt.GetMinHostCpuCores()
+	maxHC := opt.GetMaxHostCpuCores()
+	if minHC > 0 && maxHC > 0 && minHC > maxHC {
+		return fmt.Errorf("online optimization: min_host_cpu_cores (%d) must be <= max_host_cpu_cores (%d)", minHC, maxHC)
+	}
+	minHM := opt.GetMinHostMemoryGb()
+	maxHM := opt.GetMaxHostMemoryGb()
+	if minHM > 0 && maxHM > 0 && minHM > maxHM {
+		return fmt.Errorf("online optimization: min_host_memory_gb (%d) must be <= max_host_memory_gb (%d)", minHM, maxHM)
+	}
+	if opt.GetHostCpuStepCores() < 0 || opt.GetHostMemoryStepGb() < 0 {
+		return fmt.Errorf("online optimization: host_cpu_step_cores and host_memory_step_gb must be non-negative")
+	}
 	return nil
 }
 
@@ -1679,21 +1692,18 @@ func (e *RunExecutor) runOnlineController(
 			logger.Warn(w, "run_id", runID, "initial_hosts", initialHosts, "effective_min_hosts", minHosts, "effective_max_hosts", maxHosts)
 		}
 	}
+	for _, w := range onlineHostVerticalCapacityWarnings(opt, scenario) {
+		logger.Warn(w, "run_id", runID)
+	}
 	scaleDownHostCPUMax := opt.GetScaleDownHostCpuUtilMax()
-	initialHostCores := 0
-	if len(scenario.Hosts) > 0 {
-		initialHostCores = scenario.Hosts[0].Cores
-	}
-	if initialHostCores < 1 {
-		initialHostCores = 1
-	}
-	initialHostMemGB := 0
-	if len(scenario.Hosts) > 0 {
-		initialHostMemGB = scenario.Hosts[0].MemoryGB
-	}
-	if initialHostMemGB < 1 {
-		initialHostMemGB = 1
-	}
+	initialHostCores := ScenarioInitialHostCPUCores(scenario)
+	initialHostMemGB := ScenarioInitialHostMemoryGB(scenario)
+	minHostCPUFloor := EffectiveOnlineMinHostCPUCores(opt, initialHostCores)
+	maxHostCPUCap := EffectiveOnlineMaxHostCPUCores(opt, initialHostCores)
+	minHostMemFloor := EffectiveOnlineMinHostMemoryGb(opt, initialHostMemGB)
+	maxHostMemCap := EffectiveOnlineMaxHostMemoryGb(opt, initialHostMemGB)
+	hostCPUStepCores := EffectiveOnlineHostCPUStepCores(opt)
+	hostMemStepGB := EffectiveOnlineHostMemoryStepGb(opt)
 
 	loopState := &onlineCtrlLoopState{
 		stableRepDown:     make(map[string]int),
@@ -1830,6 +1840,12 @@ func (e *RunExecutor) runOnlineController(
 				maxHosts:             maxHosts,
 				cpuHighThreshold:     cpuHighThreshold,
 				hostCPUHighThreshold: hostCPUHighThreshold,
+				minHostCPUCores:      minHostCPUFloor,
+				maxHostCPUCores:      maxHostCPUCap,
+				minHostMemGB:         minHostMemFloor,
+				maxHostMemGB:         maxHostMemCap,
+				hostCPUStepCores:     hostCPUStepCores,
+				hostMemoryStepGB:     hostMemStepGB,
 			}
 
 			switch onlineControllerPolicyBranchFromPrimary(primaryTargetCtl) {

@@ -15,18 +15,8 @@ import (
 
 func testOnlineTickInput(t *testing.T, scenario *config.Scenario, rm *resource.Manager, runMetrics *models.RunMetrics, opt *simulationv1.OptimizationConfig) *onlineCtrlTickInput {
 	t.Helper()
-	initialHostCores := 1
-	initialHostMemGB := 1
-	if len(scenario.Hosts) > 0 {
-		initialHostCores = scenario.Hosts[0].Cores
-		if initialHostCores < 1 {
-			initialHostCores = 1
-		}
-		initialHostMemGB = scenario.Hosts[0].MemoryGB
-		if initialHostMemGB < 1 {
-			initialHostMemGB = 1
-		}
-	}
+	initialHostCores := ScenarioInitialHostCPUCores(scenario)
+	initialHostMemGB := ScenarioInitialHostMemoryGB(scenario)
 	initialHosts := len(scenario.Hosts)
 	minHosts := int(opt.MinHosts)
 	if minHosts <= 0 {
@@ -63,6 +53,12 @@ func testOnlineTickInput(t *testing.T, scenario *config.Scenario, rm *resource.M
 		maxHosts:             maxHosts,
 		cpuHighThreshold:     0.8,
 		hostCPUHighThreshold: 0.8,
+		minHostCPUCores:      EffectiveOnlineMinHostCPUCores(opt, initialHostCores),
+		maxHostCPUCores:      EffectiveOnlineMaxHostCPUCores(opt, initialHostCores),
+		minHostMemGB:         EffectiveOnlineMinHostMemoryGb(opt, initialHostMemGB),
+		maxHostMemGB:         EffectiveOnlineMaxHostMemoryGb(opt, initialHostMemGB),
+		hostCPUStepCores:     EffectiveOnlineHostCPUStepCores(opt),
+		hostMemoryStepGB:     EffectiveOnlineHostMemoryStepGb(opt),
 	}
 }
 

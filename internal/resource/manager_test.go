@@ -2291,6 +2291,91 @@ func TestSelectInstanceForRequest_LocalityPreferenceFallsBackWhenNoZoneMatch(t *
 	}
 }
 
+func TestIncreaseOnlineHostCPUCapacityCapsAtMax(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 2}},
+		Services: []config.Service{{
+			ID: "svc1", Replicas: 1, Model: "cpu",
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := m.IncreaseOnlineHostCPUCapacity(4, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch) != 1 || ch[0].CPUCoresBefore != 2 || ch[0].CPUCoresAfter != 5 {
+		t.Fatalf("unexpected change: %#v", ch)
+	}
+	ch2, err := m.IncreaseOnlineHostCPUCapacity(1, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch2) != 0 {
+		t.Fatalf("expected no-op at cap, got %#v", ch2)
+	}
+}
+
+func TestIncreaseOnlineHostMemoryCapacityCapsAtMax(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4, MemoryGB: 2}},
+		Services: []config.Service{{
+			ID: "svc1", Replicas: 1, Model: "cpu",
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := m.IncreaseOnlineHostMemoryCapacity(3, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ch) != 1 || ch[0].MemoryGBBefore != 2 || ch[0].MemoryGBAfter != 4 {
+		t.Fatalf("unexpected change: %#v", ch)
+	}
+}
+
+func TestDecreaseOnlineHostCPUCapacityErrorsWhenAllocationWouldExceed(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 4}},
+		Services: []config.Service{{
+			ID: "svc1", Replicas: 1, Model: "cpu", CPUCores: 3,
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.DecreaseOnlineHostCPUCapacity(2, 1)
+	if err == nil {
+		t.Fatal("expected error when decreasing below allocated CPU")
+	}
+}
+
+func TestDecreaseOnlineHostMemoryCapacityErrorsWhenAllocationWouldExceed(t *testing.T) {
+	m := NewManager()
+	sc := &config.Scenario{
+		Hosts: []config.Host{{ID: "h1", Cores: 8, MemoryGB: 2}},
+		Services: []config.Service{{
+			ID: "svc1", Replicas: 1, Model: "cpu", MemoryMB: 1800,
+			Endpoints: []config.Endpoint{{Path: "/a", MeanCPUMs: 1, CPUSigmaMs: 0}},
+		}},
+	}
+	if err := m.InitializeFromScenario(sc); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.DecreaseOnlineHostMemoryCapacity(1, 1)
+	if err == nil {
+		t.Fatal("expected error when decreasing below allocated memory")
+	}
+}
+
 func TestSelectInstanceForRequest_LocalityPreferenceEndpointOverride(t *testing.T) {
 	m := NewManager()
 	sc := &config.Scenario{

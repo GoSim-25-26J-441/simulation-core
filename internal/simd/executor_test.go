@@ -1695,6 +1695,9 @@ func TestRunExecutorOnlineControllerIncreasesHostCapacityAtMaxHosts(t *testing.T
 		StepSize:           1.0,
 		MinHosts:           2,
 		MaxHosts:           2,
+		// Allow P95-primary host CPU vertical scale-up at max_hosts (defaults otherwise cap at initial cores).
+		MaxHostCpuCores:  8,
+		HostCpuStepCores: 1,
 	}
 
 	initialHostCount := rm.HostCount()

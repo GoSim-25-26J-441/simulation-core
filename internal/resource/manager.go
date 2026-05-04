@@ -701,6 +701,217 @@ func (m *Manager) IncreaseHostCapacity(cpuDelta, memoryGBDelta int) {
 	}
 }
 
+// IncreaseOnlineHostCPUCapacity increases each host's CPU cores by up to step, capped at maxCoresPerHost.
+func (m *Manager) IncreaseOnlineHostCPUCapacity(step int, maxCoresPerHost int) ([]HostCapacityChange, error) {
+	if step < 1 {
+		return nil, fmt.Errorf("host cpu step must be >= 1")
+	}
+	if maxCoresPerHost < 1 {
+		maxCoresPerHost = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []HostCapacityChange
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		before := host.CPUCores()
+		memBefore := host.MemoryGB()
+		if before >= maxCoresPerHost {
+			continue
+		}
+		next := before + step
+		if next > maxCoresPerHost {
+			next = maxCoresPerHost
+		}
+		if next <= before {
+			continue
+		}
+		host.SetCPUCores(next)
+		out = append(out, HostCapacityChange{
+			HostID:         hostID,
+			CPUCoresBefore: before,
+			CPUCoresAfter:  next,
+			MemoryGBBefore: memBefore,
+			MemoryGBAfter:  host.MemoryGB(),
+		})
+	}
+	return out, nil
+}
+
+// IncreaseOnlineHostMemoryCapacity increases each host's memory (GB) by up to stepGB, capped at maxMemGBPerHost.
+func (m *Manager) IncreaseOnlineHostMemoryCapacity(stepGB int, maxMemGBPerHost int) ([]HostCapacityChange, error) {
+	if stepGB < 1 {
+		return nil, fmt.Errorf("host memory step must be >= 1")
+	}
+	if maxMemGBPerHost < 1 {
+		maxMemGBPerHost = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []HostCapacityChange
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		cpuBefore := host.CPUCores()
+		memBefore := host.MemoryGB()
+		if memBefore >= maxMemGBPerHost {
+			continue
+		}
+		next := memBefore + stepGB
+		if next > maxMemGBPerHost {
+			next = maxMemGBPerHost
+		}
+		if next <= memBefore {
+			continue
+		}
+		host.SetMemoryGB(next)
+		out = append(out, HostCapacityChange{
+			HostID:         hostID,
+			CPUCoresBefore: cpuBefore,
+			CPUCoresAfter:  host.CPUCores(),
+			MemoryGBBefore: memBefore,
+			MemoryGBAfter:  next,
+		})
+	}
+	return out, nil
+}
+
+// DecreaseOnlineHostCPUCapacity applies a uniform CPU core decrease (at most step) on every host,
+// floored at minCoresPerHost per host, while respecting current instance allocations.
+func (m *Manager) DecreaseOnlineHostCPUCapacity(step int, minCoresPerHost int) ([]HostCapacityChange, error) {
+	if step < 1 {
+		return nil, fmt.Errorf("host cpu step must be >= 1")
+	}
+	if minCoresPerHost < 1 {
+		minCoresPerHost = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	maxDec := step
+	for _, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		room := host.CPUCores() - minCoresPerHost
+		if room < maxDec {
+			maxDec = room
+		}
+	}
+	if maxDec < 1 {
+		return nil, nil
+	}
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		instances := m.collectInstancesForHost(hostID)
+		var allocCPU float64
+		for _, inst := range instances {
+			if inst != nil {
+				allocCPU += inst.CPUCores()
+			}
+		}
+		newCores := host.CPUCores() - maxDec
+		if newCores < minCoresPerHost {
+			newCores = minCoresPerHost
+		}
+		if allocCPU > float64(newCores)+1e-9 {
+			return nil, fmt.Errorf("cannot decrease host capacity: host %s allocated %.2f CPU cores would exceed new capacity %d", hostID, allocCPU, newCores)
+		}
+	}
+	var out []HostCapacityChange
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		before := host.CPUCores()
+		memBefore := host.MemoryGB()
+		next := before - maxDec
+		if next < minCoresPerHost {
+			next = minCoresPerHost
+		}
+		host.SetCPUCores(next)
+		out = append(out, HostCapacityChange{
+			HostID:         hostID,
+			CPUCoresBefore: before,
+			CPUCoresAfter:  next,
+			MemoryGBBefore: memBefore,
+			MemoryGBAfter:  host.MemoryGB(),
+		})
+	}
+	return out, nil
+}
+
+// DecreaseOnlineHostMemoryCapacity applies a uniform memory decrease (at most stepGB) on every host,
+// floored at minMemGBPerHost, while respecting current instance memory allocations.
+func (m *Manager) DecreaseOnlineHostMemoryCapacity(stepGB int, minMemGBPerHost int) ([]HostCapacityChange, error) {
+	if stepGB < 1 {
+		return nil, fmt.Errorf("host memory step must be >= 1")
+	}
+	if minMemGBPerHost < 1 {
+		minMemGBPerHost = 1
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	maxDec := stepGB
+	for _, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		room := host.MemoryGB() - minMemGBPerHost
+		if room < maxDec {
+			maxDec = room
+		}
+	}
+	if maxDec < 1 {
+		return nil, nil
+	}
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		instances := m.collectInstancesForHost(hostID)
+		var allocMemMB float64
+		for _, inst := range instances {
+			if inst != nil {
+				allocMemMB += inst.MemoryMB()
+			}
+		}
+		newMemGB := host.MemoryGB() - maxDec
+		if newMemGB < minMemGBPerHost {
+			newMemGB = minMemGBPerHost
+		}
+		capacityMB := float64(newMemGB) * 1024.0
+		if allocMemMB > capacityMB+1e-6 {
+			return nil, fmt.Errorf("cannot decrease host capacity: host %s allocated %.2f MB would exceed new memory capacity %.2f MB", hostID, allocMemMB, capacityMB)
+		}
+	}
+	var out []HostCapacityChange
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		cpuBefore := host.CPUCores()
+		before := host.MemoryGB()
+		next := before - maxDec
+		if next < minMemGBPerHost {
+			next = minMemGBPerHost
+		}
+		host.SetMemoryGB(next)
+		out = append(out, HostCapacityChange{
+			HostID:         hostID,
+			CPUCoresBefore: cpuBefore,
+			CPUCoresAfter:  host.CPUCores(),
+			MemoryGBBefore: before,
+			MemoryGBAfter:  next,
+		})
+	}
+	return out, nil
+}
+
 // ScaleInHosts reduces the number of hosts to targetCount by removing hosts that
 // have no service instances. Prefer removing auto-added hosts (host-auto-*)
 // first, in reverse order of creation, so scenario-defined hosts are kept.
