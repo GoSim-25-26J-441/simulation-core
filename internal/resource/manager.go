@@ -2,6 +2,7 @@ package resource
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -23,7 +24,21 @@ const (
 	// DefaultDrainTimeout is the simulated-time budget for draining a replica when
 	// no explicit timeout is provided to ScaleServiceWithOptions.
 	DefaultDrainTimeout = time.Hour
+	// manualPatchMaxHostCPUCores and manualPatchMaxHostMemoryGB bound manual HTTP PATCH
+	// expand_capacity_if_needed host vertical growth (guardrail only).
+	manualPatchMaxHostCPUCores = 65536
+	manualPatchMaxHostMemoryGB = 65536
 )
+
+// HostCapacityChange records host CPU/memory capacity adjustments from
+// EnsureServiceResourceCapacity (manual PATCH placement_strategy=expand_capacity_if_needed).
+type HostCapacityChange struct {
+	HostID         string
+	CPUCoresBefore int
+	CPUCoresAfter  int
+	MemoryGBBefore int
+	MemoryGBAfter  int
+}
 
 // Manager tracks resource usage across hosts and service instances
 type Manager struct {
@@ -803,6 +818,117 @@ func (m *Manager) DecreaseHostCapacity(cpuDelta, memoryGBDelta int) error {
 		}
 	}
 	return nil
+}
+
+// EnsureServiceResourceCapacity expands host CPU and/or memory capacity on hosts that
+// already run instances of serviceID so that the proposed per-instance cpuCores/memoryMB
+// (zeros mean unchanged, matching UpdateServiceResources) would fit without instance migration.
+// Only grows host capacity; it never shrinks hosts or updates instance resources.
+func (m *Manager) EnsureServiceResourceCapacity(serviceID string, cpuCores, memoryMB float64) ([]HostCapacityChange, error) {
+	if cpuCores < 0 || memoryMB < 0 {
+		return nil, fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+	if cpuCores == 0 && memoryMB == 0 {
+		return nil, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	instances := m.getInstancesForServiceLocked(serviceID)
+	if len(instances) == 0 {
+		return nil, fmt.Errorf("service not found: %s", serviceID)
+	}
+
+	var out []HostCapacityChange
+
+	for hostID, host := range m.hosts {
+		if host == nil {
+			continue
+		}
+		hostInstances := m.collectInstancesForHost(hostID)
+		if len(hostInstances) == 0 {
+			continue
+		}
+		hasSvc := false
+		for _, inst := range hostInstances {
+			if inst != nil && inst.ServiceName() == serviceID {
+				hasSvc = true
+				break
+			}
+		}
+		if !hasSvc {
+			continue
+		}
+
+		totalCPU := 0.0
+		totalMemMB := 0.0
+		for _, inst := range hostInstances {
+			if inst == nil {
+				continue
+			}
+			cpu := inst.CPUCores()
+			mem := inst.MemoryMB()
+			if inst.ServiceName() == serviceID {
+				if cpuCores > 0 {
+					cpu = cpuCores
+				}
+				if memoryMB > 0 {
+					mem = memoryMB
+				}
+			}
+			totalCPU += cpu
+			totalMemMB += mem
+		}
+
+		cpuBefore := host.CPUCores()
+		memBeforeGB := host.MemoryGB()
+
+		if cpuCores > 0 {
+			if cores := host.CPUCores(); cores > 0 && totalCPU > float64(cores)+1e-9 {
+				want := int(math.Ceil(totalCPU - 1e-9))
+				if want < 1 {
+					want = 1
+				}
+				if want > manualPatchMaxHostCPUCores {
+					return nil, fmt.Errorf("host %s: required CPU capacity %d cores exceeds server limit (%d)", hostID, want, manualPatchMaxHostCPUCores)
+				}
+				if want > cores {
+					host.SetCPUCores(want)
+				}
+			}
+		}
+
+		if memoryMB > 0 {
+			if memGB := host.MemoryGB(); memGB > 0 {
+				capacityMB := float64(memGB) * 1024.0
+				if totalMemMB > capacityMB+1e-6 {
+					wantGB := int(math.Ceil(totalMemMB / 1024.0))
+					if wantGB < 1 {
+						wantGB = 1
+					}
+					if wantGB > manualPatchMaxHostMemoryGB {
+						return nil, fmt.Errorf("host %s: required memory capacity %d GB exceeds server limit (%d)", hostID, wantGB, manualPatchMaxHostMemoryGB)
+					}
+					if wantGB > memGB {
+						host.SetMemoryGB(wantGB)
+					}
+				}
+			}
+		}
+
+		if host.CPUCores() != cpuBefore || host.MemoryGB() != memBeforeGB {
+			out = append(out, HostCapacityChange{
+				HostID:         hostID,
+				CPUCoresBefore: cpuBefore,
+				CPUCoresAfter:  host.CPUCores(),
+				MemoryGBBefore: memBeforeGB,
+				MemoryGBAfter:  host.MemoryGB(),
+			})
+		}
+	}
+
+	return out, nil
 }
 
 // UpdateServiceResources updates per-instance CPU cores and memory (MB) for all

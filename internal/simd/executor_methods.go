@@ -66,6 +66,33 @@ func (e *RunExecutor) UpdateServiceResources(runID string, serviceID string, cpu
 	return rm.UpdateServiceResources(serviceID, cpuCores, memoryMB)
 }
 
+// EnsureServiceResourceCapacity expands affected host capacity so proposed per-instance
+// resources for the service fit (used with HTTP placement_strategy=expand_capacity_if_needed).
+func (e *RunExecutor) EnsureServiceResourceCapacity(runID string, serviceID string, cpuCores, memoryMB float64) ([]resource.HostCapacityChange, error) {
+	if runID == "" {
+		return nil, ErrRunIDMissing
+	}
+	if serviceID == "" {
+		return nil, fmt.Errorf("service_id is required")
+	}
+	if cpuCores < 0 || memoryMB < 0 {
+		return nil, fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+	if cpuCores == 0 && memoryMB == 0 {
+		return nil, nil
+	}
+
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	return rm.EnsureServiceResourceCapacity(serviceID, cpuCores, memoryMB)
+}
+
 // UpdateServiceResourcesWithHeadroom updates per-instance CPU/memory like UpdateServiceResources
 // but supplies memory headroom (MB) for safe memory downsize validation.
 func (e *RunExecutor) UpdateServiceResourcesWithHeadroom(runID string, serviceID string, cpuCores, memoryMB, memoryHeadroomMB float64) error {
