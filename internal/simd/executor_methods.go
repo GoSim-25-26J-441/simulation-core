@@ -39,6 +39,33 @@ func (e *RunExecutor) UpdateServiceReplicas(runID string, serviceID string, repl
 	return rm.ScaleServiceWithOptions(serviceID, replicas, resource.ScaleServiceOptions{SimTime: simTime})
 }
 
+// UpdateServiceReplicasWithCapacityExpansion expands host capacity for the target
+// service state before adjusting replicas. cpuCores/memoryMB follow the PATCH
+// resource semantics: zero means keep the current per-instance value.
+func (e *RunExecutor) UpdateServiceReplicasWithCapacityExpansion(runID string, serviceID string, replicas int, cpuCores, memoryMB float64) ([]resource.HostCapacityChange, error) {
+	if runID == "" {
+		return nil, ErrRunIDMissing
+	}
+	if serviceID == "" {
+		return nil, fmt.Errorf("service_id is required")
+	}
+	if replicas < 1 {
+		return nil, fmt.Errorf("replicas must be at least 1, got %d", replicas)
+	}
+	if cpuCores < 0 || memoryMB < 0 {
+		return nil, fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+
+	deltas, err := e.EnsureServiceTargetCapacity(runID, serviceID, replicas, cpuCores, memoryMB)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.UpdateServiceReplicas(runID, serviceID, replicas); err != nil {
+		return nil, err
+	}
+	return deltas, nil
+}
+
 // UpdateServiceResources updates per-instance CPU cores and memory (MB) for a service
 // in a running simulation. Passing 0 for a field leaves it unchanged.
 func (e *RunExecutor) UpdateServiceResources(runID string, serviceID string, cpuCores, memoryMB float64) error {
@@ -91,6 +118,33 @@ func (e *RunExecutor) EnsureServiceResourceCapacity(runID string, serviceID stri
 	}
 
 	return rm.EnsureServiceResourceCapacity(serviceID, cpuCores, memoryMB)
+}
+
+// EnsureServiceTargetCapacity expands host capacity for a combined service PATCH
+// target before replica/resource updates are applied.
+func (e *RunExecutor) EnsureServiceTargetCapacity(runID string, serviceID string, replicas int, cpuCores, memoryMB float64) ([]resource.HostCapacityChange, error) {
+	if runID == "" {
+		return nil, ErrRunIDMissing
+	}
+	if serviceID == "" {
+		return nil, fmt.Errorf("service_id is required")
+	}
+	if replicas < 1 {
+		return nil, fmt.Errorf("replicas must be at least 1, got %d", replicas)
+	}
+	if cpuCores < 0 || memoryMB < 0 {
+		return nil, fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+
+	e.mu.Lock()
+	rm, ok := e.resourceManagers[runID]
+	e.mu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotFound, runID)
+	}
+
+	return rm.EnsureServiceTargetCapacity(serviceID, replicas, cpuCores, memoryMB)
 }
 
 // UpdateServiceResourcesWithHeadroom updates per-instance CPU/memory like UpdateServiceResources

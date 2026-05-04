@@ -760,7 +760,28 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 			s.writeError(w, http.StatusBadRequest, "replicas must be at least 1 for service "+svc.ID)
 			return
 		}
-		if err := s.Executor.UpdateServiceReplicas(runID, svc.ID, svc.Replicas); err != nil {
+		var cpuVal, memVal float64
+		if svc.CPUCores != nil {
+			cpuVal = *svc.CPUCores
+		}
+		if svc.MemoryMB != nil {
+			memVal = *svc.MemoryMB
+		}
+		if placementStrategy == httpPlacementStrategyExpandCapacityIfNeeded {
+			deltas, err := s.Executor.UpdateServiceReplicasWithCapacityExpansion(runID, svc.ID, svc.Replicas, cpuVal, memVal)
+			if err != nil {
+				switch {
+				case errors.Is(err, ErrRunNotFound):
+					s.writeError(w, http.StatusNotFound, err.Error())
+				case errors.Is(err, ErrRunIDMissing):
+					s.writeError(w, http.StatusBadRequest, err.Error())
+				default:
+					s.writeError(w, http.StatusInternalServerError, err.Error())
+				}
+				return
+			}
+			hostCapacityChanges = append(hostCapacityChanges, deltas...)
+		} else if err := s.Executor.UpdateServiceReplicas(runID, svc.ID, svc.Replicas); err != nil {
 			switch {
 			case errors.Is(err, ErrRunNotFound):
 				s.writeError(w, http.StatusNotFound, err.Error())
@@ -776,28 +797,6 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 
 		// Optional vertical scaling for this service
 		if (svc.CPUCores != nil && *svc.CPUCores > 0) || (svc.MemoryMB != nil && *svc.MemoryMB > 0) {
-			var cpuVal, memVal float64
-			if svc.CPUCores != nil {
-				cpuVal = *svc.CPUCores
-			}
-			if svc.MemoryMB != nil {
-				memVal = *svc.MemoryMB
-			}
-			if placementStrategy == httpPlacementStrategyExpandCapacityIfNeeded {
-				deltas, err := s.Executor.EnsureServiceResourceCapacity(runID, svc.ID, cpuVal, memVal)
-				if err != nil {
-					switch {
-					case errors.Is(err, ErrRunNotFound):
-						s.writeError(w, http.StatusNotFound, err.Error())
-					case errors.Is(err, ErrRunIDMissing):
-						s.writeError(w, http.StatusBadRequest, err.Error())
-					default:
-						s.writeError(w, http.StatusInternalServerError, err.Error())
-					}
-					return
-				}
-				hostCapacityChanges = append(hostCapacityChanges, deltas...)
-			}
 			if err := s.Executor.UpdateServiceResources(runID, svc.ID, cpuVal, memVal); err != nil {
 				switch {
 				case errors.Is(err, ErrRunNotFound):
