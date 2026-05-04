@@ -360,7 +360,7 @@ func (s *SimulationGRPCServer) UpdateRunConfiguration(ctx context.Context, req *
 		if svc.Replicas < 1 {
 			return nil, status.Error(codes.InvalidArgument, "replicas must be at least 1 for service "+svc.ServiceId)
 		}
-		if err := s.Executor.UpdateServiceReplicas(req.RunId, svc.ServiceId, int(svc.Replicas)); err != nil {
+		if _, err := s.Executor.UpdateServiceReplicasWithCapacityExpansion(req.RunId, svc.ServiceId, int(svc.Replicas), svc.CpuCores, svc.MemoryMb); err != nil {
 			switch {
 			case errors.Is(err, ErrRunNotFound):
 				return nil, status.Error(codes.NotFound, err.Error())
@@ -371,7 +371,8 @@ func (s *SimulationGRPCServer) UpdateRunConfiguration(ctx context.Context, req *
 			}
 		}
 
-		// Optional vertical scaling for this service
+		// Optional vertical scaling for this service. Capacity has already been
+		// expanded for the combined target above when needed.
 		if svc.CpuCores > 0 || svc.MemoryMb > 0 {
 			if err := s.Executor.UpdateServiceResources(req.RunId, svc.ServiceId, svc.CpuCores, svc.MemoryMb); err != nil {
 				switch {
