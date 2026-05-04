@@ -30,8 +30,8 @@ const (
 	manualPatchMaxHostMemoryGB = 65536
 )
 
-// HostCapacityChange records host CPU/memory capacity adjustments from
-// EnsureServiceResourceCapacity (manual PATCH placement_strategy=expand_capacity_if_needed).
+// HostCapacityChange records host CPU/memory capacity adjustments from manual
+// PATCH placement_strategy=expand_capacity_if_needed capacity planning.
 type HostCapacityChange struct {
 	HostID         string
 	CPUCoresBefore int
@@ -1125,6 +1125,146 @@ func (m *Manager) EnsureServiceResourceCapacity(serviceID string, cpuCores, memo
 						host.SetMemoryGB(wantGB)
 					}
 				}
+			}
+		}
+
+		if host.CPUCores() != cpuBefore || host.MemoryGB() != memBeforeGB {
+			out = append(out, HostCapacityChange{
+				HostID:         hostID,
+				CPUCoresBefore: cpuBefore,
+				CPUCoresAfter:  host.CPUCores(),
+				MemoryGBBefore: memBeforeGB,
+				MemoryGBAfter:  host.MemoryGB(),
+			})
+		}
+	}
+
+	return out, nil
+}
+
+// EnsureServiceTargetCapacity expands host CPU and/or memory capacity so that a
+// combined service PATCH target (replicas plus optional per-instance resources)
+// can be applied without failing later host capacity checks. It models the same
+// no-migration behavior as ScaleService: existing instances stay on their hosts
+// and additional replicas are assigned by the deterministic host rotation used
+// by scale-up, with host capacity grown before the instances are created.
+func (m *Manager) EnsureServiceTargetCapacity(serviceID string, targetReplicas int, cpuCores, memoryMB float64) ([]HostCapacityChange, error) {
+	if targetReplicas < 1 {
+		return nil, fmt.Errorf("replicas must be at least 1, got %d", targetReplicas)
+	}
+	if cpuCores < 0 || memoryMB < 0 {
+		return nil, fmt.Errorf("cpu_cores and memory_mb must be non-negative")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	allInst := m.getInstancesForServiceLocked(serviceID)
+	if len(allInst) == 0 {
+		return nil, fmt.Errorf("service not found: %s", serviceID)
+	}
+	if len(m.hosts) == 0 {
+		return nil, fmt.Errorf("no hosts available")
+	}
+
+	sort.Slice(allInst, func(i, j int) bool {
+		return allInst[i].ID() < allInst[j].ID()
+	})
+
+	activeN := 0
+	for _, inst := range allInst {
+		if inst != nil && inst.Lifecycle() == InstanceActive {
+			activeN++
+		}
+	}
+
+	template := allInst[0]
+	targetCPU := template.CPUCores()
+	targetMem := template.MemoryMB()
+	if cpuCores > 0 {
+		targetCPU = cpuCores
+	}
+	if memoryMB > 0 {
+		targetMem = memoryMB
+	}
+
+	hostIDs := make([]string, 0, len(m.hosts))
+	for id := range m.hosts {
+		hostIDs = append(hostIDs, id)
+	}
+	sort.Strings(hostIDs)
+
+	type plannedLoad struct {
+		cpu float64
+		mem float64
+	}
+	load := make(map[string]plannedLoad, len(hostIDs))
+
+	for hostID := range m.hosts {
+		for _, inst := range m.collectInstancesForHost(hostID) {
+			if inst == nil {
+				continue
+			}
+			cpu := inst.CPUCores()
+			mem := inst.MemoryMB()
+			if inst.ServiceName() == serviceID {
+				if cpuCores > 0 {
+					cpu = cpuCores
+				}
+				if memoryMB > 0 {
+					mem = memoryMB
+				}
+			}
+			l := load[hostID]
+			l.cpu += cpu
+			l.mem += mem
+			load[hostID] = l
+		}
+	}
+
+	if targetReplicas > activeN {
+		existing := len(allInst)
+		for i := 0; i < targetReplicas-activeN; i++ {
+			hostID := hostIDs[(existing+i)%len(hostIDs)]
+			l := load[hostID]
+			l.cpu += targetCPU
+			l.mem += targetMem
+			load[hostID] = l
+		}
+	}
+
+	var out []HostCapacityChange
+	for _, hostID := range hostIDs {
+		host := m.hosts[hostID]
+		if host == nil {
+			continue
+		}
+		l := load[hostID]
+		cpuBefore := host.CPUCores()
+		memBeforeGB := host.MemoryGB()
+
+		if cpuBefore > 0 && l.cpu > float64(cpuBefore)+1e-9 {
+			want := int(math.Ceil(l.cpu - 1e-9))
+			if want < 1 {
+				want = 1
+			}
+			if want > manualPatchMaxHostCPUCores {
+				return nil, fmt.Errorf("host %s: required CPU capacity %d cores exceeds server limit (%d)", hostID, want, manualPatchMaxHostCPUCores)
+			}
+			host.SetCPUCores(want)
+		}
+
+		if memBeforeGB > 0 {
+			capacityMB := float64(memBeforeGB) * 1024.0
+			if l.mem > capacityMB+1e-6 {
+				wantGB := int(math.Ceil(l.mem / 1024.0))
+				if wantGB < 1 {
+					wantGB = 1
+				}
+				if wantGB > manualPatchMaxHostMemoryGB {
+					return nil, fmt.Errorf("host %s: required memory capacity %d GB exceeds server limit (%d)", hostID, wantGB, manualPatchMaxHostMemoryGB)
+				}
+				host.SetMemoryGB(wantGB)
 			}
 		}
 

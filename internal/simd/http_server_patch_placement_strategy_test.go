@@ -146,6 +146,152 @@ func TestHTTPServerPatchConfigurationExpandThenAppliesCPUIncrease(t *testing.T) 
 	}
 }
 
+func TestHTTPServerPatchConfigurationExpandAppliesReplicasAndCPUAsCombinedTarget(t *testing.T) {
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rec, err := store.Create("run-expand-replicas-cpu", &simulationv1.RunInput{ScenarioYaml: testScenarioYAML, DurationMs: 2000})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	recLatest, ok := store.Get(rec.Run.Id)
+	if !ok || recLatest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run not RUNNING")
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	body := map[string]any{
+		"placement_strategy": httpPlacementStrategyExpandCapacityIfNeeded,
+		"services": []map[string]any{{
+			"id": "svc1", "replicas": 3, "cpu_cores": 5.0,
+		}},
+	}
+	b, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-expand-replicas-cpu/configuration", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["capacity_expanded"] != true {
+		t.Fatalf("capacity_expanded: %#v", resp["capacity_expanded"])
+	}
+	cfg, ok := exec.GetRunConfiguration(rec.Run.Id)
+	if !ok || cfg == nil {
+		t.Fatal("GetRunConfiguration")
+	}
+	var gotSvc bool
+	for _, s := range cfg.Services {
+		if s.ServiceId == "svc1" {
+			gotSvc = true
+			if s.Replicas != 3 {
+				t.Fatalf("expected svc1 replicas 3, got %d", s.Replicas)
+			}
+			if s.CpuCores != 5.0 {
+				t.Fatalf("expected svc1 cpu_cores 5, got %v", s.CpuCores)
+			}
+		}
+	}
+	if !gotSvc {
+		t.Fatal("expected svc1 in run configuration")
+	}
+	var gotHost bool
+	for _, h := range cfg.Hosts {
+		if h.HostId == "host-1" {
+			gotHost = true
+			if h.CpuCores < 15 {
+				t.Fatalf("expected host-1 cpu_cores at least 15, got %d", h.CpuCores)
+			}
+		}
+	}
+	if !gotHost {
+		t.Fatal("expected host-1 in run configuration")
+	}
+}
+
+func TestHTTPServerPatchConfigurationExpandAppliesReplicaOnlyCapacityTarget(t *testing.T) {
+	yaml := `
+hosts:
+  - id: host-1
+    cores: 4
+services:
+  - id: users
+    replicas: 1
+    model: cpu
+    cpu_cores: 2
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: users:/test
+    arrival: {type: poisson, rate_rps: 10}
+`
+	store := NewRunStore()
+	exec := NewRunExecutor(store, nil)
+	srv := NewHTTPServer(store, exec)
+
+	rec, err := store.Create("run-expand-replicas-only", &simulationv1.RunInput{ScenarioYaml: yaml, DurationMs: 2000})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := exec.Start(rec.Run.Id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	time.Sleep(15 * time.Millisecond)
+	recLatest, ok := store.Get(rec.Run.Id)
+	if !ok || recLatest.Run.Status != simulationv1.RunStatus_RUN_STATUS_RUNNING {
+		t.Skipf("run not RUNNING")
+	}
+	defer exec.Stop(rec.Run.Id)
+
+	body := map[string]any{
+		"placement_strategy": httpPlacementStrategyExpandCapacityIfNeeded,
+		"services": []map[string]any{{
+			"id": "users", "replicas": 4,
+		}},
+	}
+	b, _ := json.Marshal(body)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/run-expand-replicas-only/configuration", strings.NewReader(string(b)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["capacity_expanded"] != true {
+		t.Fatalf("capacity_expanded: %#v", resp["capacity_expanded"])
+	}
+	cfg, ok := exec.GetRunConfiguration(rec.Run.Id)
+	if !ok || cfg == nil {
+		t.Fatal("GetRunConfiguration")
+	}
+	for _, h := range cfg.Hosts {
+		if h.HostId == "host-1" && h.CpuCores < 8 {
+			t.Fatalf("expected host-1 cpu_cores at least 8, got %d", h.CpuCores)
+		}
+	}
+}
+
 func TestHTTPServerPatchConfigurationExpandThenAppliesMemoryIncrease(t *testing.T) {
 	yaml := `
 hosts:
