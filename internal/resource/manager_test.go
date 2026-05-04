@@ -1076,6 +1076,106 @@ func TestManagerUpdateServiceResources(t *testing.T) {
 
 }
 
+func TestManagerEnsureServiceResourceCapacityExpandsHostCPU(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if err := m.UpdateServiceResources("svc1", 3.0, 0); err == nil {
+		t.Fatal("expected strict capacity failure before host expansion")
+	}
+	ch, err := m.EnsureServiceResourceCapacity("svc1", 3.0, 0)
+	if err != nil {
+		t.Fatalf("EnsureServiceResourceCapacity: %v", err)
+	}
+	if len(ch) != 1 || ch[0].HostID != "host-1" || ch[0].CPUCoresBefore != 2 || ch[0].CPUCoresAfter != 3 {
+		t.Fatalf("unexpected changes: %#v", ch)
+	}
+	if err := m.UpdateServiceResources("svc1", 3.0, 0); err != nil {
+		t.Fatalf("UpdateServiceResources after expand: %v", err)
+	}
+	for _, inst := range m.GetInstancesForService("svc1") {
+		if inst.CPUCores() != 3.0 {
+			t.Fatalf("expected instance CPU 3, got %f", inst.CPUCores())
+		}
+	}
+}
+
+func TestManagerEnsureServiceResourceCapacityExpandsHostMemory(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 8, MemoryGB: 1}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if err := m.UpdateServiceResources("svc1", 0, 2048.0); err == nil {
+		t.Fatal("expected strict memory capacity failure")
+	}
+	ch, err := m.EnsureServiceResourceCapacity("svc1", 0, 2048.0)
+	if err != nil {
+		t.Fatalf("EnsureServiceResourceCapacity: %v", err)
+	}
+	if len(ch) != 1 || ch[0].MemoryGBBefore != 1 || ch[0].MemoryGBAfter != 2 {
+		t.Fatalf("unexpected changes: %#v", ch)
+	}
+	if err := m.UpdateServiceResources("svc1", 0, 2048.0); err != nil {
+		t.Fatalf("UpdateServiceResources after expand: %v", err)
+	}
+}
+
+func TestManagerEnsureServiceResourceCapacityNoOpWhenAlreadyFits(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 8}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	ch, err := m.EnsureServiceResourceCapacity("svc1", 2.0, 0)
+	if err != nil {
+		t.Fatalf("EnsureServiceResourceCapacity: %v", err)
+	}
+	if len(ch) != 0 {
+		t.Fatalf("expected no host changes, got %#v", ch)
+	}
+}
+
+func TestManagerEnsureServiceResourceCapacityUnknownService(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	if _, err := m.EnsureServiceResourceCapacity("unknown-svc", 2.0, 0); err == nil {
+		t.Fatal("expected error for unknown service")
+	}
+}
+
+func TestManagerEnsureServiceResourceCapacityRejectsBeyondServerCPULimit(t *testing.T) {
+	m := NewManager()
+	scenario := &config.Scenario{
+		Hosts:    []config.Host{{ID: "host-1", Cores: 2}},
+		Services: []config.Service{{ID: "svc1", Replicas: 1, Model: "cpu"}},
+	}
+	if err := m.InitializeFromScenario(scenario); err != nil {
+		t.Fatalf("InitializeFromScenario: %v", err)
+	}
+	want := float64(manualPatchMaxHostCPUCores + 1)
+	if _, err := m.EnsureServiceResourceCapacity("svc1", want, 0); err == nil {
+		t.Fatal("expected guardrail error for CPU expansion beyond server limit")
+	}
+}
+
 func TestManagerUpdateServiceResourcesMemoryDownsizeRejected(t *testing.T) {
 	m := NewManager()
 	scenario := &config.Scenario{

@@ -21,6 +21,7 @@ import (
 	"github.com/GoSim-25-26J-441/simulation-core/internal/batchspec"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/interaction"
 	"github.com/GoSim-25-26J-441/simulation-core/internal/metrics"
+	"github.com/GoSim-25-26J-441/simulation-core/internal/resource"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/config"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/logger"
 	"github.com/GoSim-25-26J-441/simulation-core/pkg/models"
@@ -666,6 +667,11 @@ func normalizeCreateRunAliasesJSON(bodyReader io.Reader) ([]byte, error) {
 	return json.Marshal(body)
 }
 
+const (
+	httpPlacementStrategyStrict                 = "strict"
+	httpPlacementStrategyExpandCapacityIfNeeded = "expand_capacity_if_needed"
+)
+
 func applyCreateRunOptimizationAliases(body map[string]any) {
 	input, ok := body["input"].(map[string]any)
 	if !ok || input == nil {
@@ -691,7 +697,8 @@ func applyCreateRunOptimizationAliases(body map[string]any) {
 // Body may include services (replicas) and/or workload (rate_rps per pattern_key).
 func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http.Request, runID string) {
 	var req struct {
-		Services []struct {
+		PlacementStrategy string `json:"placement_strategy,omitempty"`
+		Services          []struct {
 			ID       string   `json:"id"`
 			Replicas int      `json:"replicas"`
 			CPUCores *float64 `json:"cpu_cores,omitempty"`
@@ -720,6 +727,18 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 		return
 	}
 
+	placementStrategy := strings.TrimSpace(req.PlacementStrategy)
+	if placementStrategy == "" {
+		placementStrategy = httpPlacementStrategyStrict
+	}
+	switch placementStrategy {
+	case httpPlacementStrategyStrict, httpPlacementStrategyExpandCapacityIfNeeded:
+	default:
+		s.writeError(w, http.StatusBadRequest, fmt.Sprintf("placement_strategy must be %q, %q, or omitted (defaults to %q); got %q",
+			httpPlacementStrategyStrict, httpPlacementStrategyExpandCapacityIfNeeded, httpPlacementStrategyStrict, strings.TrimSpace(req.PlacementStrategy)))
+		return
+	}
+
 	rec, ok := s.store.Get(runID)
 	if !ok {
 		s.writeError(w, http.StatusNotFound, "run not found")
@@ -729,6 +748,8 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 		s.writeError(w, http.StatusBadRequest, "run is not running (status: "+rec.Run.Status.String()+")")
 		return
 	}
+
+	var hostCapacityChanges []resource.HostCapacityChange
 
 	for _, svc := range req.Services {
 		if svc.ID == "" {
@@ -761,6 +782,21 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 			}
 			if svc.MemoryMB != nil {
 				memVal = *svc.MemoryMB
+			}
+			if placementStrategy == httpPlacementStrategyExpandCapacityIfNeeded {
+				deltas, err := s.Executor.EnsureServiceResourceCapacity(runID, svc.ID, cpuVal, memVal)
+				if err != nil {
+					switch {
+					case errors.Is(err, ErrRunNotFound):
+						s.writeError(w, http.StatusNotFound, err.Error())
+					case errors.Is(err, ErrRunIDMissing):
+						s.writeError(w, http.StatusBadRequest, err.Error())
+					default:
+						s.writeError(w, http.StatusInternalServerError, err.Error())
+					}
+					return
+				}
+				hostCapacityChanges = append(hostCapacityChanges, deltas...)
 			}
 			if err := s.Executor.UpdateServiceResources(runID, svc.ID, cpuVal, memVal); err != nil {
 				switch {
@@ -827,11 +863,30 @@ func (s *HTTPServer) handleUpdateRunConfiguration(w http.ResponseWriter, r *http
 
 	s.Executor.NotifyOnlineRuntimeMutation(runID)
 
-	logger.Info("run configuration updated (HTTP)", "run_id", runID)
-	s.writeJSON(w, http.StatusOK, map[string]any{
+	logger.Info("run configuration updated (HTTP)", "run_id", runID, "placement_strategy", placementStrategy)
+
+	resp := map[string]any{
 		"message": "configuration updated successfully",
 		"run_id":  runID,
-	})
+	}
+	if placementStrategy == httpPlacementStrategyExpandCapacityIfNeeded {
+		resp["placement_strategy"] = placementStrategy
+		resp["capacity_expanded"] = len(hostCapacityChanges) > 0
+		if len(hostCapacityChanges) > 0 {
+			changes := make([]map[string]any, 0, len(hostCapacityChanges))
+			for _, c := range hostCapacityChanges {
+				changes = append(changes, map[string]any{
+					"host_id":          c.HostID,
+					"cpu_cores_before": c.CPUCoresBefore,
+					"cpu_cores_after":  c.CPUCoresAfter,
+					"memory_gb_before": c.MemoryGBBefore,
+					"memory_gb_after":  c.MemoryGBAfter,
+				})
+			}
+			resp["host_capacity_changes"] = changes
+		}
+	}
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleGetRunConfiguration handles GET /v1/runs/{id}/configuration
