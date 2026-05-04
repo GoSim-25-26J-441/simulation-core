@@ -1391,6 +1391,57 @@ func onlineScaleDownGuard(rm *resource.Manager, runMetrics *models.RunMetrics, s
 	return false
 }
 
+// cpuPrimaryScaleDownSafe reports whether replica or vertical CPU scale-down is allowed for a
+// service under CPU-primary policy: P95 within guard band, no broker backlog for the service,
+// no local queue depth, bounded concurrency, and non-worsening error rate vs the prior tick.
+func cpuPrimaryScaleDownSafe(runMetrics *models.RunMetrics, currentP95, targetP95 float64, p95Guard bool, prevErrFrac float64, brokerPressure map[string]brokerPressureSignal, serviceID string, rm *resource.Manager) bool {
+	if runMetrics == nil {
+		return false
+	}
+	if p95Guard && currentP95 > targetP95*1.05 {
+		return false
+	}
+	if p, ok := brokerPressure[serviceID]; ok && (p.HasBacklog || p.HasInFlight || p.MaxOldestAgeMs > 0 || p.HasDrops || p.HasDLQ) {
+		return false
+	}
+	if sm := runMetrics.ServiceMetrics[serviceID]; sm != nil && sm.ConcurrentRequests > 10 {
+		return false
+	}
+	if rm != nil && serviceQueueDepthTotal(rm, serviceID) > 0 {
+		return false
+	}
+	tot := float64(runMetrics.TotalRequests)
+	if tot > 0 && prevErrFrac >= 0 {
+		curr := float64(runMetrics.FailedRequests) / tot
+		if curr > prevErrFrac+0.005 {
+			return false
+		}
+	}
+	return true
+}
+
+// cpuPrimaryHostScaleInSafe reports whether cluster-level host scale-in is allowed under CPU-primary:
+// P95 within guard band, no broker pressure, and non-worsening aggregate error rate.
+func cpuPrimaryHostScaleInSafe(runMetrics *models.RunMetrics, currentP95, targetP95 float64, p95Guard bool, prevErrFrac float64, brokerPressure map[string]brokerPressureSignal) bool {
+	if runMetrics == nil {
+		return false
+	}
+	if p95Guard && currentP95 > targetP95*1.05 {
+		return false
+	}
+	if onlineAnyBrokerPressure(brokerPressure) {
+		return false
+	}
+	tot := float64(runMetrics.TotalRequests)
+	if tot > 0 && prevErrFrac >= 0 {
+		curr := float64(runMetrics.FailedRequests) / tot
+		if curr > prevErrFrac+0.005 {
+			return false
+		}
+	}
+	return true
+}
+
 // onlineTopologyGuard is a compatibility helper for topology-aware scale-down checks.
 // It returns a stable reason string so tests and audit messages can assert decisions.
 func onlineTopologyGuard(runMetrics *models.RunMetrics, _ *config.Scenario, _ string, _ *resource.Manager, opt *simulationv1.OptimizationConfig, _ int) (guarded bool, reason string) {
@@ -1433,8 +1484,101 @@ func maxServiceUtilization(runMetrics *models.RunMetrics, kind string) float64 {
 	return maxUtil
 }
 
+// onlineOptimizationStepMeta describes the controller action for optimization_history replay (Phase 5+).
+type onlineOptimizationStepMeta struct {
+	Action                 string
+	DecisionServiceID      string
+	DecisionMetric         string
+	DecisionMetricValue    float64
+	ObjectiveScoreOverride *float64 // when non-nil, sets objective_score instead of deriving from tick + primary
+}
+
+// onlineOptimizationHistoryBundle carries replay context for one recorded online step.
+type onlineOptimizationHistoryBundle struct {
+	Opt              *simulationv1.OptimizationConfig
+	Tick             *onlineCtrlTickInput
+	PrimaryTargetCtl string
+	Meta             *onlineOptimizationStepMeta
+}
+
+func normalizeOnlineHistoryPrimaryTarget(primary string) string {
+	p := strings.ToLower(strings.TrimSpace(primary))
+	switch p {
+	case "cpu_utilization", "memory_utilization":
+		return p
+	default:
+		return "p95_latency"
+	}
+}
+
+func derivedOnlineObjectiveScore(primaryNorm string, tick *onlineCtrlTickInput, scoreP95 float64) float64 {
+	if tick == nil {
+		return scoreP95
+	}
+	switch primaryNorm {
+	case "cpu_utilization":
+		if tick.runMetrics != nil {
+			return maxServiceUtilization(tick.runMetrics, "cpu")
+		}
+	case "memory_utilization":
+		if tick.runMetrics != nil {
+			return maxServiceUtilization(tick.runMetrics, "memory")
+		}
+	default:
+		return tick.currentP95
+	}
+	return scoreP95
+}
+
+func fillOptimizationStepReplay(step *simulationv1.OptimizationStep, bundle *onlineOptimizationHistoryBundle, scoreP95 float64) {
+	if step == nil || bundle == nil || bundle.Meta == nil || bundle.Tick == nil {
+		return
+	}
+	opt := bundle.Opt
+	tick := bundle.Tick
+	meta := bundle.Meta
+	primaryNorm := normalizeOnlineHistoryPrimaryTarget(bundle.PrimaryTargetCtl)
+
+	step.PrimaryTarget = primaryNorm
+	step.Action = meta.Action
+	step.DecisionServiceId = meta.DecisionServiceID
+	step.DecisionMetric = meta.DecisionMetric
+	step.DecisionMetricValue = meta.DecisionMetricValue
+
+	switch primaryNorm {
+	case "cpu_utilization", "memory_utilization":
+		if opt != nil {
+			step.TargetUtilLow = EffectiveOnlineTargetUtilLow(opt)
+			step.TargetUtilHigh = EffectiveOnlineTargetUtilHigh(opt)
+		}
+		step.ObjectiveUnit = "ratio"
+	default:
+		step.ObjectiveUnit = "ms"
+	}
+
+	if meta.ObjectiveScoreOverride != nil {
+		step.ObjectiveScore = *meta.ObjectiveScoreOverride
+	} else {
+		step.ObjectiveScore = derivedOnlineObjectiveScore(primaryNorm, tick, scoreP95)
+	}
+
+	if opt != nil && opt.GetTargetP95LatencyMs() > 0 {
+		step.GuardrailP95Ms = opt.GetTargetP95LatencyMs()
+	}
+	step.CurrentP95Ms = tick.currentP95
+
+	if tick.runMetrics != nil {
+		tot := tick.runMetrics.TotalRequests
+		if tot > 0 {
+			er := float64(tick.runMetrics.FailedRequests) / float64(tot)
+			step.CurrentErrorRate = &er
+		}
+	}
+}
+
 // recordOptimizationStep appends an optimization step to the run's history for backend persistence.
-func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32, targetP95, scoreP95 float64, reason string, prevConfig, currConfig *simulationv1.RunConfiguration) {
+// When bundle is non-nil with Meta set, Phase 5 replay fields (primary_target, objective_*, guardrails, action, …) are populated.
+func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32, targetP95, scoreP95 float64, reason string, prevConfig, currConfig *simulationv1.RunConfiguration, bundle *onlineOptimizationHistoryBundle) {
 	if prevConfig == nil || currConfig == nil {
 		return
 	}
@@ -1445,6 +1589,9 @@ func (e *RunExecutor) recordOptimizationStep(runID string, iterationIndex int32,
 		Reason:         reason,
 		PreviousConfig: proto.Clone(prevConfig).(*simulationv1.RunConfiguration),
 		CurrentConfig:  proto.Clone(currConfig).(*simulationv1.RunConfiguration),
+	}
+	if bundle != nil && bundle.Meta != nil {
+		fillOptimizationStepReplay(step, bundle, scoreP95)
 	}
 	if err := e.store.AppendOptimizationStep(runID, step); err != nil {
 		logger.Error("failed to append optimization step", "run_id", runID, "error", err)
@@ -1463,6 +1610,9 @@ func validateOnlineOptimizationConfig(opt *simulationv1.OptimizationConfig) erro
 	}
 	if primary == "p95_latency" && opt.GetTargetP95LatencyMs() <= 0 {
 		return fmt.Errorf("online optimization with primary target p95_latency requires target_p95_latency_ms > 0")
+	}
+	if err := validateOnlinePrimaryUtilizationBand(opt, primary); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1512,7 +1662,6 @@ func (e *RunExecutor) runOnlineController(
 
 	bestScore := math.Inf(1)
 	var iter int32
-	var stepIndex int32
 
 	const (
 		cpuHighThreshold     = 0.8 // above this, consider service CPU "hot"
@@ -1524,16 +1673,11 @@ func (e *RunExecutor) runOnlineController(
 	// Host scaling bounds. Defaults: use the initial scenario host count as both
 	// the minimum and maximum when not explicitly configured.
 	initialHosts := len(scenario.Hosts)
-	minHosts := int(opt.MinHosts)
-	if minHosts <= 0 {
-		minHosts = initialHosts
-	}
-	maxHosts := int(opt.MaxHosts)
-	if maxHosts <= 0 {
-		maxHosts = initialHosts
-	}
-	if maxHosts < minHosts {
-		maxHosts = minHosts
+	minHosts, maxHosts := onlineEffectiveMinMaxHosts(opt, initialHosts)
+	if primaryTargetCtl == "cpu_utilization" {
+		for _, w := range onlineCPUPrimaryHostScalingWarnings(opt, initialHosts) {
+			logger.Warn(w, "run_id", runID, "initial_hosts", initialHosts, "effective_min_hosts", minHosts, "effective_max_hosts", maxHosts)
+		}
 	}
 	scaleDownHostCPUMax := opt.GetScaleDownHostCpuUtilMax()
 	initialHostCores := 0
@@ -1551,14 +1695,12 @@ func (e *RunExecutor) runOnlineController(
 		initialHostMemGB = 1
 	}
 
-	lastScaleWall := time.Time{}
-	stableRepDown := make(map[string]int)
-	stableHostScaleIn := 0
-	stableHostCPUDown := 0
-	stableHostMemDown := 0
-	stableVertCPUDown := make(map[string]int)
-	stableVertMemDown := make(map[string]int)
-	prevErrFrac := -1.0
+	loopState := &onlineCtrlLoopState{
+		stableRepDown:     make(map[string]int),
+		stableVertCPUDown: make(map[string]int),
+		stableVertMemDown: make(map[string]int),
+		prevErrFrac:       -1.0,
+	}
 	intervalMs := int64(interval / time.Millisecond)
 	if intervalMs < 1 {
 		intervalMs = 1
@@ -1586,7 +1728,7 @@ func (e *RunExecutor) runOnlineController(
 				e.setOnlineControllerIdle(runID, false, 0)
 			}
 
-			stepIndexBefore := stepIndex
+			stepIndexBefore := loopState.stepIndex
 			if lt := rm.LastSimTime(); !lt.IsZero() {
 				dropped := rm.ProcessDrainingInstances(lt)
 				e.mu.Lock()
@@ -1602,7 +1744,7 @@ func (e *RunExecutor) runOnlineController(
 				e.signalOnlineLeaseEnd(runID, OnlineCompletionHeartbeatExpired)
 				continue
 			}
-			if opt.GetMaxControllerSteps() > 0 && stepIndex >= opt.GetMaxControllerSteps() {
+			if opt.GetMaxControllerSteps() > 0 && loopState.stepIndex >= opt.GetMaxControllerSteps() {
 				if !maxStepsNoticeLogged {
 					logger.Warn("online controller reached max_controller_steps; stopping simulation",
 						"run_id", runID,
@@ -1613,7 +1755,7 @@ func (e *RunExecutor) runOnlineController(
 				continue
 			}
 			cooldown := time.Duration(opt.GetScaleDownCooldownMs()) * time.Millisecond
-			if cooldown > 0 && !lastScaleWall.IsZero() && time.Since(lastScaleWall) < cooldown {
+			if cooldown > 0 && !loopState.lastScaleWall.IsZero() && time.Since(loopState.lastScaleWall) < cooldown {
 				continue
 			}
 			stabWindowMs := opt.GetScaleDownStabilizationWindowMs()
@@ -1660,456 +1802,55 @@ func (e *RunExecutor) runOnlineController(
 				e.store.SetOptimizationProgress(runID, iter, bestScore)
 			}
 
-			// Host-level controller: when latency is above target and hosts are hot, scale
-			// out hosts up to max_hosts; once that bound is reached, scale host capacity
-			// vertically by increasing CPU cores per host.
 			hostCount := rm.HostCount()
 			maxHostCPU := rm.MaxHostCPUUtilization()
 			maxHostMem := rm.MaxHostMemoryUtilization()
 
-			if p95Guard && currentP95 > targetP95*1.05 && hostCount > 0 {
-				if hostCount < maxHosts && maxHostCPU >= hostCPUHighThreshold {
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					if err := rm.ScaleOutHosts(hostCount + 1); err != nil {
-						logger.Error("online controller failed to scale out hosts",
-							"run_id", runID,
-							"current_hosts", hostCount,
-							"target_hosts", hostCount+1,
-							"error", err)
-					} else {
-						logger.Info("online controller scaled out hosts",
-							"run_id", runID,
-							"previous_hosts", hostCount,
-							"new_hosts", rm.HostCount(),
-							"max_hosts", maxHosts,
-							"max_host_cpu_utilization", maxHostCPU)
-						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-							stepIndex++
-							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-								"p95 above target, host CPU hot, scaled out hosts",
-								prevConfig, currConfig)
-						}
-					}
-				} else if hostCount >= maxHosts && maxHostCPU >= hostCPUHighThreshold {
-					hostCPUStep := int(math.Ceil(opt.StepSize))
-					if hostCPUStep < 1 {
-						hostCPUStep = 1
-					}
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					rm.IncreaseHostCapacity(hostCPUStep, 0)
-					logger.Info("online controller increased host capacity",
-						"run_id", runID,
-						"cpu_step", hostCPUStep,
-						"host_count", rm.HostCount(),
-						"max_hosts", maxHosts,
-						"max_host_cpu_utilization", maxHostCPU)
-					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-						stepIndex++
-						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-							"p95 above target, hosts at max, increased host CPU capacity",
-							prevConfig, currConfig)
-					}
-				}
+			tickIn := &onlineCtrlTickInput{
+				runMetrics:           runMetrics,
+				currentP95:           currentP95,
+				targetP95:            targetP95,
+				p95Guard:             p95Guard,
+				brokerPressure:       brokerPressure,
+				hostCount:            hostCount,
+				maxHostCPU:           maxHostCPU,
+				maxHostMem:           maxHostMem,
+				stabTicks:            stabTicks,
+				minReplicasCtl:       minReplicasCtl,
+				minCPUCtl:            minCPUCtl,
+				minMemCtl:            minMemCtl,
+				memHeadroomCtl:       memHeadroomCtl,
+				scaleDownCPUMax:      scaleDownCPUMax,
+				scaleDownMemMax:      scaleDownMemMax,
+				scaleDownHostCPUMax:  scaleDownHostCPUMax,
+				scaleDownHostMemMax:  scaleDownHostMemMax,
+				initialHostCores:     initialHostCores,
+				initialHostMemGB:     initialHostMemGB,
+				minHosts:             minHosts,
+				maxHosts:             maxHosts,
+				cpuHighThreshold:     cpuHighThreshold,
+				hostCPUHighThreshold: hostCPUHighThreshold,
 			}
 
-			// Host-level scale-in (stabilized): when P95 and host CPU are low, remove empty hosts.
-			hostScaleInCond := p95Guard && scaleDownHostCPUMax > 0 && currentP95 < targetP95*0.7 && hostCount > minHosts && maxHostCPU < scaleDownHostCPUMax
-			if hostScaleInCond {
-				stableHostScaleIn++
-			} else {
-				stableHostScaleIn = 0
-			}
-			if hostScaleInCond && stableHostScaleIn >= stabTicks {
-				prevConfig, _ := e.GetRunConfiguration(runID)
-				if err := rm.ScaleInHosts(hostCount - 1); err != nil {
-					logger.Debug("online controller scale-in hosts skipped",
-						"run_id", runID,
-						"host_count", hostCount,
-						"error", err)
-				} else if rm.HostCount() < hostCount {
-					stableHostScaleIn = 0
-					logger.Info("online controller scaled in hosts",
-						"run_id", runID,
-						"previous_hosts", hostCount,
-						"new_hosts", rm.HostCount(),
-						"min_hosts", minHosts)
-					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-						stepIndex++
-						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-							"p95 and host utilization low, scaled in hosts",
-							prevConfig, currConfig)
-					}
-				}
+			switch onlineControllerPolicyBranchFromPrimary(primaryTargetCtl) {
+			case onlinePolicyCPU:
+				e.runCPUPrimaryOnlineStep(runID, scenario, opt, rm, state, loopState, tickIn, primaryTargetCtl)
+			case onlinePolicyMemory:
+				e.runMemoryPrimaryOnlineStep(runID, scenario, opt, rm, state, loopState, tickIn, primaryTargetCtl)
+			default:
+				e.runP95PrimaryOnlineStep(runID, scenario, opt, rm, state, loopState, tickIn, primaryTargetCtl)
 			}
 
-			var currentHostCores int
-			for _, hid := range rm.HostIDs() {
-				if h, ok := rm.GetHost(hid); ok {
-					currentHostCores = h.CPUCores()
-					break
-				}
-			}
-			hostCPUDownCond := scaleDownHostCPUMax > 0 && hostCount >= minHosts && maxHostCPU < scaleDownHostCPUMax && currentHostCores > initialHostCores
-			if hostCPUDownCond {
-				stableHostCPUDown++
-			} else {
-				stableHostCPUDown = 0
-			}
-			if hostCPUDownCond && stableHostCPUDown >= stabTicks {
-				hostCPUStep := int(math.Ceil(opt.StepSize))
-				if hostCPUStep < 1 {
-					hostCPUStep = 1
-				}
-				prevConfig, _ := e.GetRunConfiguration(runID)
-				if err := rm.DecreaseHostCapacity(-hostCPUStep, 0); err != nil {
-					logger.Debug("online controller decrease host capacity skipped",
-						"run_id", runID,
-						"error", err)
-				} else {
-					stableHostCPUDown = 0
-					logger.Info("online controller decreased host capacity",
-						"run_id", runID,
-						"cpu_step", hostCPUStep,
-						"host_count", rm.HostCount())
-					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-						stepIndex++
-						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-							"host utilization low, decreased host CPU capacity",
-							prevConfig, currConfig)
-					}
-				}
-			}
-
-			var currentHostMemGB int
-			for _, hid := range rm.HostIDs() {
-				if h, ok := rm.GetHost(hid); ok {
-					currentHostMemGB = h.MemoryGB()
-					break
-				}
-			}
-			hostMemDownCond := scaleDownHostMemMax > 0 && hostCount >= minHosts && maxHostMem < scaleDownHostMemMax && currentHostMemGB > initialHostMemGB
-			if hostMemDownCond {
-				stableHostMemDown++
-			} else {
-				stableHostMemDown = 0
-			}
-			if hostMemDownCond && stableHostMemDown >= stabTicks {
-				hostMemStep := int(math.Ceil(opt.StepSize))
-				if hostMemStep < 1 {
-					hostMemStep = 1
-				}
-				prevConfig, _ := e.GetRunConfiguration(runID)
-				if err := rm.DecreaseHostCapacity(0, -hostMemStep); err != nil {
-					logger.Debug("online controller decrease host memory skipped",
-						"run_id", runID,
-						"error", err)
-				} else {
-					stableHostMemDown = 0
-					logger.Info("online controller decreased host memory capacity",
-						"run_id", runID,
-						"memory_gb_step", hostMemStep,
-						"host_count", rm.HostCount())
-					if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-						stepIndex++
-						e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-							"host memory utilization low, decreased host memory capacity",
-							prevConfig, currConfig)
-					}
-				}
-			}
-
-			// Service-level controller: primary target + utilization guardrails; scaling
-			// dimensions are gated by service kind and scaling policy.
-			p95OkForDown := !p95Guard || currentP95 <= targetP95*1.05
-			step := int(opt.StepSize)
-			if step < 1 {
-				step = 1
-			}
-			cpuStep := opt.StepSize
-			if cpuStep <= 0 {
-				cpuStep = 1.0
-			}
-
-			for i := range scenario.Services {
-				svc := &scenario.Services[i]
-				// Current replicas from resource manager.
-				currentReplicas := rm.ActiveReplicas(svc.ID)
-				if currentReplicas < 1 {
-					currentReplicas = 1
-				}
-
-				newReplicas := currentReplicas
-
-				// Current per-instance CPU/memory (prefer a routable instance).
-				instances := rm.GetInstancesForService(svc.ID)
-				currentCores := resource.DefaultInstanceCPUCores
-				currentMemMB := resource.DefaultInstanceMemoryMB
-				var routable *resource.ServiceInstance
-				for _, inst := range instances {
-					if inst.IsRoutable() {
-						routable = inst
-						break
-					}
-				}
-				if routable != nil {
-					currentCores = routable.CPUCores()
-					currentMemMB = routable.MemoryMB()
-				} else if len(instances) > 0 {
-					currentCores = instances[0].CPUCores()
-					currentMemMB = instances[0].MemoryMB()
-				}
-				newCPUCores := currentCores
-				newMemMBVert := currentMemMB
-
-				// Service-level CPU and memory utilization (if available).
-				var svcCPUUtil, svcMemUtil float64
-				if runMetrics.ServiceMetrics != nil {
-					if sm := runMetrics.ServiceMetrics[svc.ID]; sm != nil {
-						svcCPUUtil = sm.CPUUtilization
-						svcMemUtil = sm.MemoryUtilization
-					}
-				}
-
-				primaryTarget := primaryTargetCtl
-				targetUtilHigh := opt.GetTargetUtilHigh()
-				if targetUtilHigh <= 0 {
-					targetUtilHigh = 0.7
-				}
-				targetUtilLow := opt.GetTargetUtilLow()
-				if targetUtilLow <= 0 {
-					targetUtilLow = 0.4
-				}
-
-				scaledVertically := false
-
-				if primaryTarget == "cpu_utilization" || primaryTarget == "memory_utilization" {
-					util := svcCPUUtil
-					if primaryTarget == "memory_utilization" {
-						util = svcMemUtil
-					}
-					// Utilization-driven: scale up when util > targetHigh, scale down when
-					// util < targetLow and P95 guardrail allows (do not scale down if P95 would exceed target).
-					switch {
-					case brokerPressure[svc.ID].HasBacklog || brokerPressure[svc.ID].HasInFlight || brokerPressure[svc.ID].MaxOldestAgeMs > 0:
-						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
-							newCPUCores = currentCores + cpuStep
-							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(svc) {
-							newReplicas = currentReplicas + step
-						}
-					case util > targetUtilHigh:
-						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
-							newCPUCores = currentCores + cpuStep
-							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(svc) {
-							newReplicas = currentReplicas + step
-						}
-					case util < targetUtilLow && currentReplicas > 1 && p95OkForDown:
-						if config.ServiceAllowsHorizontalScaling(svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
-							newReplicas = currentReplicas - 1
-						}
-					}
-				} else {
-					// P95-primary (default): scale up on P95 above target, scale down on P95 below target with utilization gates.
-					switch {
-					case brokerPressure[svc.ID].HasBacklog || brokerPressure[svc.ID].HasInFlight || brokerPressure[svc.ID].MaxOldestAgeMs > 0:
-						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
-							newCPUCores = currentCores + cpuStep
-							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(svc) {
-							newReplicas = currentReplicas + step
-						}
-					case p95Guard && currentP95 > targetP95*1.05:
-						if config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil >= cpuHighThreshold {
-							newCPUCores = currentCores + cpuStep
-							scaledVertically = true
-						} else if config.ServiceAllowsHorizontalScaling(svc) {
-							newReplicas = currentReplicas + step
-						}
-					case p95Guard && currentP95 < targetP95*0.7 && currentReplicas > 1:
-						if config.ServiceAllowsHorizontalScaling(svc) && allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) {
-							newReplicas = currentReplicas - 1
-						}
-					}
-				}
-
-				// Utilization-primary: vertical CPU/memory downscale (stabilized like replica drain).
-				wantVertCPU := primaryTarget == "cpu_utilization" && config.ServiceAllowsVerticalCPU(svc) && svcCPUUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
-					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
-					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
-				var targetVertCPU float64
-				if wantVertCPU {
-					nc := currentCores - cpuStep
-					if minCPUCtl > 0 && nc < minCPUCtl {
-						nc = minCPUCtl
-					}
-					if nc+1e-9 < currentCores {
-						targetVertCPU = nc
-					} else {
-						wantVertCPU = false
-					}
-				}
-				if wantVertCPU {
-					stableVertCPUDown[svc.ID]++
-				} else {
-					stableVertCPUDown[svc.ID] = 0
-				}
-				if wantVertCPU && stableVertCPUDown[svc.ID] >= stabTicks && targetVertCPU > 0 {
-					newCPUCores = targetVertCPU
-					scaledVertically = true
-					stableVertCPUDown[svc.ID] = 0
-				}
-
-				wantVertMem := primaryTarget == "memory_utilization" && config.ServiceAllowsVerticalMemory(svc) && svcMemUtil < targetUtilLow && p95OkForDown && newReplicas >= currentReplicas &&
-					allowScaleDownReplicas(svcCPUUtil, svcMemUtil, scaleDownCPUMax, scaleDownMemMax) &&
-					!onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure)
-				var targetVertMem float64
-				if wantVertMem {
-					nm := currentMemMB - float64(step)*128
-					if minMemCtl > 0 && nm < minMemCtl {
-						nm = minMemCtl
-					}
-					if nm+1e-9 < currentMemMB {
-						targetVertMem = nm
-					} else {
-						wantVertMem = false
-					}
-				}
-				if wantVertMem {
-					stableVertMemDown[svc.ID]++
-				} else {
-					stableVertMemDown[svc.ID] = 0
-				}
-				if wantVertMem && stableVertMemDown[svc.ID] >= stabTicks && targetVertMem > 0 {
-					newMemMBVert = targetVertMem
-					stableVertMemDown[svc.ID] = 0
-				}
-
-				// Stabilization and guardrails for replica scale-down.
-				if newReplicas < currentReplicas {
-					stableRepDown[svc.ID]++
-					if stableRepDown[svc.ID] < stabTicks {
-						newReplicas = currentReplicas
-					}
-				} else {
-					stableRepDown[svc.ID] = 0
-				}
-				if newReplicas < currentReplicas && onlineScaleDownGuard(rm, runMetrics, svc.ID, targetP95, prevErrFrac, brokerPressure) {
-					newReplicas = currentReplicas
-					stableRepDown[svc.ID] = 0
-				}
-				if newReplicas < minReplicasCtl {
-					newReplicas = minReplicasCtl
-				}
-
-				// Apply vertical scaling first if requested.
-				if scaledVertically && newCPUCores != currentCores {
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					if err := e.UpdateServiceResources(runID, svc.ID, newCPUCores, 0); err != nil {
-						logger.Error("online controller failed to update service resources",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"old_cpu_cores", currentCores,
-							"new_cpu_cores", newCPUCores,
-							"error", err)
-						// Fallback: if we were trying to add capacity and vertical scaling
-						// failed (e.g., host capacity), fall back to horizontal scale-up.
-						if config.ServiceAllowsHorizontalScaling(svc) {
-							if primaryTargetCtl == "cpu_utilization" || primaryTargetCtl == "memory_utilization" {
-								newReplicas = currentReplicas + step
-							} else if p95Guard && currentP95 > targetP95*1.05 {
-								newReplicas = currentReplicas + step
-							}
-						}
-					} else {
-						logger.Info("online controller updated service resources",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"old_cpu_cores", currentCores,
-							"new_cpu_cores", newCPUCores,
-							"p95_ms", currentP95,
-							"target_p95_ms", targetP95,
-							"cpu_utilization", svcCPUUtil)
-						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-							stepIndex++
-							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-								"p95 above target, service CPU hot, scaled CPU cores",
-								prevConfig, currConfig)
-						}
-						continue
-					}
-				}
-
-				if newMemMBVert+1e-9 < currentMemMB {
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					if err := e.UpdateServiceResourcesWithHeadroom(runID, svc.ID, 0, newMemMBVert, memHeadroomCtl); err != nil {
-						logger.Debug("online controller memory downscale skipped",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"error", err)
-					} else {
-						logger.Info("online controller decreased service memory",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"old_memory_mb", currentMemMB,
-							"new_memory_mb", newMemMBVert)
-						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-							stepIndex++
-							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-								"memory utilization low, decreased per-instance memory",
-								prevConfig, currConfig)
-						}
-						continue
-					}
-				}
-
-				if newReplicas != currentReplicas {
-					prevConfig, _ := e.GetRunConfiguration(runID)
-					if err := e.UpdateServiceReplicas(runID, svc.ID, newReplicas); err != nil {
-						logger.Error("online controller failed to update replicas",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"old", currentReplicas,
-							"new", newReplicas,
-							"error", err)
-					} else {
-						logger.Info("online controller updated replicas",
-							"run_id", runID,
-							"service_id", svc.ID,
-							"old", currentReplicas,
-							"new", newReplicas,
-							"p95_ms", currentP95,
-							"target_p95_ms", targetP95,
-							"cpu_utilization", svcCPUUtil,
-							"memory_utilization", svcMemUtil)
-						if currConfig, ok := e.GetRunConfiguration(runID); ok && prevConfig != nil {
-							reason := "p95 above target, scaled replicas up"
-							if newReplicas < currentReplicas {
-								reason = "p95 below target and utilization low, scaled replicas down"
-								if primaryTarget == "cpu_utilization" || primaryTarget == "memory_utilization" {
-									reason = "utilization below target and P95 ok, scaled replicas down"
-								}
-							} else if primaryTarget == "cpu_utilization" || primaryTarget == "memory_utilization" {
-								reason = "utilization above target, scaled replicas up"
-							}
-							stepIndex++
-							e.recordOptimizationStep(runID, stepIndex, targetP95, currentP95,
-								reason, prevConfig, currConfig)
-						}
-					}
-				}
-			}
-
-			if stepIndex > stepIndexBefore {
-				lastScaleWall = time.Now()
+			if loopState.stepIndex > stepIndexBefore {
+				loopState.lastScaleWall = time.Now()
 			}
 			if runMetrics.TotalRequests > 0 {
-				prevErrFrac = float64(runMetrics.FailedRequests) / float64(runMetrics.TotalRequests)
+				loopState.prevErrFrac = float64(runMetrics.FailedRequests) / float64(runMetrics.TotalRequests)
 			}
 
 			maxNoop := opt.GetMaxNoopIntervals()
 			if maxNoop > 0 {
-				if stepIndex == stepIndexBefore {
+				if loopState.stepIndex == stepIndexBefore {
 					noopStreak++
 					if noopStreak >= maxNoop {
 						logger.Info("online controller converged (no configuration changes)",
@@ -2122,7 +1863,7 @@ func (e *RunExecutor) runOnlineController(
 			} else if maxNoop < 0 {
 				// Interactive / no convergence stop: track idle streak for progress metadata only.
 				const minIntervalsStable = 2
-				if stepIndex == stepIndexBefore {
+				if loopState.stepIndex == stepIndexBefore {
 					noopStreak++
 					stable := noopStreak >= minIntervalsStable
 					e.setOnlineControllerIdle(runID, stable, noopStreak)

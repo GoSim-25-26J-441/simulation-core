@@ -44,6 +44,9 @@ func (s *SimulationGRPCServer) CreateRun(ctx context.Context, req *simulationv1.
 	}
 
 	logger.Info("run created", "run_id", rec.Run.Id)
+	if len(rec.ServerWarnings) > 0 {
+		logger.Warn("run create diagnostics", "run_id", rec.Run.Id, "warnings", rec.ServerWarnings)
+	}
 	return &simulationv1.CreateRunResponse{Run: rec.Run}, nil
 }
 

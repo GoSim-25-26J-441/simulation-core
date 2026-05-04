@@ -3095,7 +3095,7 @@ type Run struct {
 	Error           string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
 	// For optimization runs: the best run ID and score found.
 	BestRunId string `protobuf:"bytes,7,opt,name=best_run_id,json=bestRunId,proto3" json:"best_run_id,omitempty"`
-	// For batch optimization, best_score remains a legacy compatibility scalar containing efficiency only; clients should use batch_recommendation_feasible, batch_violation_score, batch_efficiency_score, and batch_recommendation_summary for the full result.
+	// For batch optimization, best_score remains a legacy compatibility scalar containing efficiency only; clients should use batch_recommendation_feasible, batch_violation_score, batch_efficiency_score, batch_recommendation_summary, and optional batch_search_diagnostics for the full result.
 	// For non-batch (hill-climbing) optimization, best_score is the objective value for the best configuration.
 	BestScore  float64 `protobuf:"fixed64,8,opt,name=best_score,json=bestScore,proto3" json:"best_score,omitempty"`
 	Iterations int32   `protobuf:"varint,9,opt,name=iterations,proto3" json:"iterations,omitempty"`
@@ -4570,6 +4570,11 @@ func (x *OptimizationProgress) GetUnit() string {
 
 // OptimizationStep is emitted when the online controller applies a configuration change.
 // Backend can append to run.metadata.optimization_history for audit and replay.
+//
+// For online runs, target_p95_ms / score_p95_ms remain populated for backwards compatibility.
+// When primary_target is cpu_utilization or memory_utilization, UIs should prefer objective_score,
+// objective_unit, and decision_* fields; treat target_p95_ms / score_p95_ms as guardrail / legacy
+// latency columns rather than the optimization objective.
 type OptimizationStep struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	IterationIndex int32                  `protobuf:"varint,1,opt,name=iteration_index,json=iterationIndex,proto3" json:"iteration_index,omitempty"`
@@ -4578,8 +4583,22 @@ type OptimizationStep struct {
 	Reason         string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	PreviousConfig *RunConfiguration      `protobuf:"bytes,5,opt,name=previous_config,json=previousConfig,proto3" json:"previous_config,omitempty"`
 	CurrentConfig  *RunConfiguration      `protobuf:"bytes,6,opt,name=current_config,json=currentConfig,proto3" json:"current_config,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// --- Online replay / objective metadata (Phase 5+) ---
+	PrimaryTarget       string   `protobuf:"bytes,7,opt,name=primary_target,json=primaryTarget,proto3" json:"primary_target,omitempty"`
+	ObjectiveScore      float64  `protobuf:"fixed64,8,opt,name=objective_score,json=objectiveScore,proto3" json:"objective_score,omitempty"`
+	ObjectiveUnit       string   `protobuf:"bytes,9,opt,name=objective_unit,json=objectiveUnit,proto3" json:"objective_unit,omitempty"`
+	TargetUtilLow       float64  `protobuf:"fixed64,10,opt,name=target_util_low,json=targetUtilLow,proto3" json:"target_util_low,omitempty"`
+	TargetUtilHigh      float64  `protobuf:"fixed64,11,opt,name=target_util_high,json=targetUtilHigh,proto3" json:"target_util_high,omitempty"`
+	GuardrailP95Ms      float64  `protobuf:"fixed64,12,opt,name=guardrail_p95_ms,json=guardrailP95Ms,proto3" json:"guardrail_p95_ms,omitempty"`
+	CurrentP95Ms        float64  `protobuf:"fixed64,13,opt,name=current_p95_ms,json=currentP95Ms,proto3" json:"current_p95_ms,omitempty"`
+	GuardrailErrorRate  *float64 `protobuf:"fixed64,14,opt,name=guardrail_error_rate,json=guardrailErrorRate,proto3,oneof" json:"guardrail_error_rate,omitempty"`
+	CurrentErrorRate    *float64 `protobuf:"fixed64,15,opt,name=current_error_rate,json=currentErrorRate,proto3,oneof" json:"current_error_rate,omitempty"`
+	DecisionMetric      string   `protobuf:"bytes,16,opt,name=decision_metric,json=decisionMetric,proto3" json:"decision_metric,omitempty"`
+	DecisionMetricValue float64  `protobuf:"fixed64,17,opt,name=decision_metric_value,json=decisionMetricValue,proto3" json:"decision_metric_value,omitempty"`
+	DecisionServiceId   string   `protobuf:"bytes,18,opt,name=decision_service_id,json=decisionServiceId,proto3" json:"decision_service_id,omitempty"`
+	Action              string   `protobuf:"bytes,19,opt,name=action,proto3" json:"action,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *OptimizationStep) Reset() {
@@ -4652,6 +4671,97 @@ func (x *OptimizationStep) GetCurrentConfig() *RunConfiguration {
 		return x.CurrentConfig
 	}
 	return nil
+}
+
+func (x *OptimizationStep) GetPrimaryTarget() string {
+	if x != nil {
+		return x.PrimaryTarget
+	}
+	return ""
+}
+
+func (x *OptimizationStep) GetObjectiveScore() float64 {
+	if x != nil {
+		return x.ObjectiveScore
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetObjectiveUnit() string {
+	if x != nil {
+		return x.ObjectiveUnit
+	}
+	return ""
+}
+
+func (x *OptimizationStep) GetTargetUtilLow() float64 {
+	if x != nil {
+		return x.TargetUtilLow
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetTargetUtilHigh() float64 {
+	if x != nil {
+		return x.TargetUtilHigh
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetGuardrailP95Ms() float64 {
+	if x != nil {
+		return x.GuardrailP95Ms
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetCurrentP95Ms() float64 {
+	if x != nil {
+		return x.CurrentP95Ms
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetGuardrailErrorRate() float64 {
+	if x != nil && x.GuardrailErrorRate != nil {
+		return *x.GuardrailErrorRate
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetCurrentErrorRate() float64 {
+	if x != nil && x.CurrentErrorRate != nil {
+		return *x.CurrentErrorRate
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetDecisionMetric() string {
+	if x != nil {
+		return x.DecisionMetric
+	}
+	return ""
+}
+
+func (x *OptimizationStep) GetDecisionMetricValue() float64 {
+	if x != nil {
+		return x.DecisionMetricValue
+	}
+	return 0
+}
+
+func (x *OptimizationStep) GetDecisionServiceId() string {
+	if x != nil {
+		return x.DecisionServiceId
+	}
+	return ""
+}
+
+func (x *OptimizationStep) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
 }
 
 var File_simulation_v1_simulation_proto protoreflect.FileDescriptor
@@ -5078,7 +5188,7 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"best_score\x18\x02 \x01(\x01R\tbestScore\x12\x1e\n" +
 	"\vbest_run_id\x18\x03 \x01(\tR\tbestRunId\x12\x1c\n" +
 	"\tobjective\x18\x04 \x01(\tR\tobjective\x12\x12\n" +
-	"\x04unit\x18\x05 \x01(\tR\x04unit\"\xab\x02\n" +
+	"\x04unit\x18\x05 \x01(\tR\x04unit\"\x83\a\n" +
 	"\x10OptimizationStep\x12'\n" +
 	"\x0fiteration_index\x18\x01 \x01(\x05R\x0eiterationIndex\x12\"\n" +
 	"\rtarget_p95_ms\x18\x02 \x01(\x01R\vtargetP95Ms\x12 \n" +
@@ -5086,7 +5196,23 @@ const file_simulation_v1_simulation_proto_rawDesc = "" +
 	"scoreP95Ms\x12\x16\n" +
 	"\x06reason\x18\x04 \x01(\tR\x06reason\x12H\n" +
 	"\x0fprevious_config\x18\x05 \x01(\v2\x1f.simulation.v1.RunConfigurationR\x0epreviousConfig\x12F\n" +
-	"\x0ecurrent_config\x18\x06 \x01(\v2\x1f.simulation.v1.RunConfigurationR\rcurrentConfig*\\\n" +
+	"\x0ecurrent_config\x18\x06 \x01(\v2\x1f.simulation.v1.RunConfigurationR\rcurrentConfig\x12%\n" +
+	"\x0eprimary_target\x18\a \x01(\tR\rprimaryTarget\x12'\n" +
+	"\x0fobjective_score\x18\b \x01(\x01R\x0eobjectiveScore\x12%\n" +
+	"\x0eobjective_unit\x18\t \x01(\tR\robjectiveUnit\x12&\n" +
+	"\x0ftarget_util_low\x18\n" +
+	" \x01(\x01R\rtargetUtilLow\x12(\n" +
+	"\x10target_util_high\x18\v \x01(\x01R\x0etargetUtilHigh\x12(\n" +
+	"\x10guardrail_p95_ms\x18\f \x01(\x01R\x0eguardrailP95Ms\x12$\n" +
+	"\x0ecurrent_p95_ms\x18\r \x01(\x01R\fcurrentP95Ms\x125\n" +
+	"\x14guardrail_error_rate\x18\x0e \x01(\x01H\x00R\x12guardrailErrorRate\x88\x01\x01\x121\n" +
+	"\x12current_error_rate\x18\x0f \x01(\x01H\x01R\x10currentErrorRate\x88\x01\x01\x12'\n" +
+	"\x0fdecision_metric\x18\x10 \x01(\tR\x0edecisionMetric\x122\n" +
+	"\x15decision_metric_value\x18\x11 \x01(\x01R\x13decisionMetricValue\x12.\n" +
+	"\x13decision_service_id\x18\x12 \x01(\tR\x11decisionServiceId\x12\x16\n" +
+	"\x06action\x18\x13 \x01(\tR\x06actionB\x17\n" +
+	"\x15_guardrail_error_rateB\x15\n" +
+	"\x13_current_error_rate*\\\n" +
 	"\x13BatchSearchStrategy\x12%\n" +
 	"!BATCH_SEARCH_STRATEGY_UNSPECIFIED\x10\x00\x12\x1e\n" +
 	"\x1aBATCH_SEARCH_STRATEGY_BEAM\x10\x01*\x80\x04\n" +
@@ -5282,6 +5408,7 @@ func file_simulation_v1_simulation_proto_init() {
 		(*RunEvent_OptimizationProgress)(nil),
 		(*RunEvent_OptimizationStep)(nil),
 	}
+	file_simulation_v1_simulation_proto_msgTypes[46].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

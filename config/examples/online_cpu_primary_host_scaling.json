@@ -1,0 +1,14 @@
+{
+  "online": true,
+  "optimization_target_primary": "cpu_utilization",
+  "target_util_low": 0.4,
+  "target_util_high": 0.7,
+  "target_p95_latency_ms": 200,
+  "min_hosts": 1,
+  "max_hosts": 8,
+  "min_replicas_per_service": 1,
+  "step_size": 1,
+  "scale_down_stabilization_window_ms": 10000,
+  "scale_down_cooldown_ms": 5000,
+  "max_controller_steps": 200
+}

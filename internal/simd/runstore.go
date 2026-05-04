@@ -27,6 +27,8 @@ type RunRecord struct {
 	// FinalConfig is a snapshot of the effective RunConfiguration taken before executor cleanup
 	// (placements, replicas, workload). Populated for terminal runs when the simulator still had state.
 	FinalConfig *simulationv1.RunConfiguration
+	// ServerWarnings are non-fatal diagnostics (e.g. CPU-primary host scaling bounds); not part of Run protobuf.
+	ServerWarnings []string
 }
 
 type RunStoreLifecycleConfig struct {
@@ -261,6 +263,17 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 	if err := PrepareOnlineRunInput(clonedInput, s.onlineLimits); err != nil {
 		return nil, err
 	}
+	if opt := clonedInput.GetOptimization(); opt != nil && opt.GetOnline() {
+		if err := validateOnlineOptimizationConfig(opt); err != nil {
+			return nil, err
+		}
+	}
+	var serverWarnings []string
+	if clonedInput.GetScenarioYaml() != "" {
+		if sc, err := config.ParseScenarioYAMLString(clonedInput.GetScenarioYaml()); err == nil {
+			serverWarnings = onlineCPUPrimaryHostScalingWarnings(clonedInput.GetOptimization(), len(sc.Hosts))
+		}
+	}
 	rec := &RunRecord{
 		Run: &simulationv1.Run{
 			Id:              runID,
@@ -270,6 +283,7 @@ func (s *RunStore) Create(runID string, input *simulationv1.RunInput) (*RunRecor
 		Input:               clonedInput,
 		Metrics:             nil,
 		IsOptimizationChild: strings.HasPrefix(runID, "opt-"),
+		ServerWarnings:      serverWarnings,
 	}
 	s.runs[runID] = rec
 	return cloneRunRecord(rec), nil
@@ -657,6 +671,10 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 			history[i] = proto.Clone(step).(*simulationv1.OptimizationStep)
 		}
 	}
+	var sw []string
+	if len(rec.ServerWarnings) > 0 {
+		sw = append([]string(nil), rec.ServerWarnings...)
+	}
 	return &RunRecord{
 		Run:                 cloneRun(rec.Run),
 		Input:               cloneRunInput(rec.Input),
@@ -665,6 +683,7 @@ func cloneRunRecord(rec *RunRecord) *RunRecord {
 		IsOptimizationChild: rec.IsOptimizationChild,
 		OptimizationHistory: history,
 		FinalConfig:         cloneRunConfiguration(rec.FinalConfig),
+		ServerWarnings:      sw,
 	}
 }
 

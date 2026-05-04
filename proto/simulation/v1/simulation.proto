@@ -273,6 +273,10 @@ message OptimizationConfig {
   // the initial host count, the controller may scale out by adding hosts up to
   // this limit before switching to vertical host scaling. When min_hosts is
   // greater than 0, the controller will avoid scaling below this bound.
+  // When unset (0), both default to the scenario's initial host count: host scale-out
+  // requires max_hosts > initial hosts; host scale-in requires min_hosts < initial hosts.
+  // CPU-primary online runs surface non-fatal `warnings` on create/get/export when bounds
+  // make host scaling impossible (see BACKEND_INTEGRATION.md).
   int32 min_hosts = 8;
   int32 max_hosts = 9;
 
@@ -291,13 +295,14 @@ message OptimizationConfig {
   // would exceed target_p95_latency_ms).
   string optimization_target_primary = 12;
   // When optimization_target_primary is cpu_utilization or memory_utilization:
-  // high threshold (0–1) for scale-up. Default 0.7.
+  // high threshold (0–1) for scale-up. Omitted/zero defaults to 0.7 (online controller).
   // For batch optimization with objective cpu_utilization or memory_utilization,
   // target_util_low and target_util_high define the desired utilization band (0–1);
   // the optimizer minimizes distance from this band (score 0 inside band).
+  // Online: if either bound is set, both must satisfy 0 <= low < high <= 1 after defaults.
   double target_util_high = 13;
   // When optimization_target_primary is cpu_utilization or memory_utilization:
-  // low threshold (0–1) for scale-down. Default 0.4.
+  // low threshold (0–1) for scale-down. Omitted/zero defaults to 0.4 (online controller).
   // For batch optimization with objective cpu_utilization or memory_utilization,
   // see target_util_high: together they define the target utilization band.
   double target_util_low = 14;
@@ -740,6 +745,11 @@ message OptimizationProgress {
 
 // OptimizationStep is emitted when the online controller applies a configuration change.
 // Backend can append to run.metadata.optimization_history for audit and replay.
+//
+// For online runs, target_p95_ms / score_p95_ms remain populated for backwards compatibility.
+// When primary_target is cpu_utilization or memory_utilization, UIs should prefer objective_score,
+// objective_unit, and decision_* fields; treat target_p95_ms / score_p95_ms as guardrail / legacy
+// latency columns rather than the optimization objective.
 message OptimizationStep {
   int32 iteration_index = 1;
   double target_p95_ms = 2;
@@ -747,6 +757,20 @@ message OptimizationStep {
   string reason = 4;
   RunConfiguration previous_config = 5;
   RunConfiguration current_config = 6;
+  // --- Online replay / objective metadata (Phase 5+) ---
+  string primary_target = 7;
+  double objective_score = 8;
+  string objective_unit = 9;
+  double target_util_low = 10;
+  double target_util_high = 11;
+  double guardrail_p95_ms = 12;
+  double current_p95_ms = 13;
+  optional double guardrail_error_rate = 14;
+  optional double current_error_rate = 15;
+  string decision_metric = 16;
+  double decision_metric_value = 17;
+  string decision_service_id = 18;
+  string action = 19;
 }
 
 
