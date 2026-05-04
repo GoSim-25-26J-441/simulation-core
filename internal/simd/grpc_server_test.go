@@ -790,6 +790,127 @@ workload:
 	}
 }
 
+func TestGRPCServerUpdateRunConfigurationExpandsHostCapacityForVerticalScaling(t *testing.T) {
+	store := NewRunStore()
+	executor := NewRunExecutor(store, nil)
+	srv := NewSimulationGRPCServer(store, executor)
+	ctx := context.Background()
+
+	validScenario := `
+hosts:
+  - id: host-1
+    cores: 2
+    zone: zone-a
+  - id: host-2
+    cores: 2
+    zone: zone-b
+services:
+  - id: colocated
+    replicas: 1
+    model: cpu
+    cpu_cores: 1
+    placement:
+      required_zones: [zone-b]
+    endpoints:
+      - path: /test
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+  - id: gateway-1
+    replicas: 1
+    model: cpu
+    cpu_cores: 1
+    placement:
+      required_zones: [zone-b]
+    endpoints:
+      - path: /ingress
+        mean_cpu_ms: 10
+        cpu_sigma_ms: 2
+        downstream: []
+        net_latency_ms: {mean: 1, sigma: 0.5}
+workload:
+  - from: client
+    to: gateway-1:/ingress
+    arrival: {type: poisson, rate_rps: 10}
+`
+
+	createResp, err := srv.CreateRun(ctx, &simulationv1.CreateRunRequest{
+		Input: &simulationv1.RunInput{
+			ScenarioYaml: validScenario,
+			DurationMs:   2000,
+			RealTimeMode: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRun error: %v", err)
+	}
+
+	if _, err := srv.StartRun(ctx, &simulationv1.StartRunRequest{RunId: createResp.Run.Id}); err != nil {
+		t.Fatalf("StartRun error: %v", err)
+	}
+	defer func() { _, _ = srv.StopRun(ctx, &simulationv1.StopRunRequest{RunId: createResp.Run.Id}) }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, cfgOK := executor.GetRunConfiguration(createResp.Run.Id); cfgOK {
+			break
+		}
+		rec, ok := store.Get(createResp.Run.Id)
+		if !ok {
+			t.Fatal("run not found after start")
+		}
+		if rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_COMPLETED ||
+			rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_FAILED ||
+			rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_CANCELLED ||
+			rec.Run.Status == simulationv1.RunStatus_RUN_STATUS_STOPPED {
+			t.Skipf("run reached terminal state before live config became available (status=%v)", rec.Run.Status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for live run configuration")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	_, err = srv.UpdateRunConfiguration(ctx, &simulationv1.UpdateRunConfigurationRequest{
+		RunId: createResp.Run.Id,
+		Services: []*simulationv1.ServiceReplicasUpdate{
+			{
+				ServiceId: "gateway-1",
+				Replicas:  1,
+				CpuCores:  2.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRunConfiguration error: %v", err)
+	}
+
+	cfgResp, err := srv.GetRunConfiguration(ctx, &simulationv1.GetRunConfigurationRequest{
+		RunId: createResp.Run.Id,
+	})
+	if err != nil {
+		t.Fatalf("GetRunConfiguration error: %v", err)
+	}
+	var gotGateway bool
+	for _, svc := range cfgResp.Configuration.Services {
+		if svc.ServiceId == "gateway-1" {
+			gotGateway = true
+			if svc.CpuCores != 2.0 {
+				t.Fatalf("expected gateway-1 cpu_cores=2, got %f", svc.CpuCores)
+			}
+		}
+	}
+	if !gotGateway {
+		t.Fatalf("expected gateway-1 in configuration")
+	}
+	for _, host := range cfgResp.Configuration.Hosts {
+		if host.HostId == "host-2" && host.CpuCores < 3 {
+			t.Fatalf("expected host-2 cpu_cores at least 3, got %d", host.CpuCores)
+		}
+	}
+}
+
 func TestGRPCServerUpdateRunConfiguration(t *testing.T) {
 	store := NewRunStore()
 	executor := NewRunExecutor(store, nil)
