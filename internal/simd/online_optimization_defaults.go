@@ -60,8 +60,8 @@ func onlineEffectiveMinMaxHosts(opt *simulationv1.OptimizationConfig, initialHos
 }
 
 const (
-	warnCPUPrimaryHostScaleOutDisabled = "cpu-primary online optimization: max_hosts is not greater than initial host count; host scale-out is disabled"
-	warnCPUPrimaryHostScaleInDisabled  = "cpu-primary online optimization: min_hosts is not less than initial host count; host scale-in is disabled"
+	warnCPUPrimaryHostScaleOutDisabled  = "cpu-primary online optimization: max_hosts is not greater than initial host count; host scale-out is disabled"
+	warnCPUPrimaryHostScaleInDisabled   = "cpu-primary online optimization: min_hosts is not less than initial host count; host scale-in is disabled"
 	warnCPUPrimaryHostCPUVertUpDisabled = "cpu-primary online optimization: max_host_cpu_cores defaults to initial host cores; host CPU vertical scale-up is disabled unless max_host_cpu_cores is raised above the scenario baseline"
 	warnMemPrimaryHostMemVertUpDisabled = "memory-primary online optimization: max_host_memory_gb defaults to initial host memory; host memory vertical scale-up is disabled unless max_host_memory_gb is raised above the scenario baseline"
 )

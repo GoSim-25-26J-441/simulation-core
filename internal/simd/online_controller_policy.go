@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	reasonCPUReplicaScaleUp     = "service CPU above target, scaled replicas up"
-	reasonCPUHostScalePlacement = "service CPU above target, scaled out hosts for placement"
-	reasonCPUHostScaleHot       = "host CPU above target, scaled out hosts"
-	reasonCPUReplicaScaleDown   = "service CPU below target and guardrails safe, scaled replicas down"
-	reasonCPUHostScaleIn        = "host CPU below target and guardrails safe, scaled in hosts"
+	reasonCPUReplicaScaleUp         = "service CPU above target, scaled replicas up"
+	reasonCPUHostScalePlacement     = "service CPU above target, scaled out hosts for placement"
+	reasonCPUHostScaleHot           = "host CPU above target, scaled out hosts"
+	reasonCPUReplicaScaleDown       = "service CPU below target and guardrails safe, scaled replicas down"
+	reasonCPUHostScaleIn            = "host CPU below target and guardrails safe, scaled in hosts"
 	reasonCPUPrimaryHostCPUVertUp   = "cpu-primary: max host CPU above target, increased host CPU capacity"
 	reasonCPUPrimaryHostCPUVertDown = "cpu-primary: max host CPU below threshold, decreased host CPU capacity"
 	reasonMemPrimaryHostMemVertUp   = "memory-primary: max host memory above target, increased host memory capacity"
@@ -68,17 +68,17 @@ func onlineControllerPolicyBranchFromPrimary(primary string) onlineControllerPol
 
 // onlineCtrlLoopState holds controller state that persists across control intervals.
 type onlineCtrlLoopState struct {
-	stepIndex                   int32
-	lastScaleWall               time.Time
-	stableRepDown               map[string]int
-	stableHostScaleIn           int
-	stableHostCPUDown           int
-	stableHostMemDown           int
-	stableVertCPUDown           map[string]int
-	stableVertMemDown           map[string]int
-	prevErrFrac                 float64
-	stableCPUPrimaryHostScaleIn int
-	stableCPUPrimaryHostVertCPUUp int
+	stepIndex                        int32
+	lastScaleWall                    time.Time
+	stableRepDown                    map[string]int
+	stableHostScaleIn                int
+	stableHostCPUDown                int
+	stableHostMemDown                int
+	stableVertCPUDown                map[string]int
+	stableVertMemDown                map[string]int
+	prevErrFrac                      float64
+	stableCPUPrimaryHostScaleIn      int
+	stableCPUPrimaryHostVertCPUUp    int
 	stableMemoryPrimaryHostVertMemUp int
 }
 
@@ -325,11 +325,12 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 	if hostCPUDownCond && loop.stableHostCPUDown >= stabTicks {
 		prevConfig, _ := e.GetRunConfiguration(runID)
 		changes, errDec := rm.DecreaseOnlineHostCPUCapacity(tick.hostCPUStepCores, tick.minHostCPUCores)
-		if errDec != nil {
+		switch {
+		case errDec != nil:
 			logger.Debug("online controller decrease host capacity skipped",
 				"run_id", runID,
 				"error", errDec)
-		} else if len(changes) > 0 {
+		case len(changes) > 0:
 			loop.stableHostCPUDown = 0
 			reason := scaleReasonHostCPU
 			if primaryTargetCtl == "cpu_utilization" {
@@ -355,7 +356,7 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 					prevConfig, currConfig,
 					onlineOptReplay(opt, tick, primaryTargetCtl, meta))
 			}
-		} else {
+		default:
 			loop.stableHostCPUDown = 0
 		}
 	}
@@ -371,11 +372,12 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 	if hostMemDownCond && loop.stableHostMemDown >= stabTicks {
 		prevConfig, _ := e.GetRunConfiguration(runID)
 		changes, errDec := rm.DecreaseOnlineHostMemoryCapacity(tick.hostMemoryStepGB, tick.minHostMemGB)
-		if errDec != nil {
+		switch {
+		case errDec != nil:
 			logger.Debug("online controller decrease host memory skipped",
 				"run_id", runID,
 				"error", errDec)
-		} else if len(changes) > 0 {
+		case len(changes) > 0:
 			loop.stableHostMemDown = 0
 			reason := scaleReasonHostMem
 			if primaryTargetCtl == "memory_utilization" {
@@ -401,7 +403,7 @@ func (e *RunExecutor) runOnlineControllerPolicyStep(
 					prevConfig, currConfig,
 					onlineOptReplay(opt, tick, primaryTargetCtl, meta))
 			}
-		} else {
+		default:
 			loop.stableHostMemDown = 0
 		}
 	}
